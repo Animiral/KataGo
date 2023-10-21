@@ -1,8 +1,5 @@
 """
-This is a simple python program that demonstrates how to run KataGo's
-analysis engine as a subprocess and send it a query. It queries the
-result of playing the 4-4 point on an empty board and prints out
-the json response.
+Run KataGo's analysis engine on every single move in the game.
 """
 
 import argparse
