@@ -263,6 +263,7 @@ add_executable(katago
   distributed/client.cpp
   command/commandline.cpp
   command/analysis.cpp
+  command/strength_analysis.cpp
   command/benchmark.cpp
   command/contribute.cpp
   command/evalsgf.cpp

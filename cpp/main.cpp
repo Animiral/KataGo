@@ -36,6 +36,7 @@ match : Run self-play match games based on a config, more efficient than gtp due
 version : Print version and exit.
 
 analysis : Runs an engine designed to analyze entire games in parallel.
+strength_analysis : Runs an engine to analyze the strength of a player.
 tuner : (OpenCL only) Run tuning to find and optimize parameters that work on your GPU.
 
 ---Selfplay training subcommands---------
@@ -70,6 +71,8 @@ static int handleSubcommand(const string& subcommand, const vector<string>& args
   vector<string> subArgs(args.begin()+1,args.end());
   if(subcommand == "analysis")
     return MainCmds::analysis(subArgs);
+  if(subcommand == "strength_analysis")
+    return MainCmds::strength_analysis(subArgs);
   if(subcommand == "benchmark")
     return MainCmds::benchmark(subArgs);
   if(subcommand == "contribute")
