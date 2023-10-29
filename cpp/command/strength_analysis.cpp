@@ -3,57 +3,168 @@
 #include "../core/timer.h"
 #include "../core/datetime.h"
 #include "../core/makedir.h"
-#include "../search/asyncbot.h"
-#include "../search/patternbonustable.h"
+// #include "../search/asyncbot.h"
+// #include "../search/patternbonustable.h"
 #include "../program/setup.h"
 #include "../program/playutils.h"
 #include "../program/play.h"
 #include "../command/commandline.h"
 #include "../main.h"
+// #include <format>
 
-// #include "../external/nlohmann_json/json.hpp"
+// poor man's pre-C++20 format, https://stackoverflow.com/questions/2342162/stdstring-formatting-like-sprintf
+template<typename ... Args>
+std::string custom_format( const std::string& format, Args ... args )
+{
+    int size_s = std::snprintf( nullptr, 0, format.c_str(), args ... ) + 1; // Extra space for '\0'
+    if( size_s <= 0 ){ throw std::runtime_error( "Error during formatting." ); }
+    auto size = static_cast<size_t>( size_s );
+    std::unique_ptr<char[]> buf( new char[ size ] );
+    std::snprintf( buf.get(), size, format.c_str(), args ... );
+    return std::string( buf.get(), buf.get() + size - 1 ); // We don't want the '\0' inside
+}
 
 using namespace std;
-// using json = nlohmann::json;
 
-// struct AnalyzeRequest {
-//   int64_t internalId;
-//   string id;
-//   int turnNumber;
-//   int64_t priority;
+struct MoveFeatures
+{
+  float whiteWinProb;
+  float whiteLossProb;
+  float whiteScoreMean;
+  float whiteLead;
+  float movePolicy;
+  float maxPolicy;
+};
 
-//   Board board;
-//   BoardHistory hist;
-//   Player nextPla;
+void loadParams(ConfigParser& config, SearchParams& params, Player& perspective, Player defaultPerspective) {
+  params = Setup::loadSingleParams(config,Setup::SETUP_FOR_ANALYSIS);
+  perspective = Setup::parseReportAnalysisWinrates(config,defaultPerspective);
+  //Set a default for conservativePass that differs from matches or selfplay
+  if(!config.contains("conservativePass") && !config.contains("conservativePass0"))
+    params.conservativePass = true;
+}
 
-//   SearchParams params;
-//   Player perspective;
-//   int analysisPVLen;
-//   bool includeOwnership;
-//   bool includeOwnershipStdev;
-//   bool includeMovesOwnership;
-//   bool includeMovesOwnershipStdev;
-//   bool includePolicy;
-//   bool includePVVisits;
+// Analyze SGF and use the strength model to determine the embedded features of every move
+void getMoveFeatures(const Sgf* sgf, Search& search, vector<MoveFeatures>& features)
+{
+    cout << "Evaluate game \"" << sgf->fileName << "\": " << sgf->getPlayerName(P_BLACK) << " vs " << sgf->getPlayerName(P_WHITE) << endl;
 
-//   bool reportDuringSearch;
-//   double reportDuringSearchEvery;
-//   double firstReportDuringSearchAfter;
+    XYSize boardsize = sgf->getXYSize();
+    vector<Move> moves;
+    sgf->getMoves(moves, boardsize.x, boardsize.y);
 
-//   vector<int> avoidMoveUntilByLocBlack;
-//   vector<int> avoidMoveUntilByLocWhite;
+    cout << "Got " << moves.size() << " moves in SGF.\n";
+    Board board(boardsize.x, boardsize.y);
+    Player nextPla = sgf->nodes.size() > 0 ? sgf->nodes[0]->getPLSpecifiedColor() : C_EMPTY;
+    if(nextPla == C_EMPTY)
+      nextPla = C_BLACK;
+    Rules rules = Rules::getTrompTaylorish();
+    rules.koRule = Rules::KO_SITUATIONAL;
+    rules.multiStoneSuicideLegal = true;
+    BoardHistory history(board,nextPla,rules,0);
+    NNResultBuf nnResultBuf;
 
-//   //Starts with STATUS_IN_QUEUE.
-//   //Thread that grabs it from queue it changes it to STATUS_POPPED
-//   //Once search is fully started thread sticks in its own thread index
-//   //At any point it may change to STATUS_TERMINATED.
-//   //If it ever gets to STATUS_POPPED or later, then the analysis thread is reponsible for writing the result, else the api thread is
-//   static constexpr int STATUS_IN_QUEUE = -1;
-//   static constexpr int STATUS_POPPED = -2;
-//   static constexpr int STATUS_TERMINATED = -3;
-//   std::atomic<int> status;
-// };
+    for(Move move : moves) {
+      Player pla = move.pla;
+      const auto locStr = Location::toString(move.loc, boardsize.x, boardsize.y);
+      cout << "Player " << PlayerIO::playerToString(move.pla) << " moves at " << locStr << ". ";
+      bool suc = history.makeBoardMoveTolerant(board, move.loc, pla);
+      if(!suc)
+        cerr << "Illegal move " << PlayerIO::playerToString(pla) << " at " << Location::toString(move.loc, boardsize.x, boardsize.y) << "\n";
 
+      // === get raw NN eval and features ===
+      bool skipCache = false;
+      bool isRoot = true;
+      SearchParams searchParams = search.searchParams;
+      MiscNNInputParams nnInputParams;
+      nnInputParams.drawEquivalentWinsForWhite = searchParams.drawEquivalentWinsForWhite;
+      nnInputParams.conservativePassAndIsRoot = searchParams.conservativePass && isRoot;
+      nnInputParams.enablePassingHacks = searchParams.enablePassingHacks;
+      nnInputParams.nnPolicyTemperature = searchParams.nnPolicyTemperature;
+      nnInputParams.avoidMYTDaggerHack = searchParams.avoidMYTDaggerHackPla == pla;
+      nnInputParams.policyOptimism = searchParams.rootPolicyOptimism;
+      if(searchParams.playoutDoublingAdvantage != 0) {
+        Player playoutDoublingAdvantagePla = searchParams.playoutDoublingAdvantagePla == C_EMPTY ? pla : searchParams.playoutDoublingAdvantagePla;
+        nnInputParams.playoutDoublingAdvantage = (
+          getOpp(pla) == playoutDoublingAdvantagePla ? -searchParams.playoutDoublingAdvantage : searchParams.playoutDoublingAdvantage
+        );
+      }
+      if(searchParams.ignorePreRootHistory || searchParams.ignoreAllHistory)
+        nnInputParams.maxHistory = 0;
+      search.nnEvaluator->evaluate(board, history, pla, nnInputParams, nnResultBuf, skipCache, false);
+      assert(nnResultBuf.hasResult);
+      const NNOutput& nnout = *nnResultBuf.result;
+      cout << custom_format("NN output: win=%.2f, loss=%.2f, scoreMean=%.2f, lead=%.2f\n", nnout.whiteWinProb, nnout.whiteLossProb, nnout.whiteScoreMean, nnout.whiteLead);
+      float movePolicy = nnout.policyProbs[nnout.getPos(move.loc, board)];
+      float maxPolicy = *std::max_element(std::begin(nnout.policyProbs), std::end(nnout.policyProbs));
+      cout << custom_format("  policy at %s=%.2f, maxPolicy=%.2f\n", locStr.c_str(), movePolicy, maxPolicy);
+
+      features.push_back(MoveFeatures{nnout.whiteWinProb, nnout.whiteLossProb, nnout.whiteScoreMean, nnout.whiteLead, movePolicy, maxPolicy});
+
+      // === search ===
+
+      // search.setPosition(pla, board, history);
+      // search.runWholeSearch(move.pla, false);
+      // // use search results
+      // Loc chosenLoc = search.getChosenMoveLoc();
+      // const SearchNode* node = search.rootNode;
+      // double sharpScore;
+      // suc = search.getSharpScore(node, sharpScore);
+      // cout << "SharpScore: " << sharpScore << "\n";
+      // vector<AnalysisData> data;
+      // search.getAnalysisData(data, 1, false, 50, false);
+      // cout << "Got " << data.size() << " analysis data. \n";
+
+      // ReportedSearchValues values = search.getRootValuesRequireSuccess();
+
+      // cout << "Root values:\n "
+      //      << "  win:" << values.winValue << "\n"
+      //      << "  loss:" << values.lossValue << "\n"
+      //      << "  noResult:" << values.noResultValue << "\n"
+      //      << "  staticScoreValue:" << values.staticScoreValue << "\n"
+      //      << "  dynamicScoreValue:" << values.dynamicScoreValue << "\n"
+      //      << "  expectedScore:" << values.expectedScore << "\n"
+      //      << "  expectedScoreStdev:" << values.expectedScoreStdev << "\n"
+      //      << "  lead:" << values.lead << "\n"
+      //      << "  winLossValue:" << values.winLossValue << "\n"
+      //      << "  utility:" << values.utility << "\n"
+      //      << "  weight:" << values.weight << "\n"
+      //      << "  visits:" << values.visits << "\n";
+
+      // === EXTRA?? ===
+      // if(printLead) {
+      //   BoardHistory hist2(hist);
+      //   double lead = PlayUtils::computeLead(
+      //     bot->getSearchStopAndWait(), NULL, board, hist2, nextPla,
+      //     20, OtherGameProperties()
+      //   );
+      //   cout << "LEAD: " << lead << endl;
+      // }
+
+      // if(printGraph) {
+      //   std::reverse(nodes.begin(),nodes.end());
+      //   std::map<SearchNode*,size_t> idxOfNode;
+      //   for(size_t nodeIdx = 0; nodeIdx<nodes.size(); nodeIdx++)
+      //     idxOfNode[nodes[nodeIdx]] = nodeIdx;
+
+      //   for(int nodeIdx = 0; nodeIdx<nodes.size(); nodeIdx++) {
+      //     SearchNode& node = *(nodes[nodeIdx]);
+      //     SearchNodeChildrenReference children = node.getChildren();
+      //     int childrenCapacity = children.getCapacity();
+      //     for(int i = 0; i<childrenCapacity; i++) {
+      //       SearchNode* child = children[i].getIfAllocated();
+      //       if(child == NULL)
+      //         break;
+      //       cout << nodeIdx << " -> " << idxOfNode[child] << "\n";
+      //     }
+      //   }
+      //   cout << endl;
+      // }
+
+    }
+
+    // sgf->iterAllPositions(false, false, NULL, analyzePosition);
+}
 
 int MainCmds::strength_analysis(const vector<string>& args) {
   Board::initHash();
@@ -61,6 +172,7 @@ int MainCmds::strength_analysis(const vector<string>& args) {
   Rand seedRand;
 
   ConfigParser cfg;
+  string playerName;
   string modelFile;
   bool numAnalysisThreadsCmdlineSpecified;
   int numAnalysisThreadsCmdline;
@@ -71,6 +183,7 @@ int MainCmds::strength_analysis(const vector<string>& args) {
   cerr << "Hello World from strength analysis!" << endl;
   try {
     cmd.addConfigFileArg("","strength_analysis_example.cfg");
+    TCLAP::ValueArg<string> playerNameArg("","player","Analyze the moves of the player with this name in the SGFs.",false,"","PLAYER_NAME");
     cmd.addModelFileArg();
     cmd.setShortUsageArgLimit();
 //     cmd.addOverrideConfigArg();
@@ -83,6 +196,7 @@ int MainCmds::strength_analysis(const vector<string>& args) {
     cmd.add(sgfFileArg);
     cmd.parseArgs(args);
 
+    playerName = playerNameArg.getValue();
     modelFile = cmd.getModelFile();
     numAnalysisThreadsCmdlineSpecified = numAnalysisThreadsArg.isSet();
     numAnalysisThreadsCmdline = numAnalysisThreadsArg.getValue();
@@ -114,11 +228,6 @@ int MainCmds::strength_analysis(const vector<string>& args) {
   Logger logger(&cfg, logToStdoutDefault, logToStderrDefault);
   const bool logToStderr = logger.isLoggingToStderr();
 
-  for (const string& path: sgfPaths)
-  {
-     cerr << "Evaluate SGF: " << path << endl;
-  }
-
   logger.write("Analysis Engine starting...");
   logger.write(Version::getKataGoVersionForHelp());
   if(!logToStderr) {
@@ -130,17 +239,10 @@ int MainCmds::strength_analysis(const vector<string>& args) {
 //   const bool logErrorsAndWarnings = cfg.contains("logErrorsAndWarnings") ? cfg.getBool("logErrorsAndWarnings") : true;
 //   const bool logSearchInfo = cfg.contains("logSearchInfo") ? cfg.getBool("logSearchInfo") : false;
 
-  auto loadParams = [](ConfigParser& config, SearchParams& params, Player& perspective, Player defaultPerspective) {
-    params = Setup::loadSingleParams(config,Setup::SETUP_FOR_ANALYSIS);
-    perspective = Setup::parseReportAnalysisWinrates(config,defaultPerspective);
-    //Set a default for conservativePass that differs from matches or selfplay
-    if(!config.contains("conservativePass") && !config.contains("conservativePass0"))
-      params.conservativePass = true;
-  };
 
-  SearchParams defaultParams;
+  SearchParams searchParams;
   Player defaultPerspective;
-  loadParams(cfg, defaultParams, defaultPerspective, C_EMPTY);
+  loadParams(cfg, searchParams, defaultPerspective, C_EMPTY);
 
 //   const int analysisPVLen = cfg.contains("analysisPVLen") ? cfg.getInt("analysisPVLen",1,100) : 15;
 //   const bool assumeMultipleStartingBlackMovesAreHandicap =
@@ -150,8 +252,8 @@ int MainCmds::strength_analysis(const vector<string>& args) {
   NNEvaluator* nnEval;
   {
     Setup::initializeSession(cfg);
-    const int maxConcurrentEvals = numAnalysisThreads * defaultParams.numThreads * 2 + 16; // * 2 + 16 just to give plenty of headroom
-    const int expectedConcurrentEvals = numAnalysisThreads * defaultParams.numThreads;
+    const int maxConcurrentEvals = numAnalysisThreads * searchParams.numThreads * 2 + 16; // * 2 + 16 just to give plenty of headroom
+    const int expectedConcurrentEvals = numAnalysisThreads * searchParams.numThreads;
     const bool defaultRequireExactNNLen = false;
     const int defaultMaxBatchSize = -1;
     const bool disableFP16 = false;
@@ -163,22 +265,14 @@ int MainCmds::strength_analysis(const vector<string>& args) {
     );
   }
 
-// #ifndef USE_EIGEN_BACKEND
-//   {
-//     int nnMaxBatchSizeTotal = nnEval->getNumGpus() * nnEval->getMaxBatchSize();
-//     int numThreadsTotal = defaultParams.numThreads * numAnalysisThreads;
-//     if(nnMaxBatchSizeTotal * 1.5 <= numThreadsTotal) {
-//       logger.write(
-//         Global::strprintf(
-//           "Note: nnMaxBatchSize * number of GPUs (%d) is smaller than numSearchThreads * numAnalysisThreads (%d)",
-//           nnMaxBatchSizeTotal, numThreadsTotal
-//         )
-//       );
-//       logger.write("The number of simultaneous threads that might query the GPU could be larger than the batch size that the GPU will handle at once.");
-//       logger.write("It may improve performance to increase nnMaxBatchSize, unless you are constrained on GPU memory.");
-//     }
-//   }
-// #endif
+  vector<Sgf*> sgfs = Sgf::loadFiles(sgfPaths);
+  Search search(searchParams, nnEval, &logger, "");
+  vector<MoveFeatures> features;
+  for (const Sgf* sgf: sgfs)
+  {
+    // playerName.c_str(), 
+    getMoveFeatures(sgf, search, features);
+  }
 
   //Check for unused config keys
   cfg.warnUnusedKeys(cerr,&logger);
@@ -366,7 +460,7 @@ int MainCmds::strength_analysis(const vector<string>& args) {
 //   vector<AsyncBot*> bots;
 //   for(int threadIdx = 0; threadIdx<numAnalysisThreads; threadIdx++) {
 //     string searchRandSeed = Global::uint64ToHexString(seedRand.nextUInt64()) + Global::uint64ToHexString(seedRand.nextUInt64());
-//     AsyncBot* bot = new AsyncBot(defaultParams, nnEval, &logger, searchRandSeed);
+//     AsyncBot* bot = new AsyncBot(searchParams, nnEval, &logger, searchRandSeed);
 //     threads.push_back(std::thread(analysisLoopProtected,bot,threadIdx));
 //     bots.push_back(bot);
 //   }
@@ -516,7 +610,7 @@ int MainCmds::strength_analysis(const vector<string>& args) {
 //       }
 
 //       //Defaults
-//       rbase.params = defaultParams;
+//       rbase.params = searchParams;
 //       rbase.perspective = defaultPerspective;
 //       rbase.analysisPVLen = analysisPVLen;
 //       rbase.includeOwnership = false;
@@ -861,7 +955,7 @@ int MainCmds::strength_analysis(const vector<string>& args) {
 //             localCfg.markAllKeysUsedWithPrefix("");
 //             localCfg.overrideKeys(overrideSettings);
 //             loadParams(localCfg, rbase.params, rbase.perspective, defaultPerspective);
-//             SearchParams::failIfParamsDifferOnUnchangeableParameter(defaultParams,rbase.params);
+//             SearchParams::failIfParamsDifferOnUnchangeableParameter(searchParams,rbase.params);
 //             //Soft failure on unused override keys newly present in the config
 //             vector<string> unusedKeys = localCfg.unusedKeys();
 //             if(unusedKeys.size() > 0) {
@@ -1156,13 +1250,9 @@ int MainCmds::strength_analysis(const vector<string>& args) {
 //   for(int i = 0; i<bots.size(); i++)
 //     delete bots[i];
 
-//   logger.write(nnEval->getModelFileName());
-//   logger.write("NN rows: " + Global::int64ToString(nnEval->numRowsProcessed()));
-//   logger.write("NN batches: " + Global::int64ToString(nnEval->numBatchesProcessed()));
-//   logger.write("NN avg batch size: " + Global::doubleToString(nnEval->averageProcessedBatchSize()));
-//   delete nnEval;
-//   NeuralNet::globalCleanup();
-//   ScoreValue::freeTables();
+  delete nnEval;
+  NeuralNet::globalCleanup();
+  ScoreValue::freeTables();
   logger.write("All cleaned up, quitting");
   return 0;
 }
