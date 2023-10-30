@@ -234,6 +234,7 @@ add_executable(katago
   program/playsettings.cpp
   program/play.cpp
   program/selfplaymanager.cpp
+  program/strengthmodel.cpp
   ${GIT_HEADER_FILE_ALWAYS_UPDATED}
   tests/testboardarea.cpp
   tests/testboardbasic.cpp

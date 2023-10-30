@@ -8,6 +8,7 @@
 #include "../program/setup.h"
 #include "../program/playutils.h"
 #include "../program/play.h"
+#include "../program/strengthmodel.h"
 #include "../command/commandline.h"
 #include "../main.h"
 // #include <format>
@@ -172,6 +173,7 @@ int MainCmds::strength_analysis(const vector<string>& args) {
   Rand seedRand;
 
   ConfigParser cfg;
+  string listFile; // CSV file listing all SGFs to be fed into the rating system
   string playerName;
   string modelFile;
   bool numAnalysisThreadsCmdlineSpecified;
@@ -186,6 +188,8 @@ int MainCmds::strength_analysis(const vector<string>& args) {
     TCLAP::ValueArg<string> playerNameArg("","player","Analyze the moves of the player with this name in the SGFs.",false,"","PLAYER_NAME");
     cmd.addModelFileArg();
     cmd.setShortUsageArgLimit();
+    TCLAP::ValueArg<string> listArg("","list","CSV file listing all SGFs to be fed into the rating system.",false,"","LIST_FILE");
+    cmd.add(listArg);
 //     cmd.addOverrideConfigArg();
 
     TCLAP::ValueArg<int> numAnalysisThreadsArg("","analysis-threads","Analyze up to this many positions in parallel. Equivalent to numAnalysisThreads in the config.",false,0,"THREADS");
@@ -196,6 +200,7 @@ int MainCmds::strength_analysis(const vector<string>& args) {
     cmd.add(sgfFileArg);
     cmd.parseArgs(args);
 
+    listFile = listArg.getValue();
     playerName = playerNameArg.getValue();
     modelFile = cmd.getModelFile();
     numAnalysisThreadsCmdlineSpecified = numAnalysisThreadsArg.isSet();
@@ -264,6 +269,15 @@ int MainCmds::strength_analysis(const vector<string>& args) {
       Setup::SETUP_FOR_ANALYSIS
     );
   }
+
+// list file specified? run rating system
+  if(!listFile.empty()) {
+    StrengthModel strengthModel;
+    RatingSystem ratingSystem(strengthModel);
+    ratingSystem.calculate(listFile, "");
+    return 0; // exit
+  }
+
 
   vector<Sgf*> sgfs = Sgf::loadFiles(sgfPaths);
   Search search(searchParams, nnEval, &logger, "");
