@@ -16,6 +16,8 @@ struct MoveFeatures
   float lead;
   float movePolicy;
   float maxPolicy;
+  float winrateLoss; // compared to previous move
+  float pointsLoss; // compared to previous move
 };
 
 // The strength model uses an additional trained neural network to derive rating from

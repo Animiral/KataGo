@@ -33,87 +33,108 @@ void StrengthModel::getMoveFeatures(const char* sgfPath, vector<MoveFeatures>& b
         throw IOError(string("Failed to open SGF: ") + sgfPath + ".");
     cout << "Evaluate game \"" << sgf->fileName << "\": " << sgf->rootNode.getSingleProperty("PB") << " vs " << sgf->rootNode.getSingleProperty("PW") << "\n";
 
-    cout << "Got " << sgf->moves.size() << " moves in SGF.\n";
+    const auto& moves = sgf->moves;
+    cout << "Got " << moves.size() << " moves in SGF.\n";
     Rules rules = sgf->getRulesOrFailAllowUnspecified(Rules::getTrompTaylorish());
     Board board;
     BoardHistory history;
-    Player pla;
-    sgf->setupInitialBoardAndHist(rules, board, pla, history);
+    Player initialPla;
+    sgf->setupInitialBoardAndHist(rules, board, initialPla, history);
+
     NNResultBuf nnResultBuf;
+    MiscNNInputParams nnInputParams;
+    // evaluate initial board once for initial prev-features
+    search->nnEvaluator->evaluate(board, history, initialPla, nnInputParams, nnResultBuf, false, false);
+    assert(nnResultBuf.hasResult);
+    const NNOutput* nnout = nnResultBuf.result.get();
+    float prevWhiteWinProb = nnout->whiteWinProb;
+    float prevWhiteLossProb = nnout->whiteLossProb;
+    float prevWhiteLead = nnout->whiteLead;
+    float movePolicy = moves.empty() ? 0.f : nnout->policyProbs[nnout->getPos(moves[0].loc, board)];
+    float maxPolicy = *std::max_element(std::begin(nnout->policyProbs), std::end(nnout->policyProbs));
 
-    for(Move move : sgf->moves) {
-      const auto locStr = Location::toString(move.loc, sgf->xSize, sgf->ySize);
-      cout << "Player " << PlayerIO::playerToString(move.pla) << " moves at " << locStr << ". ";
+    for(int turnIdx = 0; turnIdx < moves.size(); turnIdx++) {
+        Move move = moves[turnIdx];
 
-      // === get raw NN eval and features ===
-      bool skipCache = false;
-      bool isRoot = true;
-      SearchParams searchParams = search->searchParams;
-      MiscNNInputParams nnInputParams;
-      nnInputParams.drawEquivalentWinsForWhite = searchParams.drawEquivalentWinsForWhite;
-      nnInputParams.conservativePassAndIsRoot = searchParams.conservativePass && isRoot;
-      nnInputParams.enablePassingHacks = searchParams.enablePassingHacks;
-      nnInputParams.nnPolicyTemperature = searchParams.nnPolicyTemperature;
-      nnInputParams.avoidMYTDaggerHack = searchParams.avoidMYTDaggerHackPla == move.pla;
-      nnInputParams.policyOptimism = searchParams.rootPolicyOptimism;
-      if(searchParams.playoutDoublingAdvantage != 0) {
-        Player playoutDoublingAdvantagePla = searchParams.playoutDoublingAdvantagePla == C_EMPTY ? move.pla : searchParams.playoutDoublingAdvantagePla;
-        nnInputParams.playoutDoublingAdvantage = (
-          getOpp(pla) == playoutDoublingAdvantagePla ? -searchParams.playoutDoublingAdvantage : searchParams.playoutDoublingAdvantage
-        );
-      }
-      if(searchParams.ignorePreRootHistory || searchParams.ignoreAllHistory)
-        nnInputParams.maxHistory = 0;
-      search->nnEvaluator->evaluate(board, history, move.pla, nnInputParams, nnResultBuf, skipCache, false);
-      assert(nnResultBuf.hasResult);
-      const NNOutput& nnout = *nnResultBuf.result;
-      cout << custom_format("NN output: win=%.2f, loss=%.2f, scoreMean=%.2f, lead=%.2f\n", nnout.whiteWinProb, nnout.whiteLossProb, nnout.whiteScoreMean, nnout.whiteLead);
-      float movePolicy = nnout.policyProbs[nnout.getPos(move.loc, board)];
-      float maxPolicy = *std::max_element(std::begin(nnout.policyProbs), std::end(nnout.policyProbs));
-      cout << custom_format("  policy at %s=%.2f, maxPolicy=%.2f\n", locStr.c_str(), movePolicy, maxPolicy);
+        // apply move
+        bool suc = history.makeBoardMoveTolerant(board, move.loc, move.pla);
+        if(!suc) {
+            cerr << "Illegal move " << PlayerIO::playerToString(move.pla) << " at " << Location::toString(move.loc, sgf->xSize, sgf->ySize) << "\n";
+            return;
+        }
 
-      if(P_WHITE == pla) {
-          MoveFeatures mf{nnout.whiteWinProb, nnout.whiteLead, movePolicy, maxPolicy};
-          whiteFeatures.push_back(mf);
-      }
-      else {
-          MoveFeatures mf{nnout.whiteLossProb, -nnout.whiteLead, movePolicy, maxPolicy};
-          blackFeatures.push_back(mf);
-      }
-      // === search ===
+        // === get raw NN eval and features ===
+        search->nnEvaluator->evaluate(board, history, getOpp(move.pla), nnInputParams, nnResultBuf, false, false);
+        assert(nnResultBuf.hasResult);
+        nnout = nnResultBuf.result.get();
 
-      // search.setPosition(pla, board, history);
-      // search.runWholeSearch(move.pla, false);
-      // // use search results
-      // Loc chosenLoc = search.getChosenMoveLoc();
-      // const SearchNode* node = search.rootNode;
-      // double sharpScore;
-      // suc = search.getSharpScore(node, sharpScore);
-      // cout << "SharpScore: " << sharpScore << "\n";
-      // vector<AnalysisData> data;
-      // search.getAnalysisData(data, 1, false, 50, false);
-      // cout << "Got " << data.size() << " analysis data. \n";
+        MoveFeatures mf;
+        if(P_WHITE == move.pla) {
+            mf = MoveFeatures{nnout->whiteWinProb, nnout->whiteLead, movePolicy, maxPolicy,
+                              prevWhiteWinProb-nnout->whiteWinProb, prevWhiteLead-nnout->whiteLead};
+            whiteFeatures.push_back(mf);
+        }
+        else {
+            mf = MoveFeatures{nnout->whiteLossProb, -nnout->whiteLead, movePolicy, maxPolicy,
+                              prevWhiteLossProb-nnout->whiteLossProb, -prevWhiteLead+nnout->whiteLead};
+            blackFeatures.push_back(mf);
+        }
 
-      // ReportedSearchValues values = search.getRootValuesRequireSuccess();
+        // === search ===
 
-      // cout << "Root values:\n "
-      //      << "  win:" << values.winValue << "\n"
-      //      << "  loss:" << values.lossValue << "\n"
-      //      << "  noResult:" << values.noResultValue << "\n"
-      //      << "  staticScoreValue:" << values.staticScoreValue << "\n"
-      //      << "  dynamicScoreValue:" << values.dynamicScoreValue << "\n"
-      //      << "  expectedScore:" << values.expectedScore << "\n"
-      //      << "  expectedScoreStdev:" << values.expectedScoreStdev << "\n"
-      //      << "  lead:" << values.lead << "\n"
-      //      << "  winLossValue:" << values.winLossValue << "\n"
-      //      << "  utility:" << values.utility << "\n"
-      //      << "  weight:" << values.weight << "\n"
-      //      << "  visits:" << values.visits << "\n";
+        // SearchParams searchParams = search->searchParams;
+        // nnInputParams.drawEquivalentWinsForWhite = searchParams.drawEquivalentWinsForWhite;
+        // nnInputParams.conservativePassAndIsRoot = searchParams.conservativePass;
+        // nnInputParams.enablePassingHacks = searchParams.enablePassingHacks;
+        // nnInputParams.nnPolicyTemperature = searchParams.nnPolicyTemperature;
+        // nnInputParams.avoidMYTDaggerHack = searchParams.avoidMYTDaggerHackPla == move.pla;
+        // nnInputParams.policyOptimism = searchParams.rootPolicyOptimism;
+        // if(searchParams.playoutDoublingAdvantage != 0) {
+        //   Player playoutDoublingAdvantagePla = searchParams.playoutDoublingAdvantagePla == C_EMPTY ? move.pla : searchParams.playoutDoublingAdvantagePla;
+        //   nnInputParams.playoutDoublingAdvantage = (
+        //     getOpp(pla) == playoutDoublingAdvantagePla ? -searchParams.playoutDoublingAdvantage : searchParams.playoutDoublingAdvantage
+        //   );
+        // }
+        // if(searchParams.ignorePreRootHistory || searchParams.ignoreAllHistory)
+        //   nnInputParams.maxHistory = 0;
 
-      // apply move
-      bool suc = history.makeBoardMoveTolerant(board, move.loc, move.pla);
-      if(!suc)
-        cerr << "Illegal move " << PlayerIO::playerToString(pla) << " at " << Location::toString(move.loc, sgf->xSize, sgf->ySize) << "\n";
+        // search.setPosition(move.pla, board, history);
+        // search.runWholeSearch(move.pla, false);
+        // // use search results
+        // Loc chosenLoc = search.getChosenMoveLoc();
+        // const SearchNode* node = search.rootNode;
+        // double sharpScore;
+        // suc = search.getSharpScore(node, sharpScore);
+        // cout << "SharpScore: " << sharpScore << "\n";
+        // vector<AnalysisData> data;
+        // search.getAnalysisData(data, 1, false, 50, false);
+        // cout << "Got " << data.size() << " analysis data. \n";
+
+        // ReportedSearchValues values = search.getRootValuesRequireSuccess();
+
+        // cout << "Root values:\n "
+        //      << "  win:" << values.winValue << "\n"
+        //      << "  loss:" << values.lossValue << "\n"
+        //      << "  noResult:" << values.noResultValue << "\n"
+        //      << "  staticScoreValue:" << values.staticScoreValue << "\n"
+        //      << "  dynamicScoreValue:" << values.dynamicScoreValue << "\n"
+        //      << "  expectedScore:" << values.expectedScore << "\n"
+        //      << "  expectedScoreStdev:" << values.expectedScoreStdev << "\n"
+        //      << "  lead:" << values.lead << "\n"
+        //      << "  winLossValue:" << values.winLossValue << "\n"
+        //      << "  utility:" << values.utility << "\n"
+        //      << "  weight:" << values.weight << "\n"
+        //      << "  visits:" << values.visits << "\n";
+
+        prevWhiteWinProb = nnout->whiteWinProb;
+        prevWhiteLossProb = nnout->whiteLossProb;
+        prevWhiteLead = nnout->whiteLead;
+        movePolicy = turnIdx >= moves.size()-1 ? 0.f : nnout->policyProbs[nnout->getPos(moves[turnIdx+1].loc, board)]; // policy of next move
+        maxPolicy = *std::max_element(std::begin(nnout->policyProbs), std::end(nnout->policyProbs));
+
+        cout << custom_format("Player %s moves at %s. Features: ploss=%.2f, vloss=%.2f, lead=%.2f.\n",
+            PlayerIO::playerToString(move.pla).c_str(), Location::toString(move.loc, sgf->xSize, sgf->ySize).c_str(),
+            mf.winrateLoss, mf.pointsLoss, mf.lead);
     }
 }
 
