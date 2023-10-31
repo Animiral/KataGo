@@ -294,7 +294,7 @@ static Rules parseRulesHelper(const string& sOrig, bool allowKomi) {
     rules.komi = 7.5;
   }
   else if(
-    lowercased == "chineseogs" || lowercased == "chinese_ogs" || lowercased == "chinese-ogs" ||
+    lowercased == "chineseogs" || lowercased == "chinese_ogs" || lowercased == "chinese-ogs" || lowercased == "ogs" ||
     lowercased == "chinesekgs" || lowercased == "chinese_kgs" || lowercased == "chinese-kgs"
   ) {
     rules.scoringRule = Rules::SCORING_AREA;

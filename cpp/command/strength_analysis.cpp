@@ -11,160 +11,22 @@
 #include "../program/strengthmodel.h"
 #include "../command/commandline.h"
 #include "../main.h"
+#include <iomanip>
 // #include <format>
-
-// poor man's pre-C++20 format, https://stackoverflow.com/questions/2342162/stdstring-formatting-like-sprintf
-template<typename ... Args>
-std::string custom_format( const std::string& format, Args ... args )
-{
-    int size_s = std::snprintf( nullptr, 0, format.c_str(), args ... ) + 1; // Extra space for '\0'
-    if( size_s <= 0 ){ throw std::runtime_error( "Error during formatting." ); }
-    auto size = static_cast<size_t>( size_s );
-    std::unique_ptr<char[]> buf( new char[ size ] );
-    std::snprintf( buf.get(), size, format.c_str(), args ... );
-    return std::string( buf.get(), buf.get() + size - 1 ); // We don't want the '\0' inside
-}
 
 using namespace std;
 
-struct MoveFeatures
+namespace
 {
-  float whiteWinProb;
-  float whiteLossProb;
-  float whiteScoreMean;
-  float whiteLead;
-  float movePolicy;
-  float maxPolicy;
-};
 
-void loadParams(ConfigParser& config, SearchParams& params, Player& perspective, Player defaultPerspective) {
-  params = Setup::loadSingleParams(config,Setup::SETUP_FOR_ANALYSIS);
-  perspective = Setup::parseReportAnalysisWinrates(config,defaultPerspective);
-  //Set a default for conservativePass that differs from matches or selfplay
-  if(!config.contains("conservativePass") && !config.contains("conservativePass0"))
-    params.conservativePass = true;
-}
+  void loadParams(ConfigParser& config, SearchParams& params, Player& perspective, Player defaultPerspective) {
+    params = Setup::loadSingleParams(config,Setup::SETUP_FOR_ANALYSIS);
+    perspective = Setup::parseReportAnalysisWinrates(config,defaultPerspective);
+    //Set a default for conservativePass that differs from matches or selfplay
+    if(!config.contains("conservativePass") && !config.contains("conservativePass0"))
+      params.conservativePass = true;
+  }
 
-// Analyze SGF and use the strength model to determine the embedded features of every move
-void getMoveFeatures(const Sgf* sgf, Search& search, vector<MoveFeatures>& features)
-{
-    cout << "Evaluate game \"" << sgf->fileName << "\": " << sgf->getPlayerName(P_BLACK) << " vs " << sgf->getPlayerName(P_WHITE) << endl;
-
-    XYSize boardsize = sgf->getXYSize();
-    vector<Move> moves;
-    sgf->getMoves(moves, boardsize.x, boardsize.y);
-
-    cout << "Got " << moves.size() << " moves in SGF.\n";
-    Board board(boardsize.x, boardsize.y);
-    Player nextPla = sgf->nodes.size() > 0 ? sgf->nodes[0]->getPLSpecifiedColor() : C_EMPTY;
-    if(nextPla == C_EMPTY)
-      nextPla = C_BLACK;
-    Rules rules = Rules::getTrompTaylorish();
-    rules.koRule = Rules::KO_SITUATIONAL;
-    rules.multiStoneSuicideLegal = true;
-    BoardHistory history(board,nextPla,rules,0);
-    NNResultBuf nnResultBuf;
-
-    for(Move move : moves) {
-      Player pla = move.pla;
-      const auto locStr = Location::toString(move.loc, boardsize.x, boardsize.y);
-      cout << "Player " << PlayerIO::playerToString(move.pla) << " moves at " << locStr << ". ";
-      bool suc = history.makeBoardMoveTolerant(board, move.loc, pla);
-      if(!suc)
-        cerr << "Illegal move " << PlayerIO::playerToString(pla) << " at " << Location::toString(move.loc, boardsize.x, boardsize.y) << "\n";
-
-      // === get raw NN eval and features ===
-      bool skipCache = false;
-      bool isRoot = true;
-      SearchParams searchParams = search.searchParams;
-      MiscNNInputParams nnInputParams;
-      nnInputParams.drawEquivalentWinsForWhite = searchParams.drawEquivalentWinsForWhite;
-      nnInputParams.conservativePassAndIsRoot = searchParams.conservativePass && isRoot;
-      nnInputParams.enablePassingHacks = searchParams.enablePassingHacks;
-      nnInputParams.nnPolicyTemperature = searchParams.nnPolicyTemperature;
-      nnInputParams.avoidMYTDaggerHack = searchParams.avoidMYTDaggerHackPla == pla;
-      nnInputParams.policyOptimism = searchParams.rootPolicyOptimism;
-      if(searchParams.playoutDoublingAdvantage != 0) {
-        Player playoutDoublingAdvantagePla = searchParams.playoutDoublingAdvantagePla == C_EMPTY ? pla : searchParams.playoutDoublingAdvantagePla;
-        nnInputParams.playoutDoublingAdvantage = (
-          getOpp(pla) == playoutDoublingAdvantagePla ? -searchParams.playoutDoublingAdvantage : searchParams.playoutDoublingAdvantage
-        );
-      }
-      if(searchParams.ignorePreRootHistory || searchParams.ignoreAllHistory)
-        nnInputParams.maxHistory = 0;
-      search.nnEvaluator->evaluate(board, history, pla, nnInputParams, nnResultBuf, skipCache, false);
-      assert(nnResultBuf.hasResult);
-      const NNOutput& nnout = *nnResultBuf.result;
-      cout << custom_format("NN output: win=%.2f, loss=%.2f, scoreMean=%.2f, lead=%.2f\n", nnout.whiteWinProb, nnout.whiteLossProb, nnout.whiteScoreMean, nnout.whiteLead);
-      float movePolicy = nnout.policyProbs[nnout.getPos(move.loc, board)];
-      float maxPolicy = *std::max_element(std::begin(nnout.policyProbs), std::end(nnout.policyProbs));
-      cout << custom_format("  policy at %s=%.2f, maxPolicy=%.2f\n", locStr.c_str(), movePolicy, maxPolicy);
-
-      features.push_back(MoveFeatures{nnout.whiteWinProb, nnout.whiteLossProb, nnout.whiteScoreMean, nnout.whiteLead, movePolicy, maxPolicy});
-
-      // === search ===
-
-      // search.setPosition(pla, board, history);
-      // search.runWholeSearch(move.pla, false);
-      // // use search results
-      // Loc chosenLoc = search.getChosenMoveLoc();
-      // const SearchNode* node = search.rootNode;
-      // double sharpScore;
-      // suc = search.getSharpScore(node, sharpScore);
-      // cout << "SharpScore: " << sharpScore << "\n";
-      // vector<AnalysisData> data;
-      // search.getAnalysisData(data, 1, false, 50, false);
-      // cout << "Got " << data.size() << " analysis data. \n";
-
-      // ReportedSearchValues values = search.getRootValuesRequireSuccess();
-
-      // cout << "Root values:\n "
-      //      << "  win:" << values.winValue << "\n"
-      //      << "  loss:" << values.lossValue << "\n"
-      //      << "  noResult:" << values.noResultValue << "\n"
-      //      << "  staticScoreValue:" << values.staticScoreValue << "\n"
-      //      << "  dynamicScoreValue:" << values.dynamicScoreValue << "\n"
-      //      << "  expectedScore:" << values.expectedScore << "\n"
-      //      << "  expectedScoreStdev:" << values.expectedScoreStdev << "\n"
-      //      << "  lead:" << values.lead << "\n"
-      //      << "  winLossValue:" << values.winLossValue << "\n"
-      //      << "  utility:" << values.utility << "\n"
-      //      << "  weight:" << values.weight << "\n"
-      //      << "  visits:" << values.visits << "\n";
-
-      // === EXTRA?? ===
-      // if(printLead) {
-      //   BoardHistory hist2(hist);
-      //   double lead = PlayUtils::computeLead(
-      //     bot->getSearchStopAndWait(), NULL, board, hist2, nextPla,
-      //     20, OtherGameProperties()
-      //   );
-      //   cout << "LEAD: " << lead << endl;
-      // }
-
-      // if(printGraph) {
-      //   std::reverse(nodes.begin(),nodes.end());
-      //   std::map<SearchNode*,size_t> idxOfNode;
-      //   for(size_t nodeIdx = 0; nodeIdx<nodes.size(); nodeIdx++)
-      //     idxOfNode[nodes[nodeIdx]] = nodeIdx;
-
-      //   for(int nodeIdx = 0; nodeIdx<nodes.size(); nodeIdx++) {
-      //     SearchNode& node = *(nodes[nodeIdx]);
-      //     SearchNodeChildrenReference children = node.getChildren();
-      //     int childrenCapacity = children.getCapacity();
-      //     for(int i = 0; i<childrenCapacity; i++) {
-      //       SearchNode* child = children[i].getIfAllocated();
-      //       if(child == NULL)
-      //         break;
-      //       cout << nodeIdx << " -> " << idxOfNode[child] << "\n";
-      //     }
-      //   }
-      //   cout << endl;
-      // }
-
-    }
-
-    // sgf->iterAllPositions(false, false, NULL, analyzePosition);
 }
 
 int MainCmds::strength_analysis(const vector<string>& args) {
@@ -174,6 +36,7 @@ int MainCmds::strength_analysis(const vector<string>& args) {
 
   ConfigParser cfg;
   string listFile; // CSV file listing all SGFs to be fed into the rating system
+  string outlistFile; // Rating system CSV output file
   string playerName;
   string modelFile;
   bool numAnalysisThreadsCmdlineSpecified;
@@ -190,6 +53,8 @@ int MainCmds::strength_analysis(const vector<string>& args) {
     cmd.setShortUsageArgLimit();
     TCLAP::ValueArg<string> listArg("","list","CSV file listing all SGFs to be fed into the rating system.",false,"","LIST_FILE");
     cmd.add(listArg);
+    TCLAP::ValueArg<string> outlistArg("","outlist","Rating system CSV output file.",false,"","OUTLIST_FILE");
+    cmd.add(outlistArg);
 //     cmd.addOverrideConfigArg();
 
     TCLAP::ValueArg<int> numAnalysisThreadsArg("","analysis-threads","Analyze up to this many positions in parallel. Equivalent to numAnalysisThreads in the config.",false,0,"THREADS");
@@ -201,6 +66,7 @@ int MainCmds::strength_analysis(const vector<string>& args) {
     cmd.parseArgs(args);
 
     listFile = listArg.getValue();
+    outlistFile = outlistArg.getValue();
     playerName = playerNameArg.getValue();
     modelFile = cmd.getModelFile();
     numAnalysisThreadsCmdlineSpecified = numAnalysisThreadsArg.isSet();
@@ -223,15 +89,17 @@ int MainCmds::strength_analysis(const vector<string>& args) {
   if(numAnalysisThreads <= 0 || numAnalysisThreads > 16384)
     throw StringError("Invalid value for numAnalysisThreads: " + Global::intToString(numAnalysisThreads));
 
-//   const bool forDeterministicTesting =
-//     cfg.contains("forDeterministicTesting") ? cfg.getBool("forDeterministicTesting") : false;
-//   if(forDeterministicTesting)
-//     seedRand.init("forDeterministicTesting");
-
   const bool logToStdoutDefault = false;
   const bool logToStderrDefault = true;
   Logger logger(&cfg, logToStdoutDefault, logToStderrDefault);
   const bool logToStderr = logger.isLoggingToStderr();
+
+  //Check for unused config keys
+  cfg.warnUnusedKeys(cerr,&logger);
+
+  logger.write("Loaded config "+ cfg.getFileName());
+  logger.write("Loaded model "+ modelFile);
+  cmd.logOverrides(logger);
 
   logger.write("Analysis Engine starting...");
   logger.write(Version::getKataGoVersionForHelp());
@@ -243,7 +111,6 @@ int MainCmds::strength_analysis(const vector<string>& args) {
 //   const bool logAllResponses = cfg.contains("logAllResponses") ? cfg.getBool("logAllResponses") : false;
 //   const bool logErrorsAndWarnings = cfg.contains("logErrorsAndWarnings") ? cfg.getBool("logErrorsAndWarnings") : true;
 //   const bool logSearchInfo = cfg.contains("logSearchInfo") ? cfg.getBool("logSearchInfo") : false;
-
 
   SearchParams searchParams;
   Player defaultPerspective;
@@ -270,30 +137,25 @@ int MainCmds::strength_analysis(const vector<string>& args) {
     );
   }
 
-// list file specified? run rating system
+  Search search(searchParams, nnEval, &logger, "");
+
+  // list file specified? run rating system
   if(!listFile.empty()) {
-    StrengthModel strengthModel;
+    StrengthModel strengthModel(search);
     RatingSystem ratingSystem(strengthModel);
-    ratingSystem.calculate(listFile, "");
+    ratingSystem.calculate(listFile, outlistFile);
+    cout << std::fixed << std::setprecision(2) << "Rating system successRate=" << ratingSystem.successRate
+                                               << ", successLogp=" << ratingSystem.successLogp << "\n";
     return 0; // exit
   }
 
-
-  vector<Sgf*> sgfs = Sgf::loadFiles(sgfPaths);
-  Search search(searchParams, nnEval, &logger, "");
-  vector<MoveFeatures> features;
-  for (const Sgf* sgf: sgfs)
+  vector<MoveFeatures> blackFeatures;
+  vector<MoveFeatures> whiteFeatures;
+  StrengthModel strengthModel(search);
+  for (const auto& sgfPath: sgfPaths)
   {
-    // playerName.c_str(), 
-    getMoveFeatures(sgf, search, features);
+    strengthModel.getMoveFeatures(sgfPath.c_str(), blackFeatures, whiteFeatures);
   }
-
-  //Check for unused config keys
-  cfg.warnUnusedKeys(cerr,&logger);
-
-  logger.write("Loaded config "+ cfg.getFileName());
-  logger.write("Loaded model "+ modelFile);
-  cmd.logOverrides(logger);
 
 //   ThreadSafeQueue<string*> toWriteQueue;
 //   auto writeLoop = [&toWriteQueue,&logAllResponses,&logger]() {
