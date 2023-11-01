@@ -27,17 +27,24 @@ class StrengthModel
 
 public:
 
-	explicit StrengthModel(Search& search_) noexcept;
+  // cache calculated move features for every sgfPath under featureDir
+  explicit StrengthModel(Search& search_, const char* featureDir_) noexcept;
 
-	// Analyze SGF and use the strength model to determine the embedded features of every move
-	void getMoveFeatures(const char* sgfPath, vector<MoveFeatures>& blackFeatures, vector<MoveFeatures>& whiteFeatures) const;
+  // Analyze SGF and use the strength model to determine the embedded features of every move
+  void getMoveFeatures(const char* sgfPath, vector<MoveFeatures>& blackFeatures, vector<MoveFeatures>& whiteFeatures) const;
 
-	// Predict rating of player given the moves from their games
-	float rating(const vector<MoveFeatures>& features) const;
+  // Predict rating of player given the moves from their games
+  float rating(const vector<MoveFeatures>& features) const;
 
 private:
 
-	Search* search;
+  Search* search;
+  const char* featureDir;
+  static const uint32_t FEATURE_HEADER;
+
+  bool maybeGetMoveFeaturesCached(const char* cachePath, vector<MoveFeatures>& features) const;
+  bool maybeWriteMoveFeaturesCached(const char* cachePath, const MoveFeatures* begin, const MoveFeatures* end) const;
+  void getMoveFeaturesNoCache(const char* sgfPath, vector<MoveFeatures>& blackFeatures, vector<MoveFeatures>& whiteFeatures) const;
 
 };
 
@@ -51,15 +58,16 @@ class RatingSystem
 
 public:
 
-	explicit RatingSystem(StrengthModel& model) noexcept;
-	void calculate(string sgfList, string outFile);
+  explicit RatingSystem(StrengthModel& model) noexcept;
+  // process the SGF list file, store extracted features under featureDir, write processed list to outFile
+  void calculate(string sgfList, string featureDir, string outFile);
 
-	map<string, float> playerRating;
-	float successRate;
-	float successLogp;
+  map<string, float> playerRating;
+  float successRate;
+  float successLogp;
 
 private:
 
-	StrengthModel* strengthModel;
+  StrengthModel* strengthModel;
 
 };

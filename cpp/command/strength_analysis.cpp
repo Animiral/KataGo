@@ -36,8 +36,9 @@ int MainCmds::strength_analysis(const vector<string>& args) {
 
   ConfigParser cfg;
   string listFile; // CSV file listing all SGFs to be fed into the rating system
+  string featureDir;
   string outlistFile; // Rating system CSV output file
-  string playerName;
+  string playerName; // Directory for move feature cache.
   string modelFile;
   bool numAnalysisThreadsCmdlineSpecified;
   int numAnalysisThreadsCmdline;
@@ -53,6 +54,8 @@ int MainCmds::strength_analysis(const vector<string>& args) {
     cmd.setShortUsageArgLimit();
     TCLAP::ValueArg<string> listArg("","list","CSV file listing all SGFs to be fed into the rating system.",false,"","LIST_FILE");
     cmd.add(listArg);
+    TCLAP::ValueArg<string> featureDirArg("","featuredir","Directory for move feature cache.",false,"","FEATURE_DIR");
+    cmd.add(featureDirArg);
     TCLAP::ValueArg<string> outlistArg("","outlist","Rating system CSV output file.",false,"","OUTLIST_FILE");
     cmd.add(outlistArg);
 //     cmd.addOverrideConfigArg();
@@ -66,6 +69,7 @@ int MainCmds::strength_analysis(const vector<string>& args) {
     cmd.parseArgs(args);
 
     listFile = listArg.getValue();
+    featureDir = featureDirArg.getValue();
     outlistFile = outlistArg.getValue();
     playerName = playerNameArg.getValue();
     modelFile = cmd.getModelFile();
@@ -141,9 +145,9 @@ int MainCmds::strength_analysis(const vector<string>& args) {
 
   // list file specified? run rating system
   if(!listFile.empty()) {
-    StrengthModel strengthModel(search);
+    StrengthModel strengthModel(search, featureDir.c_str());
     RatingSystem ratingSystem(strengthModel);
-    ratingSystem.calculate(listFile, outlistFile);
+    ratingSystem.calculate(listFile, featureDir, outlistFile);
     cout << std::fixed << std::setprecision(2) << "Rating system successRate=" << ratingSystem.successRate
                                                << ", successLogp=" << ratingSystem.successLogp << "\n";
     return 0; // exit
@@ -151,7 +155,7 @@ int MainCmds::strength_analysis(const vector<string>& args) {
 
   vector<MoveFeatures> blackFeatures;
   vector<MoveFeatures> whiteFeatures;
-  StrengthModel strengthModel(search);
+  StrengthModel strengthModel(search, featureDir.c_str());
   for (const auto& sgfPath: sgfPaths)
   {
     strengthModel.getMoveFeatures(sgfPath.c_str(), blackFeatures, whiteFeatures);

@@ -26,6 +26,29 @@ bool FileUtils::exists(const string& path) {
   }
 }
 
+std::string FileUtils::dirname(const char* path) noexcept {
+  try {
+    gfs::path gfsPath(gfs::u8path(path));
+    if(!gfs::is_directory(gfsPath))
+      gfsPath = gfsPath.parent_path();
+    return gfsPath;
+  }
+  catch(const gfs::filesystem_error&) {
+    return "";
+  }
+}
+
+bool FileUtils::create_directories(const char* path) noexcept {
+  try {
+    gfs::path gfsPath(gfs::u8path(path));
+    gfs::create_directories(gfsPath);
+    return gfs::is_directory(gfsPath);
+  }
+  catch(const gfs::filesystem_error&) {
+    return false;
+  }
+}
+
 bool FileUtils::tryOpen(ifstream& in, const char* filename, std::ios_base::openmode mode) {
   in.open(gfs::u8path(filename), mode);
   return in.good();
