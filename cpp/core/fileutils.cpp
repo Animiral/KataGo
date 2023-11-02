@@ -26,7 +26,7 @@ bool FileUtils::exists(const string& path) {
   }
 }
 
-std::string FileUtils::dirname(const char* path) noexcept {
+std::string FileUtils::dirname(const std::string& path) noexcept {
   try {
     gfs::path gfsPath(gfs::u8path(path));
     if(!gfs::is_directory(gfsPath))
@@ -38,7 +38,7 @@ std::string FileUtils::dirname(const char* path) noexcept {
   }
 }
 
-bool FileUtils::create_directories(const char* path) noexcept {
+bool FileUtils::create_directories(const std::string& path) noexcept {
   try {
     gfs::path gfsPath(gfs::u8path(path));
     gfs::create_directories(gfsPath);

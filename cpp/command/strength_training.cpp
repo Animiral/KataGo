@@ -26,42 +26,43 @@ namespace
 
 }
 
-int MainCmds::strength_analysis(const vector<string>& args) {
+int MainCmds::strength_training(const vector<string>& args) {
   Board::initHash();
   ScoreValue::initTables();
   Rand seedRand;
 
   ConfigParser cfg;
-  string playerName; // Directory for move feature cache.
+  string listFile; // CSV file listing all SGFs with labels to be fed into the strength training
+  string featureDir;
   string modelFile;
   string strengthModelFile;
   bool numAnalysisThreadsCmdlineSpecified;
   int numAnalysisThreadsCmdline;
-  // bool quitWithoutWaiting;
-  vector<string> sgfPaths;
 
-  KataGoCommandLine cmd("Run strength analysis engine.");
+  KataGoCommandLine cmd("Use labeled games to train the strength model from move features.");
   try {
     cmd.addConfigFileArg("","strength_analysis_example.cfg");
-    TCLAP::ValueArg<string> playerNameArg("","player","Analyze the moves of the player with this name in the SGFs.",false,"","PLAYER_NAME");
     cmd.addModelFileArg();
     TCLAP::ValueArg<string> strengthModelFileArg("","strengthmodel","Neural net strength model file.",true,"","STRENGTH_MODEL_FILE");
     cmd.add(strengthModelFileArg);
     cmd.setShortUsageArgLimit();
+    TCLAP::ValueArg<string> listArg("","list","CSV file listing all SGFs to be trained on.",false,"","LIST_FILE");
+    cmd.add(listArg);
+    TCLAP::ValueArg<string> featureDirArg("","featuredir","Directory for move feature cache.",false,"","FEATURE_DIR");
+    cmd.add(featureDirArg);
     cmd.addOverrideConfigArg();
 
     TCLAP::ValueArg<int> numAnalysisThreadsArg("","analysis-threads","Analyze up to this many positions in parallel. Equivalent to numAnalysisThreads in the config.",false,0,"THREADS");
     cmd.add(numAnalysisThreadsArg);
-    TCLAP::UnlabeledMultiArg<string> sgfFileArg("","Sgf file(s) to analyze",true,string());
-    cmd.add(sgfFileArg);
     cmd.parseArgs(args);
 
-    playerName = playerNameArg.getValue();
+    listFile = listArg.getValue();
+    featureDir = featureDirArg.getValue();
     modelFile = cmd.getModelFile();
     strengthModelFile = strengthModelFileArg.getValue();
     numAnalysisThreadsCmdlineSpecified = numAnalysisThreadsArg.isSet();
     numAnalysisThreadsCmdline = numAnalysisThreadsArg.getValue();
-    sgfPaths = sgfFileArg.getValue();
+    // quitWithoutWaiting = quitWithoutWaitingArg.getValue();
 
     cmd.getConfig(cfg);
   }
@@ -90,7 +91,7 @@ int MainCmds::strength_analysis(const vector<string>& args) {
   logger.write("Loaded model "+ modelFile);
   cmd.logOverrides(logger);
 
-  logger.write("Analysis Engine starting...");
+  logger.write("Strength Training starting...");
   logger.write(Version::getKataGoVersionForHelp());
   if(!logToStderr) {
     cerr << Version::getKataGoVersionForHelp() << endl;
@@ -117,38 +118,9 @@ int MainCmds::strength_analysis(const vector<string>& args) {
   }
 
   Search search(searchParams, nnEval, &logger, "");
+  StrengthModel strengthModel(strengthModelFile, search, featureDir);
 
-  vector<MoveFeatures> playerFeatures;
-  StrengthModel strengthModel(strengthModelFile, search, "");
-  for (const auto& sgfPath: sgfPaths)
-  {
-    auto sgf = std::unique_ptr<Sgf>(Sgf::loadFile(sgfPath));
-    if(NULL == sgf)
-      throw IOError(string("Failed to open SGF: ") + sgfPath + ".");
-    Player p;
-    if(sgf->getPlayerName(P_BLACK) == playerName)
-      p = P_BLACK;
-    else if(sgf->getPlayerName(P_WHITE) == playerName)
-      p = P_WHITE;
-    else {
-      cerr << "Player \"" << playerName << "\" not found in " << sgfPath << ".\n";
-      continue;
-    }
-    GameFeatures features = strengthModel.getGameFeatures(CompactSgf(std::move(*sgf)));
-    if(P_BLACK == p)
-      playerFeatures.insert(playerFeatures.end(), features.blackFeatures.begin(), features.blackFeatures.end());
-    if(P_WHITE == p)
-      playerFeatures.insert(playerFeatures.end(), features.whiteFeatures.begin(), features.whiteFeatures.end());
-  }
-
-  float wloss=0.f, ploss=0.f;
-  for(const auto& mf : playerFeatures) {
-    wloss += mf.winrateLoss;
-    ploss += mf.pointsLoss;
-  }
-  size_t N = playerFeatures.size();
-  cout << "Avg win%% loss: "  << std::fixed << std::setprecision(3) << wloss/N << ", pt loss: " << ploss/N << ".\n";
-  cout << "Rating for " << playerName << ": " << std::fixed << std::setprecision(2) << strengthModel.rating(playerFeatures) << "\n";
+  // TODO: do training based on listFile contents
 
   delete nnEval;
   NeuralNet::globalCleanup();

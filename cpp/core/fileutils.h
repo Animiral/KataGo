@@ -5,9 +5,9 @@
 
 namespace FileUtils {
   bool exists(const std::string& path);
-  std::string dirname(const char* path) noexcept;
+  std::string dirname(const std::string& path) noexcept;
   // Create the directory path, if it does not yet exist. Return true if path is now a directory.
-  bool create_directories(const char* path) noexcept;
+  bool create_directories(const std::string& path) noexcept;
 
   // Returns whether good() is true on the fstream after attempting to call open on it.
   bool tryOpen(std::ifstream& in, const char* filename, std::ios_base::openmode mode = std::ios_base::in);

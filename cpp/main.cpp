@@ -73,6 +73,10 @@ static int handleSubcommand(const string& subcommand, const vector<string>& args
     return MainCmds::analysis(subArgs);
   if(subcommand == "strength_analysis")
     return MainCmds::strength_analysis(subArgs);
+  if(subcommand == "strength_training")
+    return MainCmds::strength_training(subArgs);
+  if(subcommand == "rating_system")
+    return MainCmds::rating_system(subArgs);
   if(subcommand == "benchmark")
     return MainCmds::benchmark(subArgs);
   if(subcommand == "contribute")

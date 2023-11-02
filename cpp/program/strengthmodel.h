@@ -10,14 +10,21 @@ using std::vector;
 using std::map;
 
 // this is what we give as input to the strength model for a single move
-struct MoveFeatures
-{
+struct MoveFeatures {
   float winProb;
   float lead;
   float movePolicy;
   float maxPolicy;
   float winrateLoss; // compared to previous move
   float pointsLoss; // compared to previous move
+};
+
+// all the strength model relevant information extracted from a game
+struct GameFeatures {
+  vector<MoveFeatures> blackFeatures;
+  vector<MoveFeatures> whiteFeatures;
+
+  bool present() const noexcept;
 };
 
 // The strength model uses an additional trained neural network to derive rating from
@@ -28,23 +35,28 @@ class StrengthModel
 public:
 
   // cache calculated move features for every sgfPath under featureDir
-  explicit StrengthModel(Search& search_, const char* featureDir_) noexcept;
+  explicit StrengthModel(const string& strengthModelFile, Search& search_, const string& featureDir_) noexcept;
 
   // Analyze SGF and use the strength model to determine the embedded features of every move
-  void getMoveFeatures(const char* sgfPath, vector<MoveFeatures>& blackFeatures, vector<MoveFeatures>& whiteFeatures) const;
+  GameFeatures getGameFeatures(const string& sgfPath) const;
+  GameFeatures getGameFeatures(const CompactSgf& sgf) const;
 
   // Predict rating of player given the moves from their games
-  float rating(const vector<MoveFeatures>& features) const;
+  float rating(const vector<MoveFeatures>& history) const;
+
+  // Predict winning chances given the moves from their games
+  float whiteWinrate(const vector<MoveFeatures>& whiteHistory, const vector<MoveFeatures>& blackHistory) const;
 
 private:
 
   Search* search;
-  const char* featureDir;
+  string featureDir;
   static const uint32_t FEATURE_HEADER;
 
-  bool maybeGetMoveFeaturesCached(const char* cachePath, vector<MoveFeatures>& features) const;
-  bool maybeWriteMoveFeaturesCached(const char* cachePath, const MoveFeatures* begin, const MoveFeatures* end) const;
-  void getMoveFeaturesNoCache(const char* sgfPath, vector<MoveFeatures>& blackFeatures, vector<MoveFeatures>& whiteFeatures) const;
+  GameFeatures maybeGetGameFeaturesCachedForSgf(const string& sgfPath, string& blackFeaturesPath, string& whiteFeaturesPath) const;
+  vector<MoveFeatures> maybeGetMoveFeaturesCached(const string& cachePath) const;
+  bool maybeWriteMoveFeaturesCached(const string& cachePath, const vector<MoveFeatures>& features) const;
+  GameFeatures extractGameFeatures(const CompactSgf& sgf, const string& blackFeaturesPath, const string& whiteFeaturesPath) const;
 
 };
 
@@ -60,7 +72,7 @@ public:
 
   explicit RatingSystem(StrengthModel& model) noexcept;
   // process the SGF list file, store extracted features under featureDir, write processed list to outFile
-  void calculate(string sgfList, string featureDir, string outFile);
+  void calculate(const string& sgfList, const string& featureDir, const string& outFile);
 
   map<string, float> playerRating;
   float successRate;

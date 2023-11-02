@@ -3,6 +3,8 @@
 namespace MainCmds {
   int analysis(const std::vector<std::string>& args);
   int strength_analysis(const std::vector<std::string>& args);
+  int strength_training(const std::vector<std::string>& args);
+  int rating_system(const std::vector<std::string>& args);
   int benchmark(const std::vector<std::string>& args);
   int contribute(const std::vector<std::string>& args);
   int evalsgf(const std::vector<std::string>& args);

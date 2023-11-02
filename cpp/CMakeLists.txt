@@ -265,6 +265,8 @@ add_executable(katago
   command/commandline.cpp
   command/analysis.cpp
   command/strength_analysis.cpp
+  command/strength_training.cpp
+  command/rating_system.cpp
   command/benchmark.cpp
   command/contribute.cpp
   command/evalsgf.cpp

@@ -23,106 +23,106 @@ std::string custom_format( const std::string& format, Args ... args ) {
   return std::string( buf.get(), buf.get() + size - 1 ); // We don't want the '\0' inside
 }
 
-StrengthModel::StrengthModel(Search& search_, const char* featureDir_) noexcept
-: search(&search_), featureDir(featureDir_) {
-  if(nullptr != featureDir && std::strlen(featureDir) <= 0)
-    featureDir = nullptr;
+bool GameFeatures::present() const noexcept {
+  return !blackFeatures.empty() && !whiteFeatures.empty();
 }
 
-void StrengthModel::getMoveFeatures(const char* sgfPath, vector<MoveFeatures>& blackFeatures, vector<MoveFeatures>& whiteFeatures) const {
-  string blackFeaturesPath, whiteFeaturesPath; // cache files
-  size_t blackBegin = blackFeatures.size();
-  size_t blackEnd = blackBegin;
-  size_t whiteBegin = whiteFeatures.size();
-  size_t whiteEnd = whiteBegin;
-  bool gotCachedFeatures = false;
-  if(nullptr != featureDir) {
-    size_t len = std::strlen(sgfPath);
-    assert(0 == std::strcmp(".sgf", sgfPath + len - 4));
-    string sgfPathWithoutExt(sgfPath, len - 4);
-    blackFeaturesPath = custom_format( "%s/%s_blackFeatures.bin", featureDir, sgfPathWithoutExt.c_str());
-    whiteFeaturesPath = custom_format( "%s/%s_whiteFeatures.bin", featureDir, sgfPathWithoutExt.c_str());
-    bool gotBlackCache = maybeGetMoveFeaturesCached(blackFeaturesPath.c_str(), blackFeatures);
-    bool gotWhiteCache = maybeGetMoveFeaturesCached(whiteFeaturesPath.c_str(), whiteFeatures);
-    gotCachedFeatures = gotBlackCache && gotWhiteCache;
-    if(gotBlackCache ^ gotWhiteCache)
-      cerr << "Incomplete feature cache for " << sgfPath << "\n";
-  }
+StrengthModel::StrengthModel(const string& strengthModelFile, Search& search_, const string& featureDir_) noexcept
+  : search(&search_), featureDir(featureDir_)
+{}
 
-  if(!gotCachedFeatures)
-    getMoveFeaturesNoCache(sgfPath, blackFeatures, whiteFeatures);
-
-  blackEnd = blackFeatures.size();
-  whiteEnd = whiteFeatures.size();
-  float bwloss=0.f, bploss=0.f, wwloss=0.f, wploss=0.f;
-  for(size_t i = blackBegin; i < blackEnd; i++) {
-    bwloss += blackFeatures[i].winrateLoss;
-    bploss += blackFeatures[i].pointsLoss;
-  }
-  for(size_t i = whiteBegin; i < whiteEnd; i++) {
-    wwloss += whiteFeatures[i].winrateLoss;
-    wploss += whiteFeatures[i].pointsLoss;
-  }
-  cout << custom_format("Avg win%% loss: w %.3f, b %.3f; pt loss: w %.3f, b %.3f\n",
-    wwloss/(whiteEnd-whiteBegin), bwloss/(blackEnd-blackBegin), wploss/(whiteEnd-whiteBegin), bploss/(blackEnd-blackBegin));
-
-  if(nullptr != featureDir && !gotCachedFeatures) {
-    bool blackCached = maybeWriteMoveFeaturesCached(blackFeaturesPath.c_str(), blackFeatures.data()+blackBegin, blackFeatures.data()+blackEnd);
-    bool whiteCached = maybeWriteMoveFeaturesCached(whiteFeaturesPath.c_str(), whiteFeatures.data()+whiteBegin, whiteFeatures.data()+whiteEnd);
-    if(!blackCached || !whiteCached)
-      cerr << "Failed to save cached features for " << sgfPath << ".\n";
-  }
+namespace {
+string cachePath(const string& featureDir, const string& sgfPath, Player player) {
+  string sgfPathWithoutExt = Global::chopSuffix(sgfPath, ".sgf");
+  return custom_format("%s/%s_%sFeatures.bin", featureDir.c_str(), sgfPathWithoutExt.c_str(), PlayerIO::playerToString(player).c_str());
+}
 }
 
-bool StrengthModel::maybeGetMoveFeaturesCached(const char* cachePath, vector<MoveFeatures>& features) const {
-  auto cacheFile = std::unique_ptr<std::FILE, decltype(&std::fclose)>(std::fopen(cachePath, "rb"), &std::fclose);
+GameFeatures StrengthModel::getGameFeatures(const string& sgfPath) const {
+  string blackFeaturesPath, whiteFeaturesPath;
+  GameFeatures features = maybeGetGameFeaturesCachedForSgf(sgfPath, blackFeaturesPath, whiteFeaturesPath);
+  if(features.present())
+    return features;
+
+  auto sgf = std::unique_ptr<CompactSgf>(CompactSgf::loadFile(sgfPath));
+  if(NULL == sgf)
+    throw IOError(string("Failed to open SGF: ") + sgfPath + ".");
+  cout << "Evaluate game \"" << sgf->fileName << "\": " << sgf->rootNode.getSingleProperty("PB") << " vs " << sgf->rootNode.getSingleProperty("PW") << "\n";
+
+  return extractGameFeatures(*sgf, blackFeaturesPath, whiteFeaturesPath);
+}
+
+GameFeatures StrengthModel::getGameFeatures(const CompactSgf& sgf) const {
+  string blackFeaturesPath, whiteFeaturesPath;
+  GameFeatures features = maybeGetGameFeaturesCachedForSgf(sgf.fileName, blackFeaturesPath, whiteFeaturesPath);
+  if(features.present())
+    return features;
+
+  return extractGameFeatures(sgf, blackFeaturesPath, whiteFeaturesPath);
+}
+
+GameFeatures StrengthModel::maybeGetGameFeaturesCachedForSgf(const string& sgfPath, string& blackFeaturesPath, string& whiteFeaturesPath) const {
+  GameFeatures features;
+  if(featureDir.empty()) {
+    blackFeaturesPath = whiteFeaturesPath = "";
+    return features;
+  }
+
+  blackFeaturesPath = cachePath(featureDir, sgfPath, P_BLACK);
+  whiteFeaturesPath = cachePath(featureDir, sgfPath, P_WHITE);
+  features.blackFeatures = maybeGetMoveFeaturesCached(blackFeaturesPath);
+  features.whiteFeatures = maybeGetMoveFeaturesCached(whiteFeaturesPath);
+  if(features.blackFeatures.empty() ^ features.whiteFeatures.empty())
+    cerr << "Incomplete feature cache for " << sgfPath << "\n";
+  return features;
+}
+
+vector<MoveFeatures> StrengthModel::maybeGetMoveFeaturesCached(const string& cachePath) const {
+  vector<MoveFeatures> features;
+  auto cacheFile = std::unique_ptr<std::FILE, decltype(&std::fclose)>(std::fopen(cachePath.c_str(), "rb"), &std::fclose);
   if(nullptr == cacheFile)
-    return false;
+    return features;
   uint32_t header; // must match
   size_t readcount = std::fread(&header, 4, 1, cacheFile.get());
   if(1 != readcount || FEATURE_HEADER != header)
-    return false;
+    return features;
   while(!std::feof(cacheFile.get())) {
     MoveFeatures mf;
     readcount = std::fread(&mf, sizeof(MoveFeatures), 1, cacheFile.get());
     if(1 == readcount)
       features.push_back(mf);
   }
-  return true;
+  return features;
 }
 
-bool StrengthModel::maybeWriteMoveFeaturesCached(const char* cachePath, const MoveFeatures* begin, const MoveFeatures* end) const {
-  if(nullptr == begin || nullptr == end)
+bool StrengthModel::maybeWriteMoveFeaturesCached(const string& cachePath, const vector<MoveFeatures>& features) const {
+  if(featureDir.empty() || features.empty())
     return false;
   string cacheDir = FileUtils::dirname(cachePath);
-  if(!FileUtils::create_directories(cacheDir.c_str()))
+  if(!FileUtils::create_directories(cacheDir))
     return false;
-  auto cacheFile = std::unique_ptr<std::FILE, decltype(&std::fclose)>(std::fopen(cachePath, "wb"), &std::fclose);
+  auto cacheFile = std::unique_ptr<std::FILE, decltype(&std::fclose)>(std::fopen(cachePath.c_str(), "wb"), &std::fclose);
   if(nullptr == cacheFile)
     return false;
   size_t writecount = std::fwrite(&FEATURE_HEADER, 4, 1, cacheFile.get());
   if(1 != writecount)
     return false;
-  writecount = std::fwrite(begin, sizeof(MoveFeatures), end-begin, cacheFile.get());
-  if(end-begin != writecount)
+  writecount = std::fwrite(features.data(), sizeof(MoveFeatures), features.size(), cacheFile.get());
+  if(features.size() != writecount)
     return false;
   if(0 != std::fclose(cacheFile.release()))
     return false;
   return true;
 }
 
-void StrengthModel::getMoveFeaturesNoCache(const char* sgfPath, vector<MoveFeatures>& blackFeatures, vector<MoveFeatures>& whiteFeatures) const {
-  auto sgf = std::unique_ptr<CompactSgf>(CompactSgf::loadFile(sgfPath));
-  if(NULL == sgf)
-    throw IOError(string("Failed to open SGF: ") + sgfPath + ".");
-  cout << "Evaluate game \"" << sgf->fileName << "\": " << sgf->rootNode.getSingleProperty("PB") << " vs " << sgf->rootNode.getSingleProperty("PW") << "\n";
-
-  const auto& moves = sgf->moves;
-  Rules rules = sgf->getRulesOrFailAllowUnspecified(Rules::getTrompTaylorish());
+GameFeatures StrengthModel::extractGameFeatures(const CompactSgf& sgf, const string& blackFeaturesPath, const string& whiteFeaturesPath) const {
+  GameFeatures features;
+  const auto& moves = sgf.moves;
+  Rules rules = sgf.getRulesOrFailAllowUnspecified(Rules::getTrompTaylorish());
   Board board;
   BoardHistory history;
   Player initialPla;
-  sgf->setupInitialBoardAndHist(rules, board, initialPla, history);
+  sgf.setupInitialBoardAndHist(rules, board, initialPla, history);
 
   NNResultBuf nnResultBuf;
   MiscNNInputParams nnInputParams;
@@ -142,8 +142,8 @@ void StrengthModel::getMoveFeaturesNoCache(const char* sgfPath, vector<MoveFeatu
     // apply move
     bool suc = history.makeBoardMoveTolerant(board, move.loc, move.pla);
     if(!suc) {
-      cerr << "Illegal move " << PlayerIO::playerToString(move.pla) << " at " << Location::toString(move.loc, sgf->xSize, sgf->ySize) << "\n";
-      return;
+      cerr << "Illegal move " << PlayerIO::playerToString(move.pla) << " at " << Location::toString(move.loc, sgf.xSize, sgf.ySize) << "\n";
+      return {};
     }
 
     // === get raw NN eval and features ===
@@ -151,16 +151,17 @@ void StrengthModel::getMoveFeaturesNoCache(const char* sgfPath, vector<MoveFeatu
     assert(nnResultBuf.hasResult);
     nnout = nnResultBuf.result.get();
 
-    MoveFeatures mf;
     if(P_WHITE == move.pla) {
-      mf = MoveFeatures{nnout->whiteWinProb, nnout->whiteLead, movePolicy, maxPolicy,
-                        prevWhiteWinProb-nnout->whiteWinProb, prevWhiteLead-nnout->whiteLead};
-      whiteFeatures.push_back(mf);
+      features.whiteFeatures.push_back({
+        nnout->whiteWinProb, nnout->whiteLead, movePolicy, maxPolicy,
+        prevWhiteWinProb-nnout->whiteWinProb, prevWhiteLead-nnout->whiteLead
+      });
     }
     else {
-      mf = MoveFeatures{nnout->whiteLossProb, -nnout->whiteLead, movePolicy, maxPolicy,
-                        prevWhiteLossProb-nnout->whiteLossProb, -prevWhiteLead+nnout->whiteLead};
-      blackFeatures.push_back(mf);
+      features.blackFeatures.push_back({
+        nnout->whiteLossProb, -nnout->whiteLead, movePolicy, maxPolicy,
+        prevWhiteLossProb-nnout->whiteLossProb, -prevWhiteLead+nnout->whiteLead
+      });
     }
 
     // === search ===
@@ -214,18 +215,71 @@ void StrengthModel::getMoveFeaturesNoCache(const char* sgfPath, vector<MoveFeatu
     prevWhiteLead = nnout->whiteLead;
     movePolicy = turnIdx >= moves.size()-1 ? 0.f : nnout->policyProbs[nnout->getPos(moves[turnIdx+1].loc, board)]; // policy of next move
     maxPolicy = *std::max_element(std::begin(nnout->policyProbs), std::end(nnout->policyProbs));
-
-    cout << custom_format("Player %s moves at %s. Features: ploss=%.2f, vloss=%.2f, lead=%.2f.\n",
-      PlayerIO::playerToString(move.pla).c_str(), Location::toString(move.loc, sgf->xSize, sgf->ySize).c_str(),
-      mf.winrateLoss, mf.pointsLoss, mf.lead);
   }
+
+  // save to cache
+  bool blackCached = maybeWriteMoveFeaturesCached(blackFeaturesPath, features.blackFeatures);
+  bool whiteCached = maybeWriteMoveFeaturesCached(whiteFeaturesPath, features.whiteFeatures);
+  if(!blackCached || !whiteCached)
+    cerr << "Failed to save cached features for " << sgf.fileName << ".\n";
+
+  return features;
 }
 
-float StrengthModel::rating(const vector<MoveFeatures>& features) const {
-  float winProbSum = 0;
-  for(auto mf : features)
-    winProbSum += mf.winProb;
-  return winProbSum / features.size();
+namespace {
+
+float fSum(float a[], size_t N) noexcept {  // sum with slightly better numerical stability
+  if(N <= 0)
+    return 0;
+  for(size_t step = 1; step < N; step *= 2) {
+    for(size_t i = 0; i+step < N; i += 2*step)
+      a[i] += a[i+step];
+  }
+  return a[0];
+}
+
+float fAvg(float a[], size_t N) noexcept {
+  return fSum(a, N) / N;
+}
+
+float fVar(float a[], size_t N, float avg) noexcept { // corrected variance
+  for(size_t i = 0; i < N; i++)
+    a[i] = (a[i]-avg)*(a[i]-avg);
+  return fSum(a, N) / (N-1);
+}
+
+float normcdf(float x) noexcept {
+  return .5f * (1.f + std::erf(x / std::sqrt(2.f)));
+}
+
+void copyPloss(float a[], const vector<MoveFeatures>& m, size_t N) noexcept {
+  for(size_t i = 0; i < N; i++)
+    a[i] = m[i + m.size() - N].pointsLoss;
+}
+
+}
+
+float StrengthModel::rating(const vector<MoveFeatures>& history) const {
+  vector<float> ploss(history.size());
+  for(size_t i = 0; i < history.size(); i++)
+    ploss[i] = history[i].pointsLoss;
+  return 20.f - fAvg(ploss.data(), ploss.size());
+}
+
+float StrengthModel::whiteWinrate(const vector<MoveFeatures>& whiteHistory, const vector<MoveFeatures>& blackHistory) const {
+  constexpr float gamelength = 100; // assume 100 moves per player for an average game
+  constexpr size_t window = 1000; // only sample the most recent moves
+  const size_t wN = std::min(whiteHistory.size(), window);
+  const size_t bN = std::min(blackHistory.size(), window);
+  vector<float> buffer(window);
+  copyPloss(buffer.data(), whiteHistory, wN);
+  float wplavg = fAvg(vector<float>(buffer).data(), wN) * gamelength;  // average white points loss
+  float wplvar = fVar(buffer.data(), wN, wplavg) * gamelength;  // variance of white points loss
+  copyPloss(buffer.data(), blackHistory, bN);
+  float bplavg = fAvg(vector<float>(buffer).data(), bN) * gamelength;  // average black points loss
+  float bplvar = fVar(buffer.data(), bN, bplavg) * gamelength;  // variance of black points loss
+  float wstdadv = (bplavg - wplavg) / std::sqrt(bplvar + wplvar); // white pt advantage in standard normal distribution at move# [2*gamelength]
+  return normcdf(wstdadv);
 }
 
 const uint32_t StrengthModel::FEATURE_HEADER = 0xfea70235;
@@ -234,7 +288,7 @@ RatingSystem::RatingSystem(StrengthModel& model) noexcept
 : strengthModel(&model) {
 }
 
-void RatingSystem::calculate(string sgfList, string featureDir, string outFile) {
+void RatingSystem::calculate(const string& sgfList, const string& featureDir, const string& outFile) {
   map< string, vector<MoveFeatures> > playerHistory;
   int successCount = 0;
   int sgfCount = 0;
@@ -261,24 +315,33 @@ void RatingSystem::calculate(string sgfList, string featureDir, string outFile) 
     std::string whiteName; std::getline(iss, whiteName, ',');
     std::string blackName; std::getline(iss, blackName, ',');
     std::string winner; std::getline(iss, winner, ','), std::getline(iss, winner); // skip one field for real winner
+    winner = Global::toLower(Global::trim(winner));
     std::cout << blackName << " vs " << whiteName << ": " << winner << "\n";
 
     // determine winner and count
     float blackRating = playerRating[blackName] = strengthModel->rating(playerHistory[blackName]);
     float whiteRating = playerRating[whiteName] = strengthModel->rating(playerHistory[whiteName]);
+    float whiteWinrate = strengthModel->whiteWinrate(playerHistory[whiteName], playerHistory[blackName]);
     // // get winner by higher rating
-    if(winner[0] == 'B' && blackRating > whiteRating) successCount++;
-    if(winner[0] == 'W' && whiteRating > blackRating) successCount++;
+    float z = .5f; // result representation
+    if(Global::isPrefix(winner,"b+") || Global::isPrefix(winner,"black+")) z = 0.f;
+    if(Global::isPrefix(winner,"w+") || Global::isPrefix(winner,"white+")) z = 1.f;
+    float winnerPred = std::abs(1.f - z - whiteWinrate);
+    if(winnerPred > .5f)
+      successCount++;
+    logp += std::log(winnerPred);
     sgfCount++;
 
     // expand player histories with new move features
-    strengthModel->getMoveFeatures(sgfPath.c_str(), playerHistory[blackName], playerHistory[whiteName]);
+    GameFeatures features = strengthModel->getGameFeatures(sgfPath);
+    playerHistory[blackName].insert(playerHistory[blackName].end(), features.blackFeatures.begin(), features.blackFeatures.end());
+    playerHistory[whiteName].insert(playerHistory[whiteName].end(), features.whiteFeatures.begin(), features.whiteFeatures.end());
 
     // file output
     size_t bufsize = sgfPath.size() + whiteName.size() + blackName.size() + winner.size() + 100;
     std::unique_ptr<char[]> buffer( new char[ bufsize ] );
     int printed = std::snprintf(buffer.get(), bufsize, "%s,%s,%s,%s,%.2f,%.2f,%.2f\n",
-      sgfPath.c_str(), whiteName.c_str(), blackName.c_str(), winner.c_str(), .5f + (whiteRating - blackRating)/2, blackRating, whiteRating);
+      sgfPath.c_str(), whiteName.c_str(), blackName.c_str(), winner.c_str(), whiteWinrate, blackRating, whiteRating);
     if(printed <= 0)
       throw IOError( "Error during formatting." );
     ostrm << buffer.get();
