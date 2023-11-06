@@ -92,6 +92,11 @@ class Rand
   uint64_t nextUInt64();
   //Returns a random integer in [0,n)
   uint64_t nextUInt64(uint64_t n);
+  // compatibility with STL
+  using result_type=uint64_t;
+  static constexpr uint64_t min() noexcept;
+  static constexpr uint64_t max() noexcept;
+  uint64_t operator()() noexcept;
 
   //BOOL------------------------------------------------
   //Returns true with probability prob
@@ -183,6 +188,20 @@ inline uint64_t Rand::nextUInt64(uint64_t n)
     val = bits % n;
   } while((uint64_t)(bits - val + (n-1)) < (uint64_t)(bits - val)); //If adding (n-1) overflows, no good.
   return val;
+}
+
+constexpr uint64_t Rand::min() noexcept
+{
+  return 0;
+}
+
+constexpr uint64_t Rand::max() noexcept
+{
+  return 0xFFFFFFFFFFFFFFFFull;
+}
+
+inline uint64_t Rand::operator()() noexcept {
+  return nextUInt64();
 }
 
 inline uint32_t Rand::nextUInt(const int* freq, size_t n)

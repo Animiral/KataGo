@@ -1,23 +1,30 @@
+#ifndef PROGRAM_STRENGTHMODEL_H_
+#define PROGRAM_STRENGTHMODEL_H_
+
 #include <string>
 #include <vector>
 #include <map>
 #include <filesystem>
+#include "neuralnet/strengthnet.h"
 #include "search/search.h"
 #include "dataio/sgf.h"
 
 using std::string;
 using std::vector;
+using std::pair;
 using std::map;
 
-// this is what we give as input to the strength model for a single move
-struct MoveFeatures {
-  float winProb;
-  float lead;
-  float movePolicy;
-  float maxPolicy;
-  float winrateLoss; // compared to previous move
-  float pointsLoss; // compared to previous move
+// data on one game from the dataset list file
+struct GameMeta {
+  std::string sgfPath;
+  std::string whiteName;
+  std::string blackName;
+  std::string whiteLabel;
+  std::string blackLabel;
+  std::string winner;
 };
+
+using Dataset = vector<GameMeta>;
 
 // all the strength model relevant information extracted from a game
 struct GameFeatures {
@@ -27,6 +34,8 @@ struct GameFeatures {
   bool present() const noexcept;
 };
 
+using FeaturesAndTargets = vector<pair<StrengthNet::Input, StrengthNet::Output> >;
+
 // The strength model uses an additional trained neural network to derive rating from
 // given player history.
 class StrengthModel
@@ -35,11 +44,17 @@ class StrengthModel
 public:
 
   // cache calculated move features for every sgfPath under featureDir
-  explicit StrengthModel(const string& strengthModelFile, Search& search_, const string& featureDir_) noexcept;
+  explicit StrengthModel(const string& strengthModelFile_, Search& search_, const string& featureDir_) noexcept;
 
   // Analyze SGF and use the strength model to determine the embedded features of every move
   GameFeatures getGameFeatures(const string& sgfPath) const;
   GameFeatures getGameFeatures(const CompactSgf& sgf) const;
+  // get dataset from a list file
+  static Dataset loadDataset(const string& path);
+  FeaturesAndTargets getFeaturesAndTargets(const Dataset& dataset) const;
+
+  // training loop, save result to file
+  void train(const FeaturesAndTargets& xy, size_t split, int epochs, float learnrate);
 
   // Predict rating of player given the moves from their games
   float rating(const vector<MoveFeatures>& history) const;
@@ -49,6 +64,8 @@ public:
 
 private:
 
+  string strengthModelFile;
+  StrengthNet net;
   Search* search;
   string featureDir;
   static const uint32_t FEATURE_HEADER;
@@ -72,7 +89,7 @@ public:
 
   explicit RatingSystem(StrengthModel& model) noexcept;
   // process the SGF list file, store extracted features under featureDir, write processed list to outFile
-  void calculate(const string& sgfList, const string& featureDir, const string& outFile);
+  void calculate(const string& sgfList, const string& outFile);
 
   map<string, float> playerRating;
   float successRate;
@@ -83,3 +100,5 @@ private:
   StrengthModel* strengthModel;
 
 };
+
+#endif  // PROGRAM_STRENGTHMODEL_H_

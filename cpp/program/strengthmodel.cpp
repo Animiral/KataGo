@@ -2,6 +2,7 @@
 #include "core/global.h"
 #include "core/fileutils.h"
 #include <iostream>
+#include <iomanip>
 #include <fstream>
 #include <sstream>
 #include <cstring>
@@ -27,9 +28,15 @@ bool GameFeatures::present() const noexcept {
   return !blackFeatures.empty() && !whiteFeatures.empty();
 }
 
-StrengthModel::StrengthModel(const string& strengthModelFile, Search& search_, const string& featureDir_) noexcept
-  : search(&search_), featureDir(featureDir_)
-{}
+StrengthModel::StrengthModel(const string& strengthModelFile_, Search& search_, const string& featureDir_) noexcept
+  : strengthModelFile(strengthModelFile_), net(), search(&search_), featureDir(featureDir_)
+{
+  if(!net.loadModelFile(strengthModelFile)) {
+    cerr << "Could not load existing strength model from " << strengthModelFile << ". Random-initializing new strength model.\n";
+    Rand rand; // TODO: allow seeding from outside StrengthModel
+    net.randomInit(rand);
+  }
+}
 
 namespace {
 string cachePath(const string& featureDir, const string& sgfPath, Player player) {
@@ -59,6 +66,86 @@ GameFeatures StrengthModel::getGameFeatures(const CompactSgf& sgf) const {
     return features;
 
   return extractGameFeatures(sgf, blackFeaturesPath, whiteFeaturesPath);
+}
+
+Dataset StrengthModel::loadDataset(const string& path) {
+  std::ifstream istrm(path);
+  if (!istrm.is_open())
+    throw IOError("Could not read dataset from " + path);
+
+  std::string line;
+  std::getline(istrm, line);
+  if(!istrm)
+    throw IOError("Could not read header line from " + path);
+
+  // map known fieldnames to row indexes, wherever they may be
+  vector<string GameMeta::*> fields;
+  std::string field;
+  while(std::getline(istrm, field, ',')) {
+    if("File" == field) fields.push_back(&GameMeta::sgfPath);
+    else if("Player White" == field) fields.push_back(&GameMeta::whiteName);
+    else if("Player Black" == field) fields.push_back(&GameMeta::blackName);
+    else if("WhiteLabel" == field) fields.push_back(&GameMeta::whiteLabel);
+    else if("BlackLabel" == field) fields.push_back(&GameMeta::blackLabel);
+    else if("Winner" == field || "Judgement" == field) fields.push_back(&GameMeta::winner);
+    else fields.push_back(nullptr);
+  }
+
+  Dataset dataset;
+
+  while (std::getline(istrm, line)) {
+    GameMeta gm;
+    std::istringstream iss(line);
+    int fieldIndex = 0;
+    while(std::getline(iss, field, ',')) {
+      if(nullptr != fields[fieldIndex])
+        gm.*fields[fieldIndex] = field;
+    }
+    // std::string sgfPath; std::getline(iss, sgfPath, ',');
+    // std::string whiteName; std::getline(iss, whiteName, ',');
+    // std::string blackName; std::getline(iss, blackName, ',');
+    // std::string winner; std::getline(iss, winner, ','), std::getline(iss, winner); // skip one field for real winner
+    if(!istrm)
+      throw IOError("Error while reading from " + path);
+    gm.winner = Global::toLower(Global::trim(gm.winner));
+    dataset.push_back(gm);
+    // dataset.push_back(GameMeta{sgfPath, whiteName, blackName, winner});
+  }
+
+  istrm.close();
+  return dataset;
+}
+
+FeaturesAndTargets StrengthModel::getFeaturesAndTargets(const Dataset& dataset) const {
+  FeaturesAndTargets featuresTargets;
+  for(const GameMeta& gm : dataset) {
+    GameFeatures features = getGameFeatures(gm.sgfPath);
+    StrengthNet::Output blackTarget = Global::stringToFloat(gm.blackLabel);
+    StrengthNet::Output whiteTarget = Global::stringToFloat(gm.whiteLabel);
+    featuresTargets.emplace_back(features.blackFeatures, blackTarget);
+    featuresTargets.emplace_back(features.whiteFeatures, whiteTarget);
+  }
+  return featuresTargets;
+}
+
+void StrengthModel::train(const FeaturesAndTargets& xy, size_t split, int epochs, float learnrate) {
+  assert(split <= xy.size());
+  for(int e = 0; e < epochs; e++) {
+    // train weights
+    for(int i = 0; i < split; i++) {
+      StrengthNet::Output y_hat = net.forward(xy[i].first);
+      net.backward(y_hat, xy[i].second, learnrate);
+    }
+    // test epoch result
+    float mse = 0;
+    for(int i = split; i < xy.size(); i++) {
+      StrengthNet::Output y_hat = net.forward(xy[i].first);
+      mse += (y_hat - xy[i].second) * (y_hat - xy[i].second);
+    }
+    mse /= xy.size() - split;
+    cout << "Epoch " << e << ": mse=" << std::fixed << std::setprecision(3) << mse << "\n";
+  }
+  net.saveModelFile(strengthModelFile);
 }
 
 GameFeatures StrengthModel::maybeGetGameFeaturesCachedForSgf(const string& sgfPath, string& blackFeaturesPath, string& whiteFeaturesPath) const {
@@ -288,20 +375,12 @@ RatingSystem::RatingSystem(StrengthModel& model) noexcept
 : strengthModel(&model) {
 }
 
-void RatingSystem::calculate(const string& sgfList, const string& featureDir, const string& outFile) {
+void RatingSystem::calculate(const string& sgfList, const string& outFile) {
+  Dataset dataset = strengthModel->loadDataset(sgfList);
   map< string, vector<MoveFeatures> > playerHistory;
   int successCount = 0;
   int sgfCount = 0;
   float logp = 0;
-
-  std::ifstream istrm(sgfList);
-  if (!istrm.is_open())
-    throw IOError("Could not read SGF list from " + sgfList);
-
-  std::string line;
-  std::getline(istrm, line); // ignore first line
-  if(!istrm)
-    throw IOError("Could not read header line from " + sgfList);
 
   std::ofstream ostrm(outFile);
   if (!ostrm.is_open())
@@ -309,23 +388,16 @@ void RatingSystem::calculate(const string& sgfList, const string& featureDir, co
 
   ostrm << "File,Player White,Player Black,Winner,WhiteWinrate,BlackRating,WhiteRating\n"; // header
 
-  while (std::getline(istrm, line)) {
-    std::istringstream iss(line);
-    std::string sgfPath; std::getline(iss, sgfPath, ',');
-    std::string whiteName; std::getline(iss, whiteName, ',');
-    std::string blackName; std::getline(iss, blackName, ',');
-    std::string winner; std::getline(iss, winner, ','), std::getline(iss, winner); // skip one field for real winner
-    winner = Global::toLower(Global::trim(winner));
-    std::cout << blackName << " vs " << whiteName << ": " << winner << "\n";
+  for(const GameMeta& gm : dataset) {
+    std::cout << gm.blackName << " vs " << gm.whiteName << ": " << gm.winner << "\n";
 
     // determine winner and count
-    float blackRating = playerRating[blackName] = strengthModel->rating(playerHistory[blackName]);
-    float whiteRating = playerRating[whiteName] = strengthModel->rating(playerHistory[whiteName]);
-    float whiteWinrate = strengthModel->whiteWinrate(playerHistory[whiteName], playerHistory[blackName]);
-    // // get winner by higher rating
+    float blackRating = playerRating[gm.blackName] = strengthModel->rating(playerHistory[gm.blackName]);
+    float whiteRating = playerRating[gm.whiteName] = strengthModel->rating(playerHistory[gm.whiteName]);
+    float whiteWinrate = strengthModel->whiteWinrate(playerHistory[gm.whiteName], playerHistory[gm.blackName]);
     float z = .5f; // result representation
-    if(Global::isPrefix(winner,"b+") || Global::isPrefix(winner,"black+")) z = 0.f;
-    if(Global::isPrefix(winner,"w+") || Global::isPrefix(winner,"white+")) z = 1.f;
+    if(Global::isPrefix(gm.winner,"b+") || Global::isPrefix(gm.winner,"black+")) z = 0.f;
+    if(Global::isPrefix(gm.winner,"w+") || Global::isPrefix(gm.winner,"white+")) z = 1.f;
     float winnerPred = std::abs(1.f - z - whiteWinrate);
     if(winnerPred > .5f)
       successCount++;
@@ -333,22 +405,21 @@ void RatingSystem::calculate(const string& sgfList, const string& featureDir, co
     sgfCount++;
 
     // expand player histories with new move features
-    GameFeatures features = strengthModel->getGameFeatures(sgfPath);
-    playerHistory[blackName].insert(playerHistory[blackName].end(), features.blackFeatures.begin(), features.blackFeatures.end());
-    playerHistory[whiteName].insert(playerHistory[whiteName].end(), features.whiteFeatures.begin(), features.whiteFeatures.end());
+    GameFeatures features = strengthModel->getGameFeatures(gm.sgfPath);
+    playerHistory[gm.blackName].insert(playerHistory[gm.blackName].end(), features.blackFeatures.begin(), features.blackFeatures.end());
+    playerHistory[gm.whiteName].insert(playerHistory[gm.whiteName].end(), features.whiteFeatures.begin(), features.whiteFeatures.end());
 
     // file output
-    size_t bufsize = sgfPath.size() + whiteName.size() + blackName.size() + winner.size() + 100;
+    size_t bufsize = gm.sgfPath.size() + gm.whiteName.size() + gm.blackName.size() + gm.winner.size() + 100;
     std::unique_ptr<char[]> buffer( new char[ bufsize ] );
     int printed = std::snprintf(buffer.get(), bufsize, "%s,%s,%s,%s,%.2f,%.2f,%.2f\n",
-      sgfPath.c_str(), whiteName.c_str(), blackName.c_str(), winner.c_str(), whiteWinrate, blackRating, whiteRating);
+      gm.sgfPath.c_str(), gm.whiteName.c_str(), gm.blackName.c_str(), gm.winner.c_str(), whiteWinrate, blackRating, whiteRating);
     if(printed <= 0)
       throw IOError( "Error during formatting." );
     ostrm << buffer.get();
   }
 
   ostrm.close();
-  istrm.close();
 
   successRate = float(successCount) / sgfCount;
   successLogp = logp;

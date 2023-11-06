@@ -13,16 +13,15 @@
 
 using namespace std;
 
-namespace
-{
+namespace {
 
-  void loadParams(ConfigParser& config, SearchParams& params, Player& perspective, Player defaultPerspective) {
-    params = Setup::loadSingleParams(config,Setup::SETUP_FOR_ANALYSIS);
-    perspective = Setup::parseReportAnalysisWinrates(config,defaultPerspective);
-    //Set a default for conservativePass that differs from matches or selfplay
-    if(!config.contains("conservativePass") && !config.contains("conservativePass0"))
-      params.conservativePass = true;
-  }
+void loadParams(ConfigParser& config, SearchParams& params, Player& perspective, Player defaultPerspective) {
+  params = Setup::loadSingleParams(config,Setup::SETUP_FOR_ANALYSIS);
+  perspective = Setup::parseReportAnalysisWinrates(config,defaultPerspective);
+  //Set a default for conservativePass that differs from matches or selfplay
+  if(!config.contains("conservativePass") && !config.contains("conservativePass0"))
+    params.conservativePass = true;
+}
 
 }
 
@@ -117,10 +116,17 @@ int MainCmds::strength_training(const vector<string>& args) {
     );
   }
 
-  Search search(searchParams, nnEval, &logger, "");
-  StrengthModel strengthModel(strengthModelFile, search, featureDir);
-
-  // TODO: do training based on listFile contents
+  { // main training
+    Search search(searchParams, nnEval, &logger, "");
+    StrengthModel strengthModel(strengthModelFile, search, featureDir);
+    Dataset dataset = strengthModel.loadDataset(listFile);
+    FeaturesAndTargets featuresTargets = strengthModel.getFeaturesAndTargets(dataset);
+    std::shuffle(featuresTargets.begin(), featuresTargets.end(), Rand());
+    size_t split = static_cast<size_t>(featuresTargets.size() * .8); // TODO: allow configuration
+    int epochs = 100;       // TODO: allow configuration
+    float learnrate = 1e-3f; // TODO: allow configuration
+    strengthModel.train(featuresTargets, split, epochs, learnrate);
+  }
 
   delete nnEval;
   NeuralNet::globalCleanup();

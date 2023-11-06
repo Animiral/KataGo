@@ -204,6 +204,8 @@ add_executable(katago
   neuralnet/modelversion.cpp
   neuralnet/nneval.cpp
   neuralnet/desc.cpp
+  neuralnet/strengthnet.cpp
+  neuralnet/strengthnet.cu
   ${NEURALNET_BACKEND_SOURCES}
   book/book.cpp
   book/bookcssjs.cpp

@@ -117,7 +117,7 @@ int MainCmds::rating_system(const vector<string>& args) {
   Search search(searchParams, nnEval, &logger, "");
   StrengthModel strengthModel(strengthModelFile, search, featureDir);
   RatingSystem ratingSystem(strengthModel);
-  ratingSystem.calculate(listFile, featureDir, outlistFile);
+  ratingSystem.calculate(listFile, outlistFile);
   cout << std::fixed << std::setprecision(3) << "Rating system successRate=" << ratingSystem.successRate
                                              << ", successLogp=" << ratingSystem.successLogp << "\n";
 
