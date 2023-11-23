@@ -23,6 +23,34 @@ void loadParams(ConfigParser& config, SearchParams& params, Player& perspective,
     params.conservativePass = true;
 }
 
+Dataset mockDataset() {
+  return {};
+}
+
+FeaturesAndTargets mockFeaturesAndTargets() {
+  FeaturesAndTargets fat;
+  vector<MoveFeatures> mfs; // winProb, lead, movePolicy, maxPolicy, winrateLoss, pointsLoss
+  mfs.push_back(MoveFeatures{.5f,  0.f, .99f, .99f,  0.f, 0.0f});
+  mfs.push_back(MoveFeatures{.8f,  1.f, .91f, .94f,  5.f, 0.4f});
+  mfs.push_back(MoveFeatures{.2f, -1.f, .20f, .30f, 10.f, 2.0f});
+  fat.emplace_back(mfs, 2000);
+  mfs.clear();
+  mfs.push_back(MoveFeatures{.5f,  0.f, .03f, .70f, 20.f, 5.0f});
+  mfs.push_back(MoveFeatures{.2f, -1.f, .01f, .50f, 30.f, 10.f});
+  mfs.push_back(MoveFeatures{.9f,  3.f, .20f, .30f, 10.f, 2.0f});
+  fat.emplace_back(mfs, 1000);
+  return fat;
+}
+
+// this is what we give as input to the strength model for a single move
+struct MoveFeatures {
+  float winProb;
+  float lead;
+  float movePolicy;
+  float maxPolicy;
+  float winrateLoss;  // compared to previous move
+  float pointsLoss;  // compared to previous move
+};
 }
 
 int MainCmds::strength_training(const vector<string>& args) {
@@ -120,11 +148,19 @@ int MainCmds::strength_training(const vector<string>& args) {
     Search search(searchParams, nnEval, &logger, "");
     StrengthModel strengthModel(strengthModelFile, search, featureDir);
     Dataset dataset = strengthModel.loadDataset(listFile);
+    // Dataset dataset = mockDataset();
+
+    dataset.resize(10);
+    
+    logger.write("Loaded dataset with " + Global::intToString(dataset.size()) + " games from " + listFile);
     FeaturesAndTargets featuresTargets = strengthModel.getFeaturesAndTargets(dataset);
-    std::shuffle(featuresTargets.begin(), featuresTargets.end(), Rand());
+    // FeaturesAndTargets featuresTargets = mockFeaturesAndTargets();
+    logger.write("Training on set of size " + Global::intToString(featuresTargets.size()));
+    // std::shuffle(featuresTargets.begin(), featuresTargets.end(), Rand());
     size_t split = static_cast<size_t>(featuresTargets.size() * .8); // TODO: allow configuration
-    int epochs = 100;       // TODO: allow configuration
-    float learnrate = 1e-3f; // TODO: allow configuration
+    int epochs = 5;
+    // int epochs = 100;       // TODO: allow configuration
+    float learnrate = 1e-4f; // TODO: allow configuration
     strengthModel.train(featuresTargets, split, epochs, learnrate);
   }
 

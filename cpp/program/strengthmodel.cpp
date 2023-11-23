@@ -28,8 +28,8 @@ bool GameFeatures::present() const noexcept {
   return !blackFeatures.empty() && !whiteFeatures.empty();
 }
 
-StrengthModel::StrengthModel(const string& strengthModelFile_, Search& search_, const string& featureDir_) noexcept
-  : strengthModelFile(strengthModelFile_), net(), search(&search_), featureDir(featureDir_)
+StrengthModel::StrengthModel(const string& strengthModelFile_, Search* search_, const string& featureDir_) noexcept
+  : strengthModelFile(strengthModelFile_), net(), search(search_), featureDir(featureDir_)
 {
   if(!net.loadModelFile(strengthModelFile)) {
     cerr << "Could not load existing strength model from " << strengthModelFile << ". Random-initializing new strength model.\n";
@@ -37,6 +37,10 @@ StrengthModel::StrengthModel(const string& strengthModelFile_, Search& search_, 
     net.randomInit(rand);
   }
 }
+
+StrengthModel::StrengthModel(const string& strengthModelFile_, Search& search_, const string& featureDir_) noexcept
+  : StrengthModel(strengthModelFile_, &search_, featureDir_)
+{}
 
 namespace {
 string cachePath(const string& featureDir, const string& sgfPath, Player player) {
@@ -77,39 +81,57 @@ Dataset StrengthModel::loadDataset(const string& path) {
   std::getline(istrm, line);
   if(!istrm)
     throw IOError("Could not read header line from " + path);
+  line = Global::trim(line);
 
   // map known fieldnames to row indexes, wherever they may be
-  vector<string GameMeta::*> fields;
+  enum class F { ignore, sgfPath, whiteName, blackName, whiteLabel, blackLabel, winner };
+  vector<F> fields;
   std::string field;
-  while(std::getline(istrm, field, ',')) {
-    if("File" == field) fields.push_back(&GameMeta::sgfPath);
-    else if("Player White" == field) fields.push_back(&GameMeta::whiteName);
-    else if("Player Black" == field) fields.push_back(&GameMeta::blackName);
-    else if("WhiteLabel" == field) fields.push_back(&GameMeta::whiteLabel);
-    else if("BlackLabel" == field) fields.push_back(&GameMeta::blackLabel);
-    else if("Winner" == field || "Judgement" == field) fields.push_back(&GameMeta::winner);
-    else fields.push_back(nullptr);
+  std::istringstream iss(line);
+  while(std::getline(iss, field, ',')) {
+    if("File" == field) fields.push_back(F::sgfPath);
+    else if("Player White" == field) fields.push_back(F::whiteName);
+    else if("Player Black" == field) fields.push_back(F::blackName);
+    else if("WhiteLabel" == field) fields.push_back(F::whiteLabel);
+    else if("BlackLabel" == field) fields.push_back(F::blackLabel);
+    else if("Winner" == field || "Judgement" == field) fields.push_back(F::winner);
+    else fields.push_back(F::ignore);
   }
 
+  cerr << path << " is a CSV file with " << fields.size() << " fields.\n";
   Dataset dataset;
 
   while (std::getline(istrm, line)) {
+    line = Global::trim(line);
     GameMeta gm;
-    std::istringstream iss(line);
+    iss = std::istringstream(line);
     int fieldIndex = 0;
     while(std::getline(iss, field, ',')) {
-      if(nullptr != fields[fieldIndex])
-        gm.*fields[fieldIndex] = field;
+      switch(fields[fieldIndex++]) {
+      case F::sgfPath:
+        gm.sgfPath = field;
+        break;
+      case F::whiteName:
+        gm.whiteName = field;
+        break;
+      case F::blackName:
+        gm.blackName = field;
+        break;
+      case F::whiteLabel:
+        gm.whiteLabel = field;
+        break;
+      case F::blackLabel:
+        gm.blackLabel = field;
+        break;
+      default:
+      case F::ignore:
+        break;
+      }
     }
-    // std::string sgfPath; std::getline(iss, sgfPath, ',');
-    // std::string whiteName; std::getline(iss, whiteName, ',');
-    // std::string blackName; std::getline(iss, blackName, ',');
-    // std::string winner; std::getline(iss, winner, ','), std::getline(iss, winner); // skip one field for real winner
     if(!istrm)
       throw IOError("Error while reading from " + path);
     gm.winner = Global::toLower(Global::trim(gm.winner));
     dataset.push_back(gm);
-    // dataset.push_back(GameMeta{sgfPath, whiteName, blackName, winner});
   }
 
   istrm.close();
@@ -130,17 +152,32 @@ FeaturesAndTargets StrengthModel::getFeaturesAndTargets(const Dataset& dataset) 
 
 void StrengthModel::train(const FeaturesAndTargets& xy, size_t split, int epochs, float learnrate) {
   assert(split <= xy.size());
+  Rand rand; // TODO: allow seeding from outside StrengthModel
+  net.randomInit(rand);
+  // StrengthNet::Output y_hat = net.forward(xy[0].first);
+  // float sqerr = (y_hat - xy[0].second) * (y_hat - xy[0].second);
+  // cout << "Forward " << xy[0].first.size() << " features -> " << std::fixed << std::setprecision(3) << y_hat << ", target=" << xy[0].second << ", sqerr=" << sqerr << "\n";
+  // net.backward(xy[0].second, learnrate);
+  // cout << "Backward with learnrate=" << learnrate << "\n";
+  // y_hat = net.forward(xy[0].first);
+  // sqerr = (y_hat - xy[0].second) * (y_hat - xy[0].second);
+  // cout << "Forward " << xy[0].first.size() << " features -> " << std::fixed << std::setprecision(3) << y_hat << ", target=" << xy[0].second << ", sqerr=" << sqerr << "\n";
+
+
   for(int e = 0; e < epochs; e++) {
     // train weights
     for(int i = 0; i < split; i++) {
       StrengthNet::Output y_hat = net.forward(xy[i].first);
-      net.backward(y_hat, xy[i].second, learnrate);
+      // cout << "Sample #" << i << "(" << xy[i].first.size() << " moves): (" << y_hat << "-" << xy[i].second << ")^2 = " << (y_hat-xy[i].second)*(y_hat-xy[i].second) << "\n";
+      net.backward(xy[i].second, learnrate);
     }
     // test epoch result
     float mse = 0;
     for(int i = split; i < xy.size(); i++) {
       StrengthNet::Output y_hat = net.forward(xy[i].first);
-      mse += (y_hat - xy[i].second) * (y_hat - xy[i].second);
+      float sqerr = (y_hat - xy[i].second) * (y_hat - xy[i].second);
+      mse += sqerr;
+      cout << "Test #" << i-split << " (" << xy[i].first.size() << " moves): prediction=" << std::fixed << std::setprecision(3) << y_hat << ", target=" << xy[i].second << ", sqerr=" << sqerr << "\n";
     }
     mse /= xy.size() - split;
     cout << "Epoch " << e << ": mse=" << std::fixed << std::setprecision(3) << mse << "\n";
@@ -203,6 +240,8 @@ bool StrengthModel::maybeWriteMoveFeaturesCached(const string& cachePath, const 
 }
 
 GameFeatures StrengthModel::extractGameFeatures(const CompactSgf& sgf, const string& blackFeaturesPath, const string& whiteFeaturesPath) const {
+  if(!search)
+    throw StringError("StrengthModel: no search object configured for extracting game features");
   GameFeatures features;
   const auto& moves = sgf.moves;
   Rules rules = sgf.getRulesOrFailAllowUnspecified(Rules::getTrompTaylorish());

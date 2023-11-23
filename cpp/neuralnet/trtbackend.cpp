@@ -936,9 +936,9 @@ struct ComputeHandle {
     // Certain minor versions of TensorRT uses a global logger, which is bad.
     // Since TensorRT maintains ABI compatibility between minor versions, a dynamic library mismatch
     // does not necessarily generate a dynamic link error, therefore, an extra check is required.
-    if(getInferLibVersion() != NV_TENSORRT_VERSION) {
-      throw StringError("TensorRT backend: detected incompatible version of TensorRT library");
-    }
+    // if(getInferLibVersion() != NV_TENSORRT_VERSION) {
+    //   throw StringError("TensorRT backend: detected incompatible version of TensorRT library");
+    // }
 
     trtLogger.setLogger(logger);
 

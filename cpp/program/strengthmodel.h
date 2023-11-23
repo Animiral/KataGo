@@ -44,6 +44,7 @@ class StrengthModel
 public:
 
   // cache calculated move features for every sgfPath under featureDir
+  explicit StrengthModel(const string& strengthModelFile_, Search* search_, const string& featureDir_) noexcept;
   explicit StrengthModel(const string& strengthModelFile_, Search& search_, const string& featureDir_) noexcept;
 
   // Analyze SGF and use the strength model to determine the embedded features of every move
