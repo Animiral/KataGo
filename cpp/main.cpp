@@ -127,6 +127,8 @@ static int handleSubcommand(const string& subcommand, const vector<string>& args
     return MainCmds::runnnonmanyposestest(subArgs);
   else if(subcommand == "runnnbatchingtest")
     return MainCmds::runnnbatchingtest(subArgs);
+  else if(subcommand == "runstrengthmodeltests")
+    return MainCmds::runstrengthmodeltests(subArgs);
   else if(subcommand == "runtinynntests")
     return MainCmds::runtinynntests(subArgs);
   else if(subcommand == "runnnevalcanarytests")

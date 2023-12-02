@@ -1,4 +1,61 @@
 #include "strengthnet.h"
+#include <iostream>
+#include <vector>
+
+using namespace std;
+
+namespace {
+
+constexpr dim3 numBlocksForTensor(const Tensor& t, dim3 blockDim) noexcept {
+  dim3 numBlocks(1, 1, 1);
+  numBlocks.x = (t.dims.x + blockDim.x - 1) / blockDim.x;
+  numBlocks.y = (t.dims.y + blockDim.y - 1) / blockDim.y;
+  return numBlocks;
+}
+
+}
+
+__global__ void forward_matmul_Kernel(const Tensor weights, const Tensor x, Tensor y) {
+  // naive implementation
+  int row = blockIdx.y * blockDim.y + threadIdx.y;
+  int col = blockIdx.x * blockDim.x + threadIdx.x;
+
+  assert(weights.dims.x - x.dims.y <= 1); // weight.dims.x must either match x dims or have exactly 1 more column of bias weights
+  assert(y.dims.x == x.dims.x);           // output size must match
+  assert(y.dims.y == weights.dims.y);     // output size must match
+
+  // early exit for overspilling blocks
+  if(row >= y.dims.y || col >= y.dims.x)
+    return;
+
+  size_t in_stride = x.dims.y;
+  size_t w_stride = weights.dims.y;
+  size_t out_stride = y.dims.y;
+
+  float h = 0.0f;
+  for (int i = 0; i < x.dims.y; i++) {
+    h += weights.data[i * w_stride + row] * x.data[col * in_stride + i];
+  }
+  if(weights.dims.x - x.dims.y > 0) // weights matrix includes bias row
+    h += weights.data[(w_stride - 1) * w_stride + row];
+
+  y.data[col * out_stride + row] = h;
+}
+
+__global__ void backward_dmatmul_dx_Kernel(const Tensor weights, Tensor j) {
+  // just copy weights to j, except possible bias column.
+  int row = blockIdx.y * blockDim.y + threadIdx.y;
+  int col = blockIdx.x * blockDim.x + threadIdx.x;
+
+  assert(j.dims.x <= weights.dims.x);
+  assert(j.dims.y == weights.dims.y);
+
+  // early exit for overspilling blocks
+  if(row >= j.dims.y || col >= j.dims.x)
+    return;
+
+  j.data[col * j.dims.y + row] = weights.data[col * weights.dims.y + row];
+}
 
 // todo: parallelize
 __global__ void maxelem(float* x, float* maxx, int N, int ch, int row) {
@@ -41,9 +98,9 @@ __global__ void forwardFullKernel(float* inx, float* outx, float* weights, float
   }
 }
 
-void forwardFull(float* inx, float* outx, float* weights, float* biases, int N, int in_ch, int out_ch) {
-    forwardFullKernel<<<1, N>>>(inx, outx, weights, biases, in_ch, out_ch);
-}
+// void forwardFull(float* inx, float* outx, float* weights, float* biases, int N, int in_ch, int out_ch) {
+//     forwardFullKernel<<<1, N>>>(inx, outx, weights, biases, in_ch, out_ch);
+// }
 
 __global__ void forwardReluKernel(float* inx, int ch) {
   for (int i = 0; i < ch; i++) {
@@ -165,4 +222,55 @@ __global__ void backwardReluKernel(float* ingrads, float* inx, float* outgrads) 
 
 void backwardRelu(float* ingrads, float* inx, int ch, int N, float* outgrads) {
   backwardReluKernel<<<1, ch*N>>>(ingrads, inx, outgrads);
+}
+
+Tensor& matmul(const Tensor& weights, const Tensor& x, Tensor& y) {
+  dim3 blockDim(16, 16);
+  dim3 numBlocks = numBlocksForTensor(y, blockDim);
+  forward_matmul_Kernel<<<numBlocks, blockDim>>>(weights, x, y);
+  return y;
+}
+
+Tensor& dmatmul_dx(const Tensor& weights, Tensor& j) {
+  dim3 blockDim(16, 16);
+  dim3 numBlocks = numBlocksForTensor(j, blockDim);
+  backward_dmatmul_dx_Kernel<<<numBlocks, blockDim>>>(weights, j);
+  return j;
+}
+
+Tensor& dmatmul_dweights(const Tensor& weights, const Tensor& x, Tensor& j) {
+  // assert(weights.dims.size() == 2);
+  // assert(x.dims.size() >= 1);
+  // assert(x.dims == j.dims);
+
+  // size_t with_bias = weights.dims[0] - x.dims[0];
+  // size_t ch = x.dims[0];
+  // size_t n = x.size(1);
+  // // TODO: better parallels
+  // backwardMatmulDweightsKernel<<<1, n>>>(x.data, j.data, in_ch, with_bias, out_ch);
+  return j; // TODO
+}
+
+Tensor& relu(Tensor& x) {
+  return x; // TODO
+}
+
+Tensor& drelu_dx(const Tensor& x, Tensor& j) {
+  return j; // TODO
+}
+
+Tensor& tanh_scale_softmax(Tensor& x, float scale) {
+  return x; // TODO
+}
+
+Tensor& dtanh_scale_softmax_dx(const Tensor& x, float scale, Tensor& j) {
+  return j; // TODO
+}
+
+Tensor& weighed_average(Tensor& x, const Tensor& weights) {
+  return x; // TODO
+}
+
+Tensor& dweighed_average_dx(const Tensor& weights, Tensor& j) {
+  return j; // TODO
 }

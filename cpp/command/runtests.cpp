@@ -309,6 +309,12 @@ int MainCmds::runnnonmanyposestest(const vector<string>& args) {
   return 0;
 }
 
+int MainCmds::runstrengthmodeltests(const vector<string>& args) {
+  (void) args;
+  Tests::runStrengthModelTests();
+  return 0;
+}
+
 int MainCmds::runnnbatchingtest(const vector<string>& args) {
   if(args.size() != 5) {
     cerr << "Must supply exactly four arguments: MODEL_FILE INPUTSNHWC CUDANHWC FP16" << endl;

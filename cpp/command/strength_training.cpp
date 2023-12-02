@@ -129,24 +129,24 @@ int MainCmds::strength_training(const vector<string>& args) {
   loadParams(cfg, searchParams, defaultPerspective, C_EMPTY);
 
   NNEvaluator* nnEval;
-  {
-    Setup::initializeSession(cfg);
-    const int maxConcurrentEvals = numAnalysisThreads * searchParams.numThreads * 2 + 16; // * 2 + 16 just to give plenty of headroom
-    const int expectedConcurrentEvals = numAnalysisThreads * searchParams.numThreads;
-    const bool defaultRequireExactNNLen = false;
-    const int defaultMaxBatchSize = -1;
-    const bool disableFP16 = false;
-    const string expectedSha256 = "";
-    nnEval = Setup::initializeNNEvaluator(
-      modelFile,modelFile,expectedSha256,cfg,logger,seedRand,maxConcurrentEvals,expectedConcurrentEvals,
-      NNPos::MAX_BOARD_LEN,NNPos::MAX_BOARD_LEN,defaultMaxBatchSize,defaultRequireExactNNLen,disableFP16,
-      Setup::SETUP_FOR_ANALYSIS
-    );
-  }
+  // {
+  //   Setup::initializeSession(cfg);
+  //   const int maxConcurrentEvals = numAnalysisThreads * searchParams.numThreads * 2 + 16; // * 2 + 16 just to give plenty of headroom
+  //   const int expectedConcurrentEvals = numAnalysisThreads * searchParams.numThreads;
+  //   const bool defaultRequireExactNNLen = false;
+  //   const int defaultMaxBatchSize = -1;
+  //   const bool disableFP16 = false;
+  //   const string expectedSha256 = "";
+  //   nnEval = Setup::initializeNNEvaluator(
+  //     modelFile,modelFile,expectedSha256,cfg,logger,seedRand,maxConcurrentEvals,expectedConcurrentEvals,
+  //     NNPos::MAX_BOARD_LEN,NNPos::MAX_BOARD_LEN,defaultMaxBatchSize,defaultRequireExactNNLen,disableFP16,
+  //     Setup::SETUP_FOR_ANALYSIS
+  //   );
+  // }
 
   { // main training
-    Search search(searchParams, nnEval, &logger, "");
-    StrengthModel strengthModel(strengthModelFile, search, featureDir);
+    // Search search(searchParams, nnEval, &logger, "");
+    StrengthModel strengthModel(strengthModelFile, nullptr /*search*/, featureDir);
     Dataset dataset = strengthModel.loadDataset(listFile);
     // Dataset dataset = mockDataset();
 

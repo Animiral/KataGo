@@ -7,56 +7,173 @@
 #include <iomanip>
 
 // functions to call kernels
-void forwardFull(float* inx, float* outx, float* weights, float* biases, int N, int in_ch, int out_ch);
-void forwardRelu(float* inx, int N, int ch);
-void forwardAggregate(float* outputx, float* softx, float* aggregx, int N, int ch);
-void backwardLoss(float* target, float* aggregx, float* outgrads);
-void backwardAggregate(float* ingrads, float* outputx, int N, float* outgrads);
-void backwardTanh(float* ingrads, float* outputx, int N, float* outgrads);
-void backwardFull(float* ingrads, float* inx, float* weights, float* biases, int in_ch, int out_ch, int N, float learnrate, float* outgrads);
-void backwardRelu(float* ingrads, float* inx, int ch, int N, float* outgrads);
+// void forwardFull(float* inx, float* outx, float* weights, float* biases, int N, int in_ch, int out_ch);
+// void forwardRelu(float* inx, int N, int ch);
+// void forwardAggregate(float* outputx, float* softx, float* aggregx, int N, int ch);
+// void backwardLoss(float* target, float* aggregx, float* outgrads);
+// void backwardAggregate(float* ingrads, float* outputx, int N, float* outgrads);
+// void backwardTanh(float* ingrads, float* outputx, int N, float* outgrads);
+// void backwardFull(float* ingrads, float* inx, float* weights, float* biases, int in_ch, int out_ch, int N, float learnrate, float* outgrads);
+// void backwardRelu(float* ingrads, float* inx, int ch, int N, float* outgrads);
 
-namespace {
-  void dumpDeviceArray(string name, float* data, int N, int ch) {
-    vector<float> hostdata(N*ch);
-    CUDA_ERR("dumpDeviceArray", cudaMemcpy(hostdata.data(), data, N * ch * sizeof(float), cudaMemcpyDeviceToHost));
-    cerr << "=== DUMP " << name << "\n";
-    for(int c = 0; c < ch; c++) {
-      for(int n = 0; n < N; n++) {
-        cerr << std::setw(6) << std::fixed << std::setprecision(2) << hostdata[n * ch + c] << " ";
-      }
-      cerr << "\n";
+Tensor::Tensor(std::vector<float> data_, uint2 dims_)
+: data(nullptr), dims(dims_), isOwner(true) {
+  size_t n = dims.x * dims.y;
+  CUDA_ERR("Tensor(data,dims)", cudaMalloc(&data, n * sizeof(float)));
+  CUDA_ERR("Tensor(data,dims)", cudaMemcpy(data, data_.data(), n * sizeof(float), cudaMemcpyHostToDevice));
+}
+
+Tensor::Tensor(uint2 dims_)
+: data(nullptr), dims(dims_), isOwner(true) {
+  size_t n = dims.x * dims.y;
+  CUDA_ERR("Tensor(dims)", cudaMalloc(&data, n * sizeof(float)));
+}
+
+Tensor::Tensor(const Tensor& rhs)
+: data(rhs.data), dims(rhs.dims), isOwner(false)
+{}
+
+Tensor::Tensor(Tensor&& rhs) noexcept
+: data(rhs.data), dims(rhs.dims), isOwner(true) {
+  rhs.data = nullptr;
+}
+
+Tensor& Tensor::operator=(const Tensor& rhs) {
+  size_t n = dims.x * dims.y;
+  assert(rhs.dims.x * dims.y == n);
+  if(isOwner)
+    cudaFree(data);
+  data = rhs.data;
+  isOwner = false;
+  return *this;
+}
+
+Tensor& Tensor::operator=(Tensor&& rhs) noexcept {
+  data = rhs.data;
+  dims = rhs.dims;
+  isOwner = rhs.isOwner;
+  rhs.data = nullptr;
+  rhs.isOwner = false;
+  return *this;
+}
+
+Tensor::~Tensor() noexcept {
+  if(isOwner)
+    cudaFree(data);
+  data = nullptr;
+}
+
+Tensor::operator std::vector<float>() const {
+  size_t n = dims.x * dims.y;
+  std::vector<float> result(n);
+  CUDA_ERR("Tensor::operator std::vector<float>()", cudaMemcpy(result.data(), data, n * sizeof(float), cudaMemcpyDeviceToHost));
+  return result;
+}
+
+void Tensor::randomInit(Rand& rand) {
+  size_t n = dims.x;
+  size_t m = dims.y;
+
+  // init all parameters uniformly in (-n^(-2), +n^(-2))
+  vector<float> buffer(n*m);
+  double high = 1. / std::sqrt(n);
+  double low = -high;
+  for(size_t i = 0; i < m; i++)
+    for(size_t j = 0; j < n; j++)
+      buffer[i * n + j] = static_cast<float>(rand.nextDouble(low, high));
+  CUDA_ERR("Tensor.randomInit", cudaMemcpy(data, buffer.data(), n * m * sizeof(float), cudaMemcpyHostToDevice));
+}
+
+Tensor Tensor::clone() const {
+  Tensor copy(dims);
+  size_t n = dims.x * dims.y;
+  CUDA_ERR("Tensor::clone()", cudaMemcpy(copy.data, data, n * sizeof(float), cudaMemcpyDeviceToDevice));
+  return copy;
+}
+
+float Tensor::variance() const {
+  size_t n = dims.x * dims.y;
+  assert(n > 1); // 1 number has no variance
+  vector<float> buffer(n);
+  CUDA_ERR("Tensor.variance", cudaMemcpy(buffer.data(), data, n * sizeof(float), cudaMemcpyDeviceToHost));
+
+  // est. average
+  vector<float> mubuffer = buffer;
+  float mu = 0;
+  for(size_t s = 1; s < n; s*=2)
+    for(size_t i = 0; i+s < n; i+=2*s)
+      mubuffer[i] += mubuffer[i+s];
+  mu = mubuffer[0] / n;
+
+  // est. variance
+  for(size_t i = 0; i < n; i++)
+    buffer[i] = (buffer[i] - mu) * (buffer[i] - mu);
+  for(size_t s = 1; s < n; s*=2)
+    for(size_t i = 0; i+s < n; i+=2*s)
+      buffer[i] += buffer[i+s];
+  return buffer[0] / (n - 1);
+}
+
+void Tensor::print(std::ostream& stream, const std::string& name) {
+  vector<float> hostdata(dims.x * dims.y);
+  CUDA_ERR("Tensor::print", cudaMemcpy(hostdata.data(), data, dims.x * dims.y * sizeof(float), cudaMemcpyDeviceToHost));
+  stream << "=== DUMP " << name << "\n";
+  for(int c = 0; c < dims.y; c++) {
+    for(int i = 0; i < dims.x; i++) {
+      stream << std::setw(6) << std::fixed << std::setprecision(2) << hostdata[i * dims.y + c] << " ";
     }
-    cerr << "===\n";
+    stream << "\n";
   }
+  stream << "===\n";
+}
+
+Tensor makeInputTensor(std::vector<MoveFeatures> features) {
+  assert(&features[0].winProb + 6 == &features[1].winProb); // packing check
+  assert((void*)&features[0] == (void*)&features[0].winProb); // order check
+  float* rawdata = &features[0].winProb;
+  vector<float> rawfeatures(rawdata, rawdata + 6*features.size());
+  uint2 dims = {6, features.size()};
+  return Tensor(rawfeatures, dims);
+}
+
+Tensor makeOutputTensor(float target) {
+  vector<float> vtarget(&target, &target + 1);
+  uint2 dims = {1, 1};
+  return Tensor(vtarget, dims);
+}
+
+float scaleOutputTensor(const Tensor& output) {
+  vector<float> vtarget = static_cast<vector<float>>(output);
+  assert(vtarget.size() == 1);
+  return vtarget[0];
 }
 
 StrengthNet::StrengthNet() {
-  CUDA_ERR("StrengthNet", cudaMalloc(&inputx, maxN * in_ch * sizeof(float)));
-  CUDA_ERR("StrengthNet", cudaMalloc(&hiddenx, maxN * hidden_ch * sizeof(float)));
-  CUDA_ERR("StrengthNet", cudaMalloc(&outputx, maxN * out_ch * sizeof(float)));
-  CUDA_ERR("StrengthNet", cudaMalloc(&softx, maxN * out_ch * sizeof(float)));
-  CUDA_ERR("StrengthNet", cudaMalloc(&aggregx, sizeof(float)));
-  CUDA_ERR("StrengthNet", cudaMalloc(&back1x, maxN * std::max({in_ch, hidden_ch, out_ch}) * sizeof(float)));
-  CUDA_ERR("StrengthNet", cudaMalloc(&back2x, maxN * std::max({in_ch, hidden_ch, out_ch}) * sizeof(float)));
-  CUDA_ERR("StrengthNet", cudaMalloc(&Wh, in_ch * hidden_ch * sizeof(float)));
-  CUDA_ERR("StrengthNet", cudaMalloc(&bh, hidden_ch * sizeof(float)));
-  CUDA_ERR("StrengthNet", cudaMalloc(&Wo, hidden_ch * out_ch * sizeof(float)));
-  CUDA_ERR("StrengthNet", cudaMalloc(&bo, out_ch * sizeof(float)));
+  // CUDA_ERR("StrengthNet", cudaMalloc(&inputx, maxN * in_ch * sizeof(float)));
+  // CUDA_ERR("StrengthNet", cudaMalloc(&hiddenx, maxN * hidden_ch * sizeof(float)));
+  // CUDA_ERR("StrengthNet", cudaMalloc(&outputx, maxN * out_ch * sizeof(float)));
+  // CUDA_ERR("StrengthNet", cudaMalloc(&softx, maxN * out_ch * sizeof(float)));
+  // CUDA_ERR("StrengthNet", cudaMalloc(&aggregx, sizeof(float)));
+  // CUDA_ERR("StrengthNet", cudaMalloc(&back1x, maxN * std::max({in_ch, hidden_ch, out_ch}) * sizeof(float)));
+  // CUDA_ERR("StrengthNet", cudaMalloc(&back2x, maxN * std::max({in_ch, hidden_ch, out_ch}) * sizeof(float)));
+  // CUDA_ERR("StrengthNet", cudaMalloc(&Wh, in_ch * hidden_ch * sizeof(float)));
+  // CUDA_ERR("StrengthNet", cudaMalloc(&bh, hidden_ch * sizeof(float)));
+  // CUDA_ERR("StrengthNet", cudaMalloc(&Wo, hidden_ch * out_ch * sizeof(float)));
+  // CUDA_ERR("StrengthNet", cudaMalloc(&bo, out_ch * sizeof(float)));
 }
 
 StrengthNet::~StrengthNet() {
-  cudaFree(inputx);
-  cudaFree(hiddenx);
-  cudaFree(outputx);
-  cudaFree(softx);
-  cudaFree(aggregx);
-  cudaFree(back1x);
-  cudaFree(back2x);
-  cudaFree(Wh);
-  cudaFree(bh);
-  cudaFree(Wo);
-  cudaFree(bo);
+//   cudaFree(inputx);
+//   cudaFree(hiddenx);
+//   cudaFree(outputx);
+//   cudaFree(softx);
+//   cudaFree(aggregx);
+//   cudaFree(back1x);
+//   cudaFree(back2x);
+//   cudaFree(Wh);
+//   cudaFree(bh);
+//   cudaFree(Wo);
+//   cudaFree(bo);
 }
 
 void StrengthNet::randomInit(Rand& rand) {
@@ -142,41 +259,42 @@ void StrengthNet::saveModelFile(const std::string& path) {
     throw IOError("Failed to save complete strength model to " + path);
 }
 
-StrengthNet::Output StrengthNet::forward(const StrengthNet::Input& input) {
-  assert(input.size() <= maxN);
-	assert(reinterpret_cast<const float*>(&input[0]) + in_ch == reinterpret_cast<const float*>(&input[1])); // crude packing/alignment safety check
-  N = input.size();
-	const float* inputPtr = reinterpret_cast<const float*>(input.data());
-  CUDA_ERR("StrengthNet.forward", cudaMemcpy(inputx, inputPtr, N * in_ch * sizeof(float), cudaMemcpyHostToDevice));
+Tensor& StrengthNet::forward(const Tensor& input) {
+  return aggregx; // TODO
+  // assert(input.dims.x * dims.y <= maxN);
+	// assert(reinterpret_cast<const float*>(&input[0]) + in_ch == reinterpret_cast<const float*>(&input[1])); // crude packing/alignment safety check
+  // N = input.size();
+	// const float* inputPtr = reinterpret_cast<const float*>(input.data());
+  // CUDA_ERR("StrengthNet.forward", cudaMemcpy(inputx, inputPtr, N * in_ch * sizeof(float), cudaMemcpyHostToDevice));
 
-	forwardFull(inputx, hiddenx, Wh, bh, N, in_ch, hidden_ch);
-	forwardRelu(hiddenx, N, hidden_ch);
-	forwardFull(hiddenx, outputx, Wo, bo, N, hidden_ch, out_ch);
-	forwardAggregate(outputx, softx, aggregx, N, out_ch);
+	// forwardFull(inputx, hiddenx, Wh, bh, N, in_ch, hidden_ch);
+	// forwardRelu(hiddenx, N, hidden_ch);
+	// forwardFull(hiddenx, outputx, Wo, bo, N, hidden_ch, out_ch);
+	// forwardAggregate(outputx, softx, aggregx, N, out_ch);
 
-	StrengthNet::Output result;
-  CUDA_ERR("StrengthNet.forward", cudaMemcpy(&result, aggregx, sizeof(StrengthNet::Output), cudaMemcpyDeviceToHost));
-  return result;
+	// StrengthNet::Output result;
+  // CUDA_ERR("StrengthNet.forward", cudaMemcpy(&result, aggregx, sizeof(StrengthNet::Output), cudaMemcpyDeviceToHost));
+  // return result;
 }
 
-void StrengthNet::backward(Output target, float learnrate) {
-  CUDA_ERR("StrengthNet.backward", cudaMemcpy(back1x, &target, sizeof(StrengthNet::Output), cudaMemcpyHostToDevice));
-  // dumpDeviceArray("inputx", inputx, N, in_ch);
-  // dumpDeviceArray("hiddenx", hiddenx, N, hidden_ch);
-  // dumpDeviceArray("outputx", outputx, N, out_ch);
-  // dumpDeviceArray("softx", softx, N, out_ch);
-  // dumpDeviceArray("aggregx", aggregx, 1, 1);
-  backwardLoss(back1x, aggregx, back2x);
-  dumpDeviceArray("dLoss/dAggreg", back2x, 1, 1);
+void StrengthNet::backward(const Tensor& target, float learnrate) {
+  // CUDA_ERR("StrengthNet.backward", cudaMemcpy(back1x, &target, sizeof(StrengthNet::Output), cudaMemcpyHostToDevice));
+  // // dumpDeviceArray("inputx", inputx, N, in_ch);
+  // // dumpDeviceArray("hiddenx", hiddenx, N, hidden_ch);
+  // // dumpDeviceArray("outputx", outputx, N, out_ch);
+  // // dumpDeviceArray("softx", softx, N, out_ch);
+  // // dumpDeviceArray("aggregx", aggregx, 1, 1);
+  // backwardLoss(back1x, aggregx, back2x);
+  // dumpDeviceArray("dLoss/dAggreg", back2x, 1, 1);
 
-  backwardAggregate(back2x, softx, N, back1x);
-  backwardTanh(back1x, outputx, N, back2x);
-  dumpDeviceArray("dLoss/dOutput", back2x, N, out_ch);
-  backwardFull(back2x, hiddenx, Wo, bo, hidden_ch, out_ch, N, learnrate, back1x);
-  dumpDeviceArray("dLoss/dHidden", back1x, N, hidden_ch);
-  backwardRelu(back1x, hiddenx, hidden_ch, N, back2x);
-  dumpDeviceArray("dLoss/dHidden+ReLu", back2x, N, hidden_ch);
-  backwardFull(back2x, inputx, Wh, bh, in_ch, hidden_ch, N, learnrate, back1x);
+  // backwardAggregate(back2x, softx, N, back1x);
+  // backwardTanh(back1x, outputx, N, back2x);
+  // dumpDeviceArray("dLoss/dOutput", back2x, N, out_ch);
+  // backwardFull(back2x, hiddenx, Wo, bo, hidden_ch, out_ch, N, learnrate, back1x);
+  // dumpDeviceArray("dLoss/dHidden", back1x, N, hidden_ch);
+  // backwardRelu(back1x, hiddenx, hidden_ch, N, back2x);
+  // dumpDeviceArray("dLoss/dHidden+ReLu", back2x, N, hidden_ch);
+  // backwardFull(back2x, inputx, Wh, bh, in_ch, hidden_ch, N, learnrate, back1x);
   // dumpDeviceArray("Wo", Wo, hidden_ch, out_ch);
   // dumpDeviceArray("bo", bo, 1, out_ch);
   // dumpDeviceArray("Wh", Wh, in_ch, hidden_ch);
