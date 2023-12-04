@@ -167,16 +167,18 @@ void StrengthModel::train(const FeaturesAndTargets& xy, size_t split, int epochs
   for(int e = 0; e < epochs; e++) {
     // train weights
     for(int i = 0; i < split; i++) {
-      Tensor input = makeInputTensor(xy[i].first);
-      float y_hat = scaleOutputTensor(net.forward(input));
+      net.setInput(xy[i].first);
+      net.forward();
+      // float y_hat = net.getOutput();
       // cout << "Sample #" << i << "(" << xy[i].first.size() << " moves): (" << y_hat << "-" << xy[i].second << ")^2 = " << (y_hat-xy[i].second)*(y_hat-xy[i].second) << "\n";
-      net.backward(makeOutputTensor(xy[i].second), learnrate);
+      net.backward(xy[i].second, learnrate);
     }
     // test epoch result
     float mse = 0;
     for(int i = split; i < xy.size(); i++) {
-      // StrengthNet::Output y_hat = net.forward(xy[i].first);
-      float y_hat = 100; // TODO
+      net.setInput(xy[i].first);
+      net.forward();
+      float y_hat = net.getOutput();
       float sqerr = (y_hat - xy[i].second) * (y_hat - xy[i].second);
       mse += sqerr;
       cout << "Test #" << i-split << " (" << xy[i].first.size() << " moves): prediction=" << std::fixed << std::setprecision(3) << y_hat << ", target=" << xy[i].second << ", sqerr=" << sqerr << "\n";

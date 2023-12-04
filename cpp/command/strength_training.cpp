@@ -149,18 +149,17 @@ int MainCmds::strength_training(const vector<string>& args) {
     StrengthModel strengthModel(strengthModelFile, nullptr /*search*/, featureDir);
     Dataset dataset = strengthModel.loadDataset(listFile);
     // Dataset dataset = mockDataset();
-
-    dataset.resize(10);
+    // dataset.resize(10);
     
     logger.write("Loaded dataset with " + Global::intToString(dataset.size()) + " games from " + listFile);
     FeaturesAndTargets featuresTargets = strengthModel.getFeaturesAndTargets(dataset);
     // FeaturesAndTargets featuresTargets = mockFeaturesAndTargets();
     logger.write("Training on set of size " + Global::intToString(featuresTargets.size()));
-    // std::shuffle(featuresTargets.begin(), featuresTargets.end(), Rand());
+    std::shuffle(featuresTargets.begin(), featuresTargets.end(), Rand());
     size_t split = static_cast<size_t>(featuresTargets.size() * .8); // TODO: allow configuration
-    int epochs = 5;
+    int epochs = 10;
     // int epochs = 100;       // TODO: allow configuration
-    float learnrate = 1e-4f; // TODO: allow configuration
+    float learnrate = 3e-4f; // TODO: allow configuration
     strengthModel.train(featuresTargets, split, epochs, learnrate);
   }
 
