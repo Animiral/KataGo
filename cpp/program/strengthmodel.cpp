@@ -154,25 +154,17 @@ void StrengthModel::train(const FeaturesAndTargets& xy, size_t split, int epochs
   assert(split <= xy.size());
   Rand rand; // TODO: allow seeding from outside StrengthModel
   net.randomInit(rand);
-  // StrengthNet::Output y_hat = net.forward(xy[0].first);
-  // float sqerr = (y_hat - xy[0].second) * (y_hat - xy[0].second);
-  // cout << "Forward " << xy[0].first.size() << " features -> " << std::fixed << std::setprecision(3) << y_hat << ", target=" << xy[0].second << ", sqerr=" << sqerr << "\n";
-  // net.backward(xy[0].second, learnrate);
-  // cout << "Backward with learnrate=" << learnrate << "\n";
-  // y_hat = net.forward(xy[0].first);
-  // sqerr = (y_hat - xy[0].second) * (y_hat - xy[0].second);
-  // cout << "Forward " << xy[0].first.size() << " features -> " << std::fixed << std::setprecision(3) << y_hat << ", target=" << xy[0].second << ", sqerr=" << sqerr << "\n";
-
 
   for(int e = 0; e < epochs; e++) {
     // train weights
     for(int i = 0; i < split; i++) {
       net.setInput(xy[i].first);
       net.forward();
-      // float y_hat = net.getOutput();
       // cout << "Sample #" << i << "(" << xy[i].first.size() << " moves): (" << y_hat << "-" << xy[i].second << ")^2 = " << (y_hat-xy[i].second)*(y_hat-xy[i].second) << "\n";
       net.backward(xy[i].second, learnrate);
     }
+    // net.printWeights(cout, "epoch " + Global::intToString(e));
+    // net.printState(cout, "epoch " + Global::intToString(e));
     // test epoch result
     float mse = 0;
     for(int i = split; i < xy.size(); i++) {
@@ -181,7 +173,7 @@ void StrengthModel::train(const FeaturesAndTargets& xy, size_t split, int epochs
       float y_hat = net.getOutput();
       float sqerr = (y_hat - xy[i].second) * (y_hat - xy[i].second);
       mse += sqerr;
-      cout << "Test #" << i-split << " (" << xy[i].first.size() << " moves): prediction=" << std::fixed << std::setprecision(3) << y_hat << ", target=" << xy[i].second << ", sqerr=" << sqerr << "\n";
+      // cout << "Test #" << i-split << " (" << xy[i].first.size() << " moves): prediction=" << std::fixed << std::setprecision(3) << y_hat << ", target=" << xy[i].second << ", sqerr=" << sqerr << "\n";
     }
     mse /= xy.size() - split;
     cout << "Epoch " << e << ": mse=" << std::fixed << std::setprecision(3) << mse << "\n";

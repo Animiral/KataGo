@@ -62,10 +62,10 @@ void runStrengthModelTests() {
     cout << "- transposeMatmul: ";
     vector<float> A_data = {1, -3, 3, 2, -2, -1}; // left operand, 3x2
     vector<float> B_data = {7, 3, -11, 8, -10, 8, 4, 7}; // right operand, 4x2
-    vector<float> C_data = {-13, -1, 31,  19, -25, 1,  -3, 25, -37,  22, -38, 17}; // expected result, 3x4
+    vector<float> C_data = {-13, -1, 31,  19, -25, 1,  -3, 25, -37,  22, -38, 17, 3, -5, 2}; // expected result, 5x3 (with bias column)
     Tensor A(2, 3);
     Tensor B(2, 4);
-    Tensor C(4, 3);
+    Tensor C(5, 3);
     cudaMemcpy(A.data, A_data.data(), 2*3 * sizeof(float), cudaMemcpyHostToDevice);
     cudaMemcpy(B.data, B_data.data(), 4*2 * sizeof(float), cudaMemcpyHostToDevice);
 
@@ -79,8 +79,8 @@ void runStrengthModelTests() {
     cout << (pass ? "pass" : "fail") << "\n";
 
     if(!pass) {
-      Tensor C_expected(4,3);
-      cudaMemcpy(C_expected.data, C_data.data(), 4*3 * sizeof(float), cudaMemcpyHostToDevice);
+      Tensor C_expected(5,3);
+      cudaMemcpy(C_expected.data, C_data.data(), 5*3 * sizeof(float), cudaMemcpyHostToDevice);
       C_expected.print(cout, "transposeMatmul expected");
       C.print(cout, "transposeMatmul result");
     }
@@ -165,5 +165,34 @@ void runStrengthModelTests() {
     }
   }
 
+  {
+    cout << "- add,relu: ";
+    vector<float> hr_data = {3, 4, 5, 6, 7};
+    vector<float> hz_data = {-8, 1, -2, -7, 0};
+    vector<float> h_data = {0, 5, 3, 0, 7};
+    size_t N = hr_data.size();
+    Tensor hr(N, 1);
+    Tensor hz(N, 1);
+    Tensor h(N, 1);
+    cudaMemcpy(hr.data, hr_data.data(), N * sizeof(float), cudaMemcpyHostToDevice);
+    cudaMemcpy(hz.data, hz_data.data(), N * sizeof(float), cudaMemcpyHostToDevice);
+
+    add<<<1, N>>>(h, hr, hz);
+    relu<<<1, N>>>(h);
+    vector<float> h_result = static_cast<vector<float>>(h);
+    bool pass = true;
+    for(size_t i = 0; i < h_data.size(); i++)
+      if(fabs(h_data[i] - h_result[i]) > 0.0001)
+        pass = false;
+
+    cout << (pass ? "pass" : "fail") << "\n";
+
+    if(!pass) {
+      Tensor h_expected(N, 1);
+      cudaMemcpy(h_expected.data, h_data.data(), 5*1 * sizeof(float), cudaMemcpyHostToDevice);
+      h_expected.print(cout, "add,relu expected");
+      h.print(cout, "add,relu result");
+    }
+  }
 }
 }

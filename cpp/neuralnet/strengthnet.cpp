@@ -103,7 +103,7 @@ float Tensor::variance() const {
   return buffer[0] / (n - 1);
 }
 
-void Tensor::print(std::ostream& stream, const std::string& name) {
+void Tensor::print(std::ostream& stream, const std::string& name) const {
   vector<float> hostdata(dims.x * dims.y);
   CUDA_ERR("Tensor::print", cudaMemcpy(hostdata.data(), data, dims.x * dims.y * sizeof(float), cudaMemcpyDeviceToHost));
   stream << "=== DUMP " << name << "\n";
@@ -121,7 +121,7 @@ StrengthNet::StrengthNet()
   h_grad(maxN, hidden_ch), hr_grad(maxN, hidden_ch), hz_grad(maxN, hidden_ch),
   r_grad(maxN, 1), z_grad(maxN, 1), y_grad(1, 1),
   W1(in_ch+1, hidden_ch), W2r(hidden_ch+1, 1), W2z(hidden_ch+1, 1),
-  W1_grad(in_ch, hidden_ch), W2r_grad(hidden_ch, 1), W2z_grad(hidden_ch, 1)
+  W1_grad(in_ch+1, hidden_ch), W2r_grad(hidden_ch+1, 1), W2z_grad(hidden_ch+1, 1)
 {
 }
 
@@ -223,4 +223,27 @@ float StrengthNet::getOutput() const {
   float output;
   CUDA_ERR("StrengthNet::getOutput", cudaMemcpy(&output, y.data, sizeof(float), cudaMemcpyDeviceToHost));
   return output * 500.f + 1500.f;
+}
+
+void StrengthNet::printWeights(std::ostream& stream, const std::string& name) const {
+  stream << "* W1 *\n";   W1.print(stream, name);
+  stream << "* W2r *\n";  W2r.print(stream, name);
+  stream << "* W2z *\n";  W2z.print(stream, name);
+}
+
+void StrengthNet::printState(std::ostream& stream, const std::string& name) const {
+  stream << "* x *\n";  x.print(stream, name);
+  stream << "* h *\n";  h.print(stream, name);
+  stream << "* h_grad *\n";  h_grad.print(stream, name);
+  stream << "* hr_grad *\n";  hr_grad.print(stream, name);
+  stream << "* hz_grad *\n";  hz_grad.print(stream, name);
+  stream << "* r *\n";  r.print(stream, name);
+  stream << "* r_grad *\n";  r_grad.print(stream, name);
+  stream << "* z_grad *\n";  z_grad.print(stream, name);
+  stream << "* a *\n";  a.print(stream, name);
+  stream << "* y *\n";  y.print(stream, name);
+  stream << "* y_grad *\n";  y_grad.print(stream, name);
+  stream << "* W1_grad *\n";  W1_grad.print(stream, name);
+  stream << "* W2r_grad *\n";  W2r_grad.print(stream, name);
+  stream << "* W2z_grad *\n";  W2z_grad.print(stream, name);
 }

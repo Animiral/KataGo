@@ -27,7 +27,7 @@ struct Tensor {
   Tensor clone() const;                         // copy with ownership
   void assignFrom(const Tensor& rhs);           // same-size assign
   float variance() const;
-  void print(std::ostream& stream, const std::string& name);
+  void print(std::ostream& stream, const std::string& name) const;
 
 private:
 
@@ -66,6 +66,8 @@ public:
   float getOutput() const;                           // GPU to host, with scaling
   void forward();
   void backward(float target, float learnrate);  // buffers must be filled by forward pass
+  void printWeights(std::ostream& stream, const std::string& name) const;
+  void printState(std::ostream& stream, const std::string& name) const;
 
 private:
 
