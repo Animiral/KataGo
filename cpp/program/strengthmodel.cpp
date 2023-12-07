@@ -165,7 +165,7 @@ void StrengthModel::train(FeaturesAndTargets& xy, size_t split, int epochs, size
         net.setInput(xy[i+b].first);
         net.forward();
         // cout << "Sample #" << i << "(" << xy[i].first.size() << " moves): (" << y_hat << "-" << xy[i].second << ")^2 = " << (y_hat-xy[i].second)*(y_hat-xy[i].second) << "\n";
-        net.backward(xy[i].second, b);
+        net.backward(xy[i+b].second, b);
         grads_sq += net.gradsSq();
       }
       net.update(weightPenalty, learnrate);
