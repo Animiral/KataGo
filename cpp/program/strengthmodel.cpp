@@ -175,6 +175,17 @@ void StrengthModel::train(FeaturesAndTargets& xy, size_t split, int epochs, size
     // net.printState(cout, "epoch " + Global::intToString(e));
 
     // test epoch result
+    float mse_training = 0; // error on training set
+    for(int i = 0; i < split; i++) {
+      net.setInput(xy[i].first);
+      net.forward();
+      float y_hat = net.getOutput();
+      float sqerr = (y_hat - xy[i].second) * (y_hat - xy[i].second);
+      mse_training += sqerr;
+      // cout << "Test #" << i-split << " (" << xy[i].first.size() << " moves): prediction=" << std::fixed << std::setprecision(3) << y_hat << ", target=" << xy[i].second << ", sqerr=" << sqerr << "\n";
+    }
+    mse_training /= split;
+
     float mse = 0;
     for(int i = split; i < xy.size(); i++) {
       net.setInput(xy[i].first);
@@ -187,7 +198,7 @@ void StrengthModel::train(FeaturesAndTargets& xy, size_t split, int epochs, size
     mse /= xy.size() - split;
     float theta_sq = net.thetaSq();
     // cout << "Epoch " << e << ": mse=" << std::fixed << std::setprecision(3) << mse << "\n";
-    cout << custom_format("Epoch %d: mse=%.2f, theta^2=%.4f, grad^2=%.4f\n", e, mse, theta_sq, grads_sq);
+    cout << custom_format("Epoch %d: mse_training=%.2f, mse=%.2f, theta^2=%.4f, grad^2=%.4f\n", e, mse_training, mse, theta_sq, grads_sq);
   }
   net.saveModelFile(strengthModelFile);
 }

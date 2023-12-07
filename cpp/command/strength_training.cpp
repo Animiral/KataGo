@@ -159,7 +159,7 @@ int MainCmds::strength_training(const vector<string>& args) {
     size_t split = static_cast<size_t>(featuresTargets.size() * .8); // TODO: allow configuration
     int epochs = 100;        // TODO: allow configuration
     size_t batchSize = 100;       // TODO: allow configuration
-    float weightPenalty = 1e-7f;  // TODO: allow configuration
+    float weightPenalty = 1e-5f;  // TODO: allow configuration
     float learnrate = 1e-3f; // TODO: allow configuration
     strengthModel.train(featuresTargets, split, epochs, batchSize, weightPenalty, learnrate);
   }
