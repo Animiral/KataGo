@@ -11,10 +11,10 @@
 struct Tensor {
 
   float* data; // GPU device pointer; column-major order
-  uint2 dims;
+  uint3 dims;
 
   Tensor() = default;
-  explicit Tensor(uint xdim, uint ydim);
+  explicit Tensor(uint xdim, uint ydim, uint zdim = 1);
   Tensor(const Tensor& rhs);                    // copy without ownership (for passing as arg to kernel)
   Tensor(Tensor&& rhs) noexcept;
   Tensor& operator=(const Tensor& rhs);         // ownership remains with rhs; use clone() or copyFrom() for a full copy
@@ -63,9 +63,11 @@ public:
   void saveModelFile(const std::string& path); // store weights
 
   void setInput(const std::vector<MoveFeatures>& features); // host to GPU, with scaling
-  float getOutput() const;                           // GPU to host, with scaling
+  void setBatchSize(size_t batchSize_) noexcept; // followed by forward&backward (batch_size times), then update()
+  float getOutput() const;                     // GPU to host, with scaling
   void forward();
-  void backward(float target, float weight_penalty, float learnrate);  // buffers must be filled by forward pass
+  void backward(float target, size_t index);   // buffers must be filled by forward pass
+  void update(float weightPenalty, float learnrate);
   void printWeights(std::ostream& stream, const std::string& name) const;
   void printState(std::ostream& stream, const std::string& name) const;
   float thetaSq() const; // average of squared parameters (W1, W2r, W2z);
@@ -75,10 +77,13 @@ private:
 
   static const uint32_t STRNET_HEADER;
   static constexpr std::size_t maxN = 1000; // max number of input moves (for workspace buffer)
+  static constexpr std::size_t maxBatchSize = 100; // allocated 3rd dim of weight gradient tensors
   static constexpr std::size_t in_ch = 6;
   static constexpr std::size_t hidden_ch = 32;
   static constexpr std::size_t out_ch = 2;
+
   std::size_t N; // last seen N in forward(), remember for backward()
+  std::size_t batchSize = 100; // allocated 3rd dim of weight gradient tensors
 
   Tensor x, h, r, a, y;  // (intermediate) calculation values
   Tensor h_grad, hr_grad, hz_grad, r_grad, z_grad, y_grad;  // intermediate gradients for backpropagation

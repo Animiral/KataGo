@@ -14,13 +14,13 @@ __global__ void scale(Tensor y, const Tensor w);
 __global__ void add(Tensor y, const Tensor a, const Tensor b);
 __global__ void dotproduct(Tensor y, const Tensor a, const Tensor b);
 __global__ void matmul(Tensor y, const Tensor W, const Tensor x);
-__global__ void transposeMatmul(Tensor y, const Tensor a, const Tensor b);
+__global__ void transposeMatmul(Tensor y, const Tensor a, const Tensor b, size_t z_index);
 __global__ void relu(Tensor h);
 __global__ void softmax(Tensor a);
 __global__ void lossDerived(Tensor y_grad, float target, const Tensor y);
 __global__ void softmaxDerived(Tensor z_grad, const Tensor a);
 __global__ void matmulDerived(Tensor x_grad, const Tensor y_grad, const Tensor W);
-__global__ void update(Tensor W, const Tensor W_grad, float learnrate);
+__global__ void updateTensor(Tensor W, const Tensor W_grad, float weightPenalty, float learnrate);
 
 }
 
@@ -69,7 +69,7 @@ void runStrengthModelTests() {
     cudaMemcpy(A.data, A_data.data(), 2*3 * sizeof(float), cudaMemcpyHostToDevice);
     cudaMemcpy(B.data, B_data.data(), 4*2 * sizeof(float), cudaMemcpyHostToDevice);
 
-    transposeMatmul<<<1, {16, 16}>>>(C, A, B);
+    transposeMatmul<<<1, {16, 16}>>>(C, A, B, 0);
     vector<float> C_result = static_cast<vector<float>>(C);
     bool pass = true;
     for(size_t i = 0; i < C_data.size(); i++)

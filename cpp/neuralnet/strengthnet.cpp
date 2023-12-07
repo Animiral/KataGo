@@ -6,9 +6,9 @@
 #include <cstdio>
 #include <iomanip>
 
-Tensor::Tensor(uint xdim, uint ydim)
-: data(nullptr), dims{xdim, ydim}, isOwner(true) {
-  size_t n = dims.x * dims.y;
+Tensor::Tensor(uint xdim, uint ydim, uint zdim)
+: data(nullptr), dims{xdim, ydim, zdim}, isOwner(true) {
+  size_t n = dims.x * dims.y * dims.z;
   CUDA_ERR("Tensor(dims)", cudaMalloc(&data, n * sizeof(float)));
 }
 
@@ -117,11 +117,12 @@ void Tensor::print(std::ostream& stream, const std::string& name) const {
 }
 
 StrengthNet::StrengthNet()
-: x(maxN, in_ch), h(maxN, hidden_ch), r(maxN, 1), a(maxN, 1), y(1, 1),
+: batchSize(maxBatchSize),
+  x(maxN, in_ch), h(maxN, hidden_ch), r(maxN, 1), a(maxN, 1), y(1, 1),
   h_grad(maxN, hidden_ch), hr_grad(maxN, hidden_ch), hz_grad(maxN, hidden_ch),
   r_grad(maxN, 1), z_grad(maxN, 1), y_grad(1, 1),
   W1(in_ch+1, hidden_ch), W2r(hidden_ch+1, 1), W2z(hidden_ch+1, 1),
-  W1_grad(in_ch+1, hidden_ch), W2r_grad(hidden_ch+1, 1), W2z_grad(hidden_ch+1, 1)
+  W1_grad(in_ch+1, hidden_ch, maxBatchSize), W2r_grad(hidden_ch+1, 1, maxBatchSize), W2z_grad(hidden_ch+1, 1, maxBatchSize)
 {
 }
 
@@ -219,6 +220,12 @@ void StrengthNet::setInput(const std::vector<MoveFeatures>& features) {
   h_grad.dims.x = hr_grad.dims.x = hz_grad.dims.x = r_grad.dims.x = z_grad.dims.x = N;
 }
 
+void StrengthNet::setBatchSize(size_t batchSize_) noexcept {
+  assert(batchSize_ <= maxBatchSize);
+  batchSize = batchSize_;
+  W1_grad.dims.z = W2r_grad.dims.z = W2z_grad.dims.z = batchSize_;  // parameter update gradients
+}
+
 float StrengthNet::getOutput() const {
   float output;
   CUDA_ERR("StrengthNet::getOutput", cudaMemcpy(&output, y.data, sizeof(float), cudaMemcpyDeviceToHost));
@@ -243,7 +250,7 @@ void StrengthNet::printState(std::ostream& stream, const std::string& name) cons
   stream << "* a *\n";  a.print(stream, name);
   stream << "* y *\n";  y.print(stream, name);
   stream << "* y_grad *\n";  y_grad.print(stream, name);
-  stream << "* W1_grad *\n";  W1_grad.print(stream, name);
-  stream << "* W2r_grad *\n";  W2r_grad.print(stream, name);
-  stream << "* W2z_grad *\n";  W2z_grad.print(stream, name);
+  stream << "* W1_grad *\n";  W1_grad.print(stream, name);   // only prints first grad (z==0)!
+  stream << "* W2r_grad *\n";  W2r_grad.print(stream, name); // only prints first grad (z==0)!
+  stream << "* W2z_grad *\n";  W2z_grad.print(stream, name); // only prints first grad (z==0)!
 }

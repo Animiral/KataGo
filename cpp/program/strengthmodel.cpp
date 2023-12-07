@@ -150,20 +150,25 @@ FeaturesAndTargets StrengthModel::getFeaturesAndTargets(const Dataset& dataset) 
   return featuresTargets;
 }
 
-void StrengthModel::train(const FeaturesAndTargets& xy, size_t split, int epochs, float weight_penalty, float learnrate) {
+void StrengthModel::train(FeaturesAndTargets& xy, size_t split, int epochs, size_t batchSize, float weightPenalty, float learnrate) {
   assert(split <= xy.size());
   Rand rand; // TODO: allow seeding from outside StrengthModel
   net.randomInit(rand);
 
   for(int e = 0; e < epochs; e++) {
     float grads_sq = 0;
+    std::shuffle(&xy[0], &xy[split], rand);
     // train weights
-    for(int i = 0; i < split; i++) {
-      net.setInput(xy[i].first);
-      net.forward();
-      // cout << "Sample #" << i << "(" << xy[i].first.size() << " moves): (" << y_hat << "-" << xy[i].second << ")^2 = " << (y_hat-xy[i].second)*(y_hat-xy[i].second) << "\n";
-      net.backward(xy[i].second, weight_penalty, learnrate);
-      grads_sq += net.gradsSq();
+    for(int i = 0; i < split; i += batchSize) {
+      net.setBatchSize(std::min(batchSize, split-i));
+      for(size_t b = 0; i+b < split && b < batchSize; b++) {
+        net.setInput(xy[i+b].first);
+        net.forward();
+        // cout << "Sample #" << i << "(" << xy[i].first.size() << " moves): (" << y_hat << "-" << xy[i].second << ")^2 = " << (y_hat-xy[i].second)*(y_hat-xy[i].second) << "\n";
+        net.backward(xy[i].second, b);
+        grads_sq += net.gradsSq();
+      }
+      net.update(weightPenalty, learnrate);
     }
     grads_sq /= split; // average in 1 training update
     // net.printWeights(cout, "epoch " + Global::intToString(e));

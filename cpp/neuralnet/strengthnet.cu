@@ -79,10 +79,11 @@ __global__ void matmul(Tensor y, const Tensor W, const Tensor x) {
 
 // y = a*b^T
 // set blocks to partition y into squares
-__global__ void transposeMatmul(Tensor y, const Tensor a, const Tensor b) {
+__global__ void transposeMatmul(Tensor y, const Tensor a, const Tensor b, size_t z_index) {
   assert(a.dims.x == b.dims.x);  // input sizes must match
   assert(y.dims.x - b.dims.y <= 1);  // output size must either match or fit exactly 1 more column of bias weights
   assert(y.dims.y == a.dims.y);  // output size must match
+  assert(z_index < y.dims.z); // must have room to store the result
 
   // naive implementation
   int row = blockIdx.y * blockDim.y + threadIdx.y;
@@ -95,6 +96,7 @@ __global__ void transposeMatmul(Tensor y, const Tensor a, const Tensor b) {
   size_t b_stride = b.dims.y;
   size_t a_stride = a.dims.y;
   size_t y_stride = y.dims.y;
+  size_t y_offset = z_index * y.dims.x * y.dims.y;
 
   float h = 0.0f;
   for (int i = 0; i < b.dims.x; i++) {
@@ -103,7 +105,7 @@ __global__ void transposeMatmul(Tensor y, const Tensor a, const Tensor b) {
     else // construct bias row (as if b.data[...] == 1)
       h += a.data[i * a_stride + row];
   }
-  y.data[col * y_stride + row] = h;
+  y.data[y_offset + col * y_stride + row] = h;
 }
 
 __global__ void relu(Tensor h) {
@@ -203,12 +205,16 @@ __global__ void matmulDerived(Tensor x_grad, const Tensor y_grad, const Tensor W
 }
 
 // 1 block with W.dims threads
-__global__ void update(Tensor W, const Tensor W_grad, float weight_penalty, float learnrate) {
+__global__ void updateTensor(Tensor W, const Tensor W_grad, float weightPenalty, float learnrate) {
   assert(W.dims.x == W_grad.dims.x);
   assert(W.dims.y == W_grad.dims.y);
 
   int i = threadIdx.x * W.dims.y + threadIdx.y;
-  float delta = W.data[i] * 2 * weight_penalty + W_grad.data[i];
+  float delta = 0;
+  for(size_t z = 0; z < W_grad.dims.z; z++) {
+    delta += W_grad.data[z * W_grad.dims.x * W_grad.dims.y + i];
+  }
+  delta += W.data[i] * 2 * weightPenalty;
   W.data[i] -= delta * learnrate;
 }
 
@@ -269,7 +275,9 @@ void StrengthNet::forward() {
   dotproduct<<<1, 1>>>(y, r, a);
 }
 
-void StrengthNet::backward(float target, float weight_penalty, float learnrate) {
+void StrengthNet::backward(float target, size_t index) {
+  assert(index < batchSize);
+
   uint N = x.dims.x;
   dim3 blockDim1d(1024);
   dim3 blockDim2d(16, 16);
@@ -288,9 +296,9 @@ void StrengthNet::backward(float target, float weight_penalty, float learnrate) 
 
   // layer 2
   numBlocks = numBlocksForTensor(W2r_grad, blockDim2d);
-  transposeMatmul<<<numBlocks, blockDim2d>>>(W2r_grad, r_grad, h); // dL/dW2r = dL/dr * h^T
+  transposeMatmul<<<numBlocks, blockDim2d>>>(W2r_grad, r_grad, h, index); // dL/dW2r = dL/dr * h^T
   numBlocks = numBlocksForTensor(W2z_grad, blockDim2d);
-  transposeMatmul<<<numBlocks, blockDim2d>>>(W2z_grad, z_grad, h); // dL/dW2z = dL/dz * h^T
+  transposeMatmul<<<numBlocks, blockDim2d>>>(W2z_grad, z_grad, h, index); // dL/dW2z = dL/dz * h^T
 
   numBlocks = numBlocksForTensor(hr_grad, blockDim2d);
   matmulDerived<<<numBlocks, blockDim2d>>>(hr_grad, r_grad, W2r);
@@ -303,12 +311,13 @@ void StrengthNet::backward(float target, float weight_penalty, float learnrate) 
   relu<<<numBlocks, blockDim1d>>>(h_grad); // dL/dz1 = dL/dh * dh/dz1
  
   numBlocks = numBlocksForTensor(W1_grad, blockDim2d);
-  transposeMatmul<<<numBlocks, blockDim2d>>>(W1_grad, h_grad, x); // dL/dW1 = dL/dz1 * x^T
+  transposeMatmul<<<numBlocks, blockDim2d>>>(W1_grad, h_grad, x, index); // dL/dW1 = dL/dz1 * x^T
+}
 
-  // apply gradients
-  update<<<1, {W1.dims.x, W1.dims.y}>>>(W1, W1_grad, weight_penalty, learnrate);
-  update<<<1, {W2r.dims.x, W2r.dims.y}>>>(W2r, W2r_grad, weight_penalty, learnrate);
-  update<<<1, {W2z.dims.x, W2z.dims.y}>>>(W2z, W2z_grad, weight_penalty, learnrate);
+void StrengthNet::update(float weightPenalty, float learnrate) {
+  updateTensor<<<1, {W1.dims.x, W1.dims.y}>>>(W1, W1_grad, weightPenalty, learnrate);
+  updateTensor<<<1, {W2r.dims.x, W2r.dims.y}>>>(W2r, W2r_grad, weightPenalty, learnrate);
+  updateTensor<<<1, {W2z.dims.x, W2z.dims.y}>>>(W2z, W2z_grad, weightPenalty, learnrate);
 }
 
 float StrengthNet::thetaSq() const {
