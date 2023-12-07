@@ -219,6 +219,27 @@ __global__ void update(Tensor W, const Tensor W_grad, float learnrate) {
 //   outgrads[threadIdx.x*2 + 1] = ingrads[threadIdx.x*2 + 1] * 10.f / (cosa*cosa);
 // }
 
+__global__ void sumOfSquares(Tensor y, const Tensor t) {
+  extern __shared__ float buffer[];
+  int i = blockIdx.x * blockDim.x + threadIdx.x;
+  uint n = t.dims.x * t.dims.y;
+  if(i >= n)
+    return;
+
+  buffer[i] = t.data[i] * t.data[i];
+  __syncthreads();
+
+  for (uint s = 1; s < n; s *= 2) {
+      if (i + s < n) {
+          buffer[i] += buffer[i + s];
+      }
+      __syncthreads();
+  }
+
+  if(0 == i)
+    y.data[0] = buffer[0];
+}
+
 } // end namespace StrengthNetKernels
 
 using namespace StrengthNetKernels;
@@ -288,3 +309,52 @@ void StrengthNet::backward(float target, float learnrate) {
   update<<<1, {W2z.dims.x, W2z.dims.y}>>>(W2z, W2z_grad, learnrate);
 }
 
+float StrengthNet::thetaSq() const {
+  float sosW1, sosW2r, sosW2z;
+  Tensor result(1, 1);
+  dim3 blockDim2d(16, 16);
+  size_t shmemSize = (in_ch + out_ch) * hidden_ch * sizeof(float);
+
+  dim3 numBlocks = numBlocksForTensor(W1, blockDim2d);
+  sumOfSquares<<<numBlocks, blockDim2d, shmemSize>>>(result, W1);
+  cudaMemcpy(&sosW1, result.data, sizeof(float), cudaMemcpyDeviceToHost);
+
+  numBlocks = numBlocksForTensor(W2r, blockDim2d);
+  sumOfSquares<<<numBlocks, blockDim2d, shmemSize>>>(result, W2r);
+  cudaMemcpy(&sosW2r, result.data, sizeof(float), cudaMemcpyDeviceToHost);
+
+  numBlocks = numBlocksForTensor(W2z, blockDim2d);
+  sumOfSquares<<<numBlocks, blockDim2d, shmemSize>>>(result, W2z);
+  cudaError_t status = cudaMemcpy(&sosW2z, result.data, sizeof(float), cudaMemcpyDeviceToHost);
+
+  if(status != cudaSuccess)
+    throw std::runtime_error(cudaGetErrorString(status));
+
+  size_t paramCount = W1.dims.x * W1.dims.y + W2r.dims.x * W2r.dims.y + W2z.dims.x * W2z.dims.y;
+  return (sosW1 + sosW2r + sosW2z) / paramCount;
+}
+
+float StrengthNet::gradsSq() const {
+  float sosW1, sosW2r, sosW2z;
+  Tensor result(1, 1);
+  dim3 blockDim2d(16, 16);
+  size_t shmemSize = (in_ch + out_ch) * hidden_ch * sizeof(float);
+
+  dim3 numBlocks = numBlocksForTensor(W1_grad, blockDim2d);
+  sumOfSquares<<<numBlocks, blockDim2d, shmemSize>>>(result, W1_grad);
+  cudaMemcpy(&sosW1, result.data, sizeof(float), cudaMemcpyDeviceToHost);
+
+  numBlocks = numBlocksForTensor(W2r_grad, blockDim2d);
+  sumOfSquares<<<numBlocks, blockDim2d, shmemSize>>>(result, W2r_grad);
+  cudaMemcpy(&sosW2r, result.data, sizeof(float), cudaMemcpyDeviceToHost);
+
+  numBlocks = numBlocksForTensor(W2z_grad, blockDim2d);
+  sumOfSquares<<<numBlocks, blockDim2d, shmemSize>>>(result, W2z_grad);
+  cudaError_t status = cudaMemcpy(&sosW2z, result.data, sizeof(float), cudaMemcpyDeviceToHost);
+
+  if(status != cudaSuccess)
+    throw std::runtime_error(cudaGetErrorString(status));
+
+  size_t paramCount = W1_grad.dims.x * W1_grad.dims.y + W2r_grad.dims.x * W2r_grad.dims.y + W2z_grad.dims.x * W2z_grad.dims.y;
+  return (sosW1 + sosW2r + sosW2z) / paramCount;
+}

@@ -68,6 +68,8 @@ public:
   void backward(float target, float learnrate);  // buffers must be filled by forward pass
   void printWeights(std::ostream& stream, const std::string& name) const;
   void printState(std::ostream& stream, const std::string& name) const;
+  float thetaSq() const; // average of squared parameters (W1, W2r, W2z);
+  float gradsSq() const; // average of squared parameter gradients (W1_grad, W2r_grad, W2z_grad);
 
 private:
 
