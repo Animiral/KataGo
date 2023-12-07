@@ -150,7 +150,7 @@ FeaturesAndTargets StrengthModel::getFeaturesAndTargets(const Dataset& dataset) 
   return featuresTargets;
 }
 
-void StrengthModel::train(const FeaturesAndTargets& xy, size_t split, int epochs, float learnrate) {
+void StrengthModel::train(const FeaturesAndTargets& xy, size_t split, int epochs, float weight_penalty, float learnrate) {
   assert(split <= xy.size());
   Rand rand; // TODO: allow seeding from outside StrengthModel
   net.randomInit(rand);
@@ -162,7 +162,7 @@ void StrengthModel::train(const FeaturesAndTargets& xy, size_t split, int epochs
       net.setInput(xy[i].first);
       net.forward();
       // cout << "Sample #" << i << "(" << xy[i].first.size() << " moves): (" << y_hat << "-" << xy[i].second << ")^2 = " << (y_hat-xy[i].second)*(y_hat-xy[i].second) << "\n";
-      net.backward(xy[i].second, learnrate);
+      net.backward(xy[i].second, weight_penalty, learnrate);
       grads_sq += net.gradsSq();
     }
     grads_sq /= split; // average in 1 training update

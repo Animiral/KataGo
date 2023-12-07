@@ -55,7 +55,7 @@ public:
   FeaturesAndTargets getFeaturesAndTargets(const Dataset& dataset) const;
 
   // training loop, save result to file
-  void train(const FeaturesAndTargets& xy, size_t split, int epochs, float learnrate);
+  void train(const FeaturesAndTargets& xy, size_t split, int epochs, float weight_penalty, float learnrate);
 
   // Predict rating of player given the moves from their games
   float rating(const vector<MoveFeatures>& history) const;

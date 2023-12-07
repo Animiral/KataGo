@@ -203,11 +203,13 @@ __global__ void matmulDerived(Tensor x_grad, const Tensor y_grad, const Tensor W
 }
 
 // 1 block with W.dims threads
-__global__ void update(Tensor W, const Tensor W_grad, float learnrate) {
+__global__ void update(Tensor W, const Tensor W_grad, float weight_penalty, float learnrate) {
   assert(W.dims.x == W_grad.dims.x);
   assert(W.dims.y == W_grad.dims.y);
 
-  W.data[threadIdx.x * W.dims.y + threadIdx.y] -= W_grad.data[threadIdx.x * W_grad.dims.y + threadIdx.y] * learnrate;
+  int i = threadIdx.x * W.dims.y + threadIdx.y;
+  float delta = W.data[i] * 2 * weight_penalty + W_grad.data[i];
+  W.data[i] -= delta * learnrate;
 }
 
 // __global__ void forwardTanhKernel(float* softx, int ch, int row) {
@@ -267,7 +269,7 @@ void StrengthNet::forward() {
   dotproduct<<<1, 1>>>(y, r, a);
 }
 
-void StrengthNet::backward(float target, float learnrate) {
+void StrengthNet::backward(float target, float weight_penalty, float learnrate) {
   uint N = x.dims.x;
   dim3 blockDim1d(1024);
   dim3 blockDim2d(16, 16);
@@ -304,9 +306,9 @@ void StrengthNet::backward(float target, float learnrate) {
   transposeMatmul<<<numBlocks, blockDim2d>>>(W1_grad, h_grad, x); // dL/dW1 = dL/dz1 * x^T
 
   // apply gradients
-  update<<<1, {W1.dims.x, W1.dims.y}>>>(W1, W1_grad, learnrate);
-  update<<<1, {W2r.dims.x, W2r.dims.y}>>>(W2r, W2r_grad, learnrate);
-  update<<<1, {W2z.dims.x, W2z.dims.y}>>>(W2z, W2z_grad, learnrate);
+  update<<<1, {W1.dims.x, W1.dims.y}>>>(W1, W1_grad, weight_penalty, learnrate);
+  update<<<1, {W2r.dims.x, W2r.dims.y}>>>(W2r, W2r_grad, weight_penalty, learnrate);
+  update<<<1, {W2z.dims.x, W2z.dims.y}>>>(W2z, W2z_grad, weight_penalty, learnrate);
 }
 
 float StrengthNet::thetaSq() const {

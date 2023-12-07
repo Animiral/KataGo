@@ -159,8 +159,9 @@ int MainCmds::strength_training(const vector<string>& args) {
     std::shuffle(featuresTargets.begin(), featuresTargets.end(), Rand());
     size_t split = static_cast<size_t>(featuresTargets.size() * .8); // TODO: allow configuration
     int epochs = 100;        // TODO: allow configuration
+    float weight_penalty = 1e-4f;  // TODO: allow configuration
     float learnrate = 1e-3f; // TODO: allow configuration
-    strengthModel.train(featuresTargets, split, epochs, learnrate);
+    strengthModel.train(featuresTargets, split, epochs, weight_penalty, learnrate);
   }
 
   delete nnEval;

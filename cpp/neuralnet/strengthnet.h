@@ -65,7 +65,7 @@ public:
   void setInput(const std::vector<MoveFeatures>& features); // host to GPU, with scaling
   float getOutput() const;                           // GPU to host, with scaling
   void forward();
-  void backward(float target, float learnrate);  // buffers must be filled by forward pass
+  void backward(float target, float weight_penalty, float learnrate);  // buffers must be filled by forward pass
   void printWeights(std::ostream& stream, const std::string& name) const;
   void printState(std::ostream& stream, const std::string& name) const;
   float thetaSq() const; // average of squared parameters (W1, W2r, W2z);
