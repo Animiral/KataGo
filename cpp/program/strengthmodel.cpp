@@ -13,6 +13,8 @@ using std::vector;
 using std::cout;
 using std::cerr;
 
+namespace {
+
 // poor man's pre-C++20 format, https://stackoverflow.com/questions/2342162/stdstring-formatting-like-sprintf
 template<typename ... Args>
 std::string custom_format( const std::string& format, Args ... args ) {
@@ -22,6 +24,8 @@ std::string custom_format( const std::string& format, Args ... args ) {
   std::unique_ptr<char[]> buf( new char[ size ] );
   std::snprintf( buf.get(), size, format.c_str(), args ... );
   return std::string( buf.get(), buf.get() + size - 1 ); // We don't want the '\0' inside
+}
+
 }
 
 bool GameFeatures::present() const noexcept {
@@ -98,7 +102,6 @@ Dataset StrengthModel::loadDataset(const string& path) {
     else fields.push_back(F::ignore);
   }
 
-  cerr << path << " is a CSV file with " << fields.size() << " fields.\n";
   Dataset dataset;
 
   while (std::getline(istrm, line)) {
