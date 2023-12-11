@@ -109,7 +109,7 @@ void Tensor::print(std::ostream& stream, const std::string& name) const {
   stream << "=== DUMP " << name << "\n";
   for(int c = 0; c < dims.y; c++) {
     for(int i = 0; i < dims.x; i++) {
-      stream << std::setw(6) << std::fixed << std::setprecision(2) << hostdata[i * dims.y + c] << " ";
+      stream << std::setw(6) << std::fixed << std::setprecision(4) << hostdata[i * dims.y + c] << " ";
     }
     stream << "\n";
   }
@@ -241,14 +241,17 @@ void StrengthNet::printWeights(std::ostream& stream, const std::string& name) co
 void StrengthNet::printState(std::ostream& stream, const std::string& name) const {
   stream << "* x *\n";  x.print(stream, name);
   stream << "* h *\n";  h.print(stream, name);
+  stream << "* r *\n";  r.print(stream, name);
+  stream << "* a *\n";  a.print(stream, name);
+  stream << "* y *\n";  y.print(stream, name);
+}
+
+void StrengthNet::printGrads(std::ostream& stream, const std::string& name) const {
   stream << "* h_grad *\n";  h_grad.print(stream, name);
   stream << "* hr_grad *\n";  hr_grad.print(stream, name);
   stream << "* hz_grad *\n";  hz_grad.print(stream, name);
-  stream << "* r *\n";  r.print(stream, name);
   stream << "* r_grad *\n";  r_grad.print(stream, name);
   stream << "* z_grad *\n";  z_grad.print(stream, name);
-  stream << "* a *\n";  a.print(stream, name);
-  stream << "* y *\n";  y.print(stream, name);
   stream << "* y_grad *\n";  y_grad.print(stream, name);
   stream << "* W1_grad *\n";  W1_grad.print(stream, name);   // only prints first grad (z==0)!
   stream << "* W2r_grad *\n";  W2r_grad.print(stream, name); // only prints first grad (z==0)!

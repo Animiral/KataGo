@@ -53,6 +53,7 @@ public:
   // get dataset from a list file
   static Dataset loadDataset(const string& path);
   FeaturesAndTargets getFeaturesAndTargets(const Dataset& dataset) const;
+  static FeaturesAndTargets getFeaturesAndTargetsCached(const Dataset& dataset, const string& featureDir);
 
   // training loop, save result to file
   void train(FeaturesAndTargets& xy, size_t split, int epochs, size_t batchSize, float weightPenalty, float learnrate);
@@ -72,7 +73,7 @@ private:
   static const uint32_t FEATURE_HEADER;
 
   GameFeatures maybeGetGameFeaturesCachedForSgf(const string& sgfPath, string& blackFeaturesPath, string& whiteFeaturesPath) const;
-  vector<MoveFeatures> maybeGetMoveFeaturesCached(const string& cachePath) const;
+  static vector<MoveFeatures> maybeGetMoveFeaturesCached(const string& cachePath);
   bool maybeWriteMoveFeaturesCached(const string& cachePath, const vector<MoveFeatures>& features) const;
   GameFeatures extractGameFeatures(const CompactSgf& sgf, const string& blackFeaturesPath, const string& whiteFeaturesPath) const;
 

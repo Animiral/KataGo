@@ -153,10 +153,35 @@ FeaturesAndTargets StrengthModel::getFeaturesAndTargets(const Dataset& dataset) 
   return featuresTargets;
 }
 
+FeaturesAndTargets StrengthModel::getFeaturesAndTargetsCached(const Dataset& dataset, const string& featureDir) {
+  FeaturesAndTargets featuresTargets;
+  for(const GameMeta& gm : dataset) {
+    auto blackFeaturesPath = cachePath(featureDir, gm.sgfPath, P_BLACK);
+    auto blackFeatures = maybeGetMoveFeaturesCached(blackFeaturesPath);
+    auto whiteFeaturesPath = cachePath(featureDir, gm.sgfPath, P_WHITE);
+    auto whiteFeatures = maybeGetMoveFeaturesCached(whiteFeaturesPath);
+    if(blackFeatures.empty() || whiteFeatures.empty())
+      throw StringError("Incomplete feature cache for " + gm.sgfPath);
+
+    StrengthNet::Output blackTarget = Global::stringToFloat(gm.blackLabel);
+    StrengthNet::Output whiteTarget = Global::stringToFloat(gm.whiteLabel);
+    featuresTargets.emplace_back(blackFeatures, blackTarget);
+    featuresTargets.emplace_back(whiteFeatures, whiteTarget);
+  }
+  return featuresTargets;
+}
+
 void StrengthModel::train(FeaturesAndTargets& xy, size_t split, int epochs, size_t batchSize, float weightPenalty, float learnrate) {
   assert(split <= xy.size());
   Rand rand; // TODO: allow seeding from outside StrengthModel
   net.randomInit(rand);
+
+  // // DEBUG: only 1 data point to train, 1 to test
+  // xy[0] = xy[700];
+  // xy[1] = xy[701];
+  // xy.resize(2);
+  // batchSize = 1;
+  // split = 1;
 
   for(int e = 0; e < epochs; e++) {
     float grads_sq = 0;
@@ -171,6 +196,14 @@ void StrengthModel::train(FeaturesAndTargets& xy, size_t split, int epochs, size
         net.backward(xy[i+b].second, b);
         grads_sq += net.gradsSq();
       }
+      net.mergeGrads();
+
+      // if(e % 5 == 4 && i == 0) {
+      //   net.printWeights(cout, "epoch " + Global::intToString(e));
+      //   net.printState(cout, "epoch " + Global::intToString(e));
+      //   // cout << "Test #" << i-split << " (" << xy[i].first.size() << " moves): prediction=" << std::fixed << std::setprecision(3) << y_hat << ", target=" << xy[i].second << ", sqerr=" << sqerr << "\n";
+      // }
+
       net.update(weightPenalty, learnrate);
     }
     grads_sq /= split; // average in 1 training update
@@ -185,7 +218,6 @@ void StrengthModel::train(FeaturesAndTargets& xy, size_t split, int epochs, size
       float y_hat = net.getOutput();
       float sqerr = (y_hat - xy[i].second) * (y_hat - xy[i].second);
       mse_training += sqerr;
-      // cout << "Test #" << i-split << " (" << xy[i].first.size() << " moves): prediction=" << std::fixed << std::setprecision(3) << y_hat << ", target=" << xy[i].second << ", sqerr=" << sqerr << "\n";
     }
     mse_training /= split;
 
@@ -196,7 +228,6 @@ void StrengthModel::train(FeaturesAndTargets& xy, size_t split, int epochs, size
       float y_hat = net.getOutput();
       float sqerr = (y_hat - xy[i].second) * (y_hat - xy[i].second);
       mse += sqerr;
-      // cout << "Test #" << i-split << " (" << xy[i].first.size() << " moves): prediction=" << std::fixed << std::setprecision(3) << y_hat << ", target=" << xy[i].second << ", sqerr=" << sqerr << "\n";
     }
     mse /= xy.size() - split;
     float theta_sq = net.thetaSq();
@@ -222,7 +253,7 @@ GameFeatures StrengthModel::maybeGetGameFeaturesCachedForSgf(const string& sgfPa
   return features;
 }
 
-vector<MoveFeatures> StrengthModel::maybeGetMoveFeaturesCached(const string& cachePath) const {
+vector<MoveFeatures> StrengthModel::maybeGetMoveFeaturesCached(const string& cachePath) {
   vector<MoveFeatures> features;
   auto cacheFile = std::unique_ptr<std::FILE, decltype(&std::fclose)>(std::fopen(cachePath.c_str(), "rb"), &std::fclose);
   if(nullptr == cacheFile)

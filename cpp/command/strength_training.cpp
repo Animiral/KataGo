@@ -126,7 +126,7 @@ int MainCmds::strength_training(const vector<string>& args) {
   float splitFraction = cfg.contains("trainingTestSplit") ? cfg.getFloat("trainingTestSplit", 0.f, 1.f) : .8f;
   int epochs = cfg.contains("trainingEpochs") ? cfg.getInt("trainingEpochs") : 100;
   size_t batchSize = cfg.contains("trainingBatchSize") ? cfg.getInt("trainingBatchSize") : 100;
-  float weightPenalty = cfg.contains("trainingWeightPenalty") ? cfg.getFloat("trainingWeightPenalty") : 1e-5;
+  float weightPenalty = cfg.contains("trainingWeightPenalty") ? cfg.getFloat("trainingWeightPenalty") : 1e-5f;
   float learnrate = cfg.contains("trainingLearnrate") ? cfg.getFloat("trainingLearnrate") : 1e-3f;
   logger.write(customFormat("Training configuration: %.2f training/test split, %d epochs, %d batchsize, %f weight penalty, %f learnrate.",
     splitFraction, epochs, batchSize, weightPenalty, learnrate));

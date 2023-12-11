@@ -72,12 +72,12 @@ __global__ void matmul(Tensor y, const Tensor W, const Tensor x) {
     h += W.data[i * w_stride + row] * x.data[col * in_stride + i];
   }
   if(W.dims.x - x.dims.y > 0) // weight matrix includes bias row
-    h += W.data[(w_stride - 1) * w_stride + row];
+    h += W.data[(W.dims.x - 1) * w_stride + row]; // BUG? W.dims.x instead of w_stride
 
   y.data[col * out_stride + row] = h;
 }
 
-// y = a*b^T
+// y[z_index] = a*b^T
 // set blocks to partition y into squares
 __global__ void transposeMatmul(Tensor y, const Tensor a, const Tensor b, size_t z_index) {
   assert(a.dims.x == b.dims.x);  // input sizes must match
@@ -205,6 +205,16 @@ __global__ void matmulDerived(Tensor x_grad, const Tensor y_grad, const Tensor W
 }
 
 // 1 block with W.dims threads
+__global__ void accumulateTensorZ(Tensor W) {
+  int i = threadIdx.x * W.dims.y + threadIdx.y;
+  float v = 0;
+  for(size_t z = 0; z < W.dims.z; z++) {
+    v += W.data[z * W.dims.x * W.dims.y + i];
+  }
+  W.data[i] = v;
+}
+
+// 1 block with W.dims threads
 __global__ void updateTensor(Tensor W, const Tensor W_grad, float weightPenalty, float learnrate) {
   assert(W.dims.x == W_grad.dims.x);
   assert(W.dims.y == W_grad.dims.y);
@@ -260,7 +270,7 @@ void StrengthNet::forward() {
   // layer 1
   dim3 numBlocks = numBlocksForTensor(h, blockDim2d);
   matmul<<<numBlocks, blockDim2d>>>(h, W1, x);
-  numBlocks = dim3((N * h.dims.y + N - 1) / N);
+  numBlocks = dim3((N * h.dims.y + blockDim1d.x - 1) / blockDim1d.x);
   relu<<<numBlocks, blockDim1d>>>(h);
 
   // layer 2
@@ -297,14 +307,12 @@ void StrengthNet::backward(float target, size_t index) {
   // layer 2
   numBlocks = numBlocksForTensor(W2r_grad, blockDim2d);
   transposeMatmul<<<numBlocks, blockDim2d>>>(W2r_grad, r_grad, h, index); // dL/dW2r = dL/dr * h^T
-  numBlocks = numBlocksForTensor(W2z_grad, blockDim2d);
   transposeMatmul<<<numBlocks, blockDim2d>>>(W2z_grad, z_grad, h, index); // dL/dW2z = dL/dz * h^T
 
   numBlocks = numBlocksForTensor(hr_grad, blockDim2d);
   matmulDerived<<<numBlocks, blockDim2d>>>(hr_grad, r_grad, W2r);
-  numBlocks = numBlocksForTensor(hz_grad, blockDim2d);
   matmulDerived<<<numBlocks, blockDim2d>>>(hz_grad, z_grad, W2z);
-  numBlocks = dim3((N * h_grad.dims.y + N - 1) / N);
+  numBlocks = dim3((N * h_grad.dims.y + blockDim1d.x - 1) / blockDim1d.x);
   add<<<numBlocks, blockDim1d>>>(h_grad, hr_grad, hz_grad); // dL/dh = dr/dh * dL/dr + dz/dh * dL/dz
 
   // layer 1
@@ -312,6 +320,13 @@ void StrengthNet::backward(float target, size_t index) {
  
   numBlocks = numBlocksForTensor(W1_grad, blockDim2d);
   transposeMatmul<<<numBlocks, blockDim2d>>>(W1_grad, h_grad, x, index); // dL/dW1 = dL/dz1 * x^T
+}
+
+void StrengthNet::mergeGrads() {
+  accumulateTensorZ<<<1, {W1_grad.dims.x, W1_grad.dims.y}>>>(W1_grad);
+  accumulateTensorZ<<<1, {W2r_grad.dims.x, W2r_grad.dims.y}>>>(W2r_grad);
+  accumulateTensorZ<<<1, {W2z_grad.dims.x, W2z_grad.dims.y}>>>(W2z_grad);
+  W1_grad.dims.z = W2r_grad.dims.z = W2z_grad.dims.z = 1;
 }
 
 void StrengthNet::update(float weightPenalty, float learnrate) {

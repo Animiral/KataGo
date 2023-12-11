@@ -27,7 +27,7 @@ __global__ void updateTensor(Tensor W, const Tensor W_grad, float weightPenalty,
 using namespace StrengthNetKernels;
 
 namespace Tests {
-void runStrengthModelTests() {
+void runStrengthNetTests() {
   cout << "Running strength model tests" << endl;
 
   {
@@ -55,6 +55,35 @@ void runStrengthModelTests() {
       cudaMemcpy(C_expected.data, C_data.data(), 4*3 * sizeof(float), cudaMemcpyHostToDevice);
       C_expected.print(cout, "matmul expected");
       C.print(cout, "matmul result");
+    }
+  }
+
+  {
+    cout << "- matmul2: ";
+    vector<float> A_data = {1, -3, 3, 2, -2, -1}; // left operand, 3x2 (with bias column)
+    vector<float> B_data = {7, 3}; // right operand, 1x2
+    vector<float> C_data = {9, -23, 20, 5, -11, 8}; // expected result, 3x2
+
+    Tensor A(2, 3);
+    Tensor B(2, 1);
+    Tensor C(2, 3);
+    cudaMemcpy(A.data, A_data.data(), 2*3 * sizeof(float), cudaMemcpyHostToDevice);
+    cudaMemcpy(B.data, B_data.data(), 2*1 * sizeof(float), cudaMemcpyHostToDevice);
+
+    matmul<<<1, {16, 16}>>>(C, A, B);
+    vector<float> C_result = static_cast<vector<float>>(C);
+    bool pass = true;
+    for(size_t i = 0; i < C_data.size(); i++)
+      if(fabs(C_data[i] - C_result[i]) > 0.0001)
+        pass = false;
+
+    cout << (pass ? "pass" : "fail") << "\n";
+
+    if(!pass) {
+      Tensor C_expected(2,3);
+      cudaMemcpy(C_expected.data, C_data.data(), 2*3 * sizeof(float), cudaMemcpyHostToDevice);
+      C_expected.print(cout, "matmul2 expected");
+      C.print(cout, "matmul2 result");
     }
   }
 
@@ -192,6 +221,46 @@ void runStrengthModelTests() {
       cudaMemcpy(h_expected.data, h_data.data(), 5*1 * sizeof(float), cudaMemcpyHostToDevice);
       h_expected.print(cout, "add,relu expected");
       h.print(cout, "add,relu result");
+    }
+  }
+
+  {
+    cout << "- fit one sample: ";
+    vector<MoveFeatures> threemoves = {{.7f, 2.f, .7f, .7f, .1f, 1.f}, {.5f, 0.f, .2f, .6f, .2f, 3.f}, {.3f, -2.f, .8f, .8f, 0.f, 0.f}};
+    float y = 1200.f;
+    float learnrate = 0.01f;
+
+    StrengthNet net;
+    Rand rand(123ull); // reproducible seed
+    net.randomInit(rand);
+    net.setInput(threemoves);
+    net.setBatchSize(1);
+    // net.printWeights(cout, "before update");
+    // net.forward();
+    // net.printState(cout, "before update");
+    // float y_hat = net.getOutput();
+    // cout << "Initial output: " << y_hat << "\n";
+    // net.backward(y, 0);
+    // net.mergeGrads();
+    // net.printGrads(cout, "before update");
+    // net.update(0.f, learnrate);
+    // net.printWeights(cout, "after update");
+
+    for(int i = 0; i < 40*int(1.f/learnrate); i++) { // perfectly fit to threemoves input
+      net.forward();
+      // if(i%100==0)cout << "Training " << i << ": " << net.getOutput() << "\n";
+      net.backward(y, 0);
+      net.update(0.f, learnrate);
+    }
+
+    net.forward();
+    // net.printState(cout, "after update");
+    float y_hat2 = net.getOutput();
+    bool pass = fabs(y - y_hat2) <= 0.01f;
+    cout << (pass ? "pass" : "fail") << "\n";
+    
+    if(!pass) {
+      cout << "Output after training: " << y_hat2 << "; label: " << y << "\n";
     }
   }
 }

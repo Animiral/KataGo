@@ -61,6 +61,8 @@ namespace Tests {
   void runNNOnManyPoses(const std::string& modelFile, bool inputsNHWC, bool cudaNHWC, int symmetry, bool useFP16, const std::string& comparisonFile);
   void runNNBatchingTest(const std::string& modelFile, bool inputsNHWC, bool cudaNHWC, bool useFP16);
 
+  //teststrengthnet.cu
+  void runStrengthNetTests();
   //teststrengthmodel.cpp
   void runStrengthModelTests();
 

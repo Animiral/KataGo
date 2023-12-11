@@ -311,6 +311,7 @@ int MainCmds::runnnonmanyposestest(const vector<string>& args) {
 
 int MainCmds::runstrengthmodeltests(const vector<string>& args) {
   (void) args;
+  Tests::runStrengthNetTests();
   Tests::runStrengthModelTests();
   return 0;
 }

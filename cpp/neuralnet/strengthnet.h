@@ -67,9 +67,11 @@ public:
   float getOutput() const;                     // GPU to host, with scaling
   void forward();
   void backward(float target, size_t index);   // buffers must be filled by forward pass
+  void mergeGrads();
   void update(float weightPenalty, float learnrate);
   void printWeights(std::ostream& stream, const std::string& name) const;
   void printState(std::ostream& stream, const std::string& name) const;
+  void printGrads(std::ostream& stream, const std::string& name) const;
   float thetaSq() const; // average of squared parameters (W1, W2r, W2z);
   float gradsSq() const; // average of squared parameter gradients (W1_grad, W2r_grad, W2z_grad);
 
