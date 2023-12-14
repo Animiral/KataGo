@@ -7,17 +7,17 @@
 #include <iomanip>
 
 Tensor::Tensor(uint xdim, uint ydim, uint zdim)
-: data(nullptr), dims{xdim, ydim, zdim}, viewDims(dims), isOwner(true) {
+: data(nullptr), dims{xdim, ydim, zdim}, viewDims(dims), transposed(false), isOwner(true) {
   size_t n = dims.x * dims.y * dims.z;
   CUDA_ERR("Tensor(dims)", cudaMalloc(&data, n * sizeof(float)));
 }
 
 Tensor::Tensor(const Tensor& rhs)
-: data(rhs.data), dims(rhs.dims), viewDims(rhs.viewDims), isOwner(false)
+: data(rhs.data), dims(rhs.dims), viewDims(rhs.viewDims), transposed(false), isOwner(false)
 {}
 
 Tensor::Tensor(Tensor&& rhs) noexcept
-: data(rhs.data), dims(rhs.dims), viewDims(rhs.viewDims), isOwner(true) {
+: data(rhs.data), dims(rhs.dims), viewDims(rhs.viewDims), transposed(false), isOwner(true) {
   rhs.data = nullptr;
 }
 
@@ -40,13 +40,12 @@ void Tensor::randomInit(Rand& rand) {
   size_t o = dims.z;
 
   // init all parameters uniformly in (-n^(-2), +n^(-2))
-  vector<float> buffer(n*m);
-  double high = 1. / std::sqrt(n);
-  double low = -high;
+  vector<float> buffer(n*m*o);
+  double d = 1. / std::sqrt(n);
   for(size_t i = 0; i < m; i++)
     for(size_t j = 0; j < n; j++)
       for(size_t k = 0; k < o; k++)
-        buffer[i * n * o + j * o + k] = static_cast<float>(rand.nextDouble(low, high));
+        buffer[i * n * o + j * o + k] = static_cast<float>(rand.nextDouble(-d, d));
   CUDA_ERR("Tensor.randomInit", cudaMemcpy(data, buffer.data(), n * m * o * sizeof(float), cudaMemcpyHostToDevice));
 }
 
@@ -77,6 +76,12 @@ void Tensor::broadcast(uint xdim, uint ydim, uint zdim) {
   assert(1 == dims.y || ydim == dims.y);
   assert(1 == dims.z || zdim == dims.z);
   viewDims = {xdim, ydim, zdim};
+}
+
+void Tensor::transpose() {
+  std::swap(dims.x, dims.y);
+  std::swap(viewDims.x, viewDims.y);
+  transposed = !transposed;
 }
 
 float Tensor::variance() const {
@@ -117,39 +122,17 @@ void Tensor::print(std::ostream& stream, const std::string& name) const {
 
 StrengthNet::StrengthNet()
 : batchSize(maxBatchSize),
-  x(maxN, in_ch), h(maxN, hidden_ch), r(maxN, 1), a(maxN, 1), y(1, 1),
-  h_grad(maxN, hidden_ch), hr_grad(maxN, hidden_ch), hz_grad(maxN, hidden_ch),
-  r_grad(maxN, 1), z_grad(maxN, 1), y_grad(1, 1),
-  W1(in_ch+1, hidden_ch), W2r(hidden_ch+1, 1), W2z(hidden_ch+1, 1),
-  W1_grad(in_ch+1, hidden_ch, maxBatchSize), W2r_grad(hidden_ch+1, 1, maxBatchSize), W2z_grad(hidden_ch+1, 1, maxBatchSize)
+  x(maxN, in_ch), h(maxN, hidden_ch), /* r(maxN, 1), a(maxN, 1),*/ y(1, 1),
+  h_grad(maxN, hidden_ch), // hr_grad(maxN, hidden_ch), hz_grad(maxN, hidden_ch),
+  /* r_grad(maxN, 1), z_grad(maxN, 1), */ y_grad(1, 1), tgt(1, 1),
+  W(in_ch, hidden_ch), b(1, hidden_ch), // W1(in_ch, hidden_ch), W2r(hidden_ch+1, 1), W2z(hidden_ch+1, 1),
+  W_grad(in_ch, hidden_ch, maxBatchSize), b_grad(1, hidden_ch, maxBatchSize) // W1_grad(in_ch, hidden_ch, maxBatchSize), W2r_grad(hidden_ch+1, 1, maxBatchSize), W2z_grad(hidden_ch+1, 1, maxBatchSize)
 {
 }
 
 void StrengthNet::randomInit(Rand& rand) {
-  // init all parameters uniformly in (-d^(-2), +d^(-2)), where d is the input dimension
-  size_t bufferSize = (in_ch+1)*hidden_ch + (hidden_ch+1)*out_ch;
-  vector<float> buffer(bufferSize);
-
-  // W1
-  double d = 1. / std::sqrt(in_ch);
-  for(int i = 0; i < W1.dims.y; i++)
-    for(int j = 0; j < W1.dims.x; j++)
-      buffer[i * W1.dims.x + j] = static_cast<float>(rand.nextDouble(-d, d));
-  CUDA_ERR("StrengthNet.randomInit", cudaMemcpy(W1.data, buffer.data(), W1.dims.x*W1.dims.y * sizeof(float), cudaMemcpyHostToDevice));
-
-  // W2r
-  d = 1. / std::sqrt(hidden_ch);
-  for(int i = 0; i < W2r.dims.y; i++)
-    for(int j = 0; j < W2r.dims.x; j++)
-      buffer[i * W2r.dims.x + j] = static_cast<float>(rand.nextDouble(-d, d));
-  CUDA_ERR("StrengthNet.randomInit", cudaMemcpy(W2r.data, buffer.data(), W2r.dims.x*W2r.dims.y * sizeof(float), cudaMemcpyHostToDevice));
-
-  // W2z
-  d = 1. / std::sqrt(hidden_ch);
-  for(int i = 0; i < W2z.dims.y; i++)
-    for(int j = 0; j < W2z.dims.x; j++)
-      buffer[i * W2z.dims.x + j] = static_cast<float>(rand.nextDouble(-d, d));
-  CUDA_ERR("StrengthNet.randomInit", cudaMemcpy(W2z.data, buffer.data(), W2z.dims.x*W2z.dims.y * sizeof(float), cudaMemcpyHostToDevice));
+  W.randomInit(rand);
+  b.randomInit(rand);
 }
 
 const uint32_t StrengthNet::STRNET_HEADER = 0x57237;
@@ -165,13 +148,19 @@ bool StrengthNet::loadModelFile(const std::string& path) {
 
   size_t bufferSize = (in_ch+1)*hidden_ch + (hidden_ch+1)*out_ch;
   vector<float> buffer(bufferSize);
-  size_t readW1 = std::fread(buffer.data(), sizeof(float), W1.dims.x*W1.dims.y, file.get());
-  CUDA_ERR("StrengthNet.loadModelFile", cudaMemcpy(W1.data, buffer.data(), W1.dims.x*W1.dims.y * sizeof(float), cudaMemcpyHostToDevice));
-  size_t readW2r = std::fread(buffer.data(), sizeof(float), W2r.dims.x*W2r.dims.y, file.get());
-  CUDA_ERR("StrengthNet.loadModelFile", cudaMemcpy(W2r.data, buffer.data(), W2r.dims.x*W2r.dims.y * sizeof(float), cudaMemcpyHostToDevice));
-  size_t readW2z = std::fread(buffer.data(), sizeof(float), W2z.dims.x*W2z.dims.y, file.get());
-  CUDA_ERR("StrengthNet.loadModelFile", cudaMemcpy(W2z.data, buffer.data(), W2z.dims.x*W2z.dims.y * sizeof(float), cudaMemcpyHostToDevice));
-  if(W1.dims.x*W1.dims.y + W2r.dims.x*W2r.dims.y + W2z.dims.x*W2z.dims.y != readW1 + readW2r + readW2z)
+  size_t readW = std::fread(buffer.data(), sizeof(float), W.dims.x*W.dims.y, file.get());
+  CUDA_ERR("StrengthNet.loadModelFile", cudaMemcpy(W.data, buffer.data(), W.dims.x*W.dims.y * sizeof(float), cudaMemcpyHostToDevice));
+  size_t readb = std::fread(buffer.data(), sizeof(float), b.dims.x*b.dims.y, file.get());
+  CUDA_ERR("StrengthNet.loadModelFile", cudaMemcpy(b.data, buffer.data(), b.dims.x*b.dims.y * sizeof(float), cudaMemcpyHostToDevice));
+  // size_t readW1 = std::fread(buffer.data(), sizeof(float), W1.dims.x*W1.dims.y, file.get());
+  // CUDA_ERR("StrengthNet.loadModelFile", cudaMemcpy(W1.data, buffer.data(), W1.dims.x*W1.dims.y * sizeof(float), cudaMemcpyHostToDevice));
+  // size_t readW2r = std::fread(buffer.data(), sizeof(float), W2r.dims.x*W2r.dims.y, file.get());
+  // CUDA_ERR("StrengthNet.loadModelFile", cudaMemcpy(W2r.data, buffer.data(), W2r.dims.x*W2r.dims.y * sizeof(float), cudaMemcpyHostToDevice));
+  // size_t readW2z = std::fread(buffer.data(), sizeof(float), W2z.dims.x*W2z.dims.y, file.get());
+  // CUDA_ERR("StrengthNet.loadModelFile", cudaMemcpy(W2z.data, buffer.data(), W2z.dims.x*W2z.dims.y * sizeof(float), cudaMemcpyHostToDevice));
+
+  // if(W1.dims.x*W1.dims.y + W2r.dims.x*W2r.dims.y + W2z.dims.x*W2z.dims.y != readW1 + readW2r + readW2z)
+  if(W.dims.x*W.dims.y + b.dims.x*b.dims.y != readW + readb)
     throw IOError("Failed to read complete strength model from " + path);
 
   std::fclose(file.release());
@@ -186,13 +175,21 @@ void StrengthNet::saveModelFile(const std::string& path) {
 
   size_t bufferSize = (in_ch+1)*hidden_ch + (hidden_ch+1)*out_ch;
   vector<float> buffer(bufferSize);
-  CUDA_ERR("StrengthNet.saveModelFile", cudaMemcpy(buffer.data(), W1.data, W1.dims.x*W1.dims.y * sizeof(float), cudaMemcpyDeviceToHost));
-	size_t wroteW1 = std::fwrite(buffer.data(), sizeof(float), W1.dims.x*W1.dims.y, file.get());
-  CUDA_ERR("StrengthNet.saveModelFile", cudaMemcpy(buffer.data(), W2r.data, W2r.dims.x*W2r.dims.y * sizeof(float), cudaMemcpyDeviceToHost));
-  size_t wroteW2r = std::fwrite(buffer.data(), sizeof(float), W2r.dims.x*W2r.dims.y, file.get());
-  CUDA_ERR("StrengthNet.saveModelFile", cudaMemcpy(buffer.data(), W2z.data, W2z.dims.x*W2z.dims.y * sizeof(float), cudaMemcpyDeviceToHost));
-  size_t wroteW2z = std::fwrite(buffer.data(), sizeof(float), W2z.dims.x*W2z.dims.y, file.get());
-  if(1 + W1.dims.x*W1.dims.y + W2r.dims.x*W2r.dims.y + W2z.dims.x*W2z.dims.y != wroteheader + wroteW1 + wroteW2r + wroteW2z)
+
+  CUDA_ERR("StrengthNet.saveModelFile", cudaMemcpy(buffer.data(), W.data, W.dims.x*W.dims.y * sizeof(float), cudaMemcpyDeviceToHost));
+  size_t wroteW = std::fwrite(buffer.data(), sizeof(float), W.dims.x*W.dims.y, file.get());
+  CUDA_ERR("StrengthNet.saveModelFile", cudaMemcpy(buffer.data(), b.data, b.dims.x*b.dims.y * sizeof(float), cudaMemcpyDeviceToHost));
+  size_t wroteb = std::fwrite(buffer.data(), sizeof(float), b.dims.x*b.dims.y, file.get());
+
+  // CUDA_ERR("StrengthNet.saveModelFile", cudaMemcpy(buffer.data(), W1.data, W1.dims.x*W1.dims.y * sizeof(float), cudaMemcpyDeviceToHost));
+	// size_t wroteW1 = std::fwrite(buffer.data(), sizeof(float), W1.dims.x*W1.dims.y, file.get());
+  // CUDA_ERR("StrengthNet.saveModelFile", cudaMemcpy(buffer.data(), W2r.data, W2r.dims.x*W2r.dims.y * sizeof(float), cudaMemcpyDeviceToHost));
+  // size_t wroteW2r = std::fwrite(buffer.data(), sizeof(float), W2r.dims.x*W2r.dims.y, file.get());
+  // CUDA_ERR("StrengthNet.saveModelFile", cudaMemcpy(buffer.data(), W2z.data, W2z.dims.x*W2z.dims.y * sizeof(float), cudaMemcpyDeviceToHost));
+  // size_t wroteW2z = std::fwrite(buffer.data(), sizeof(float), W2z.dims.x*W2z.dims.y, file.get());
+
+  // if(1 + W1.dims.x*W1.dims.y + W2r.dims.x*W2r.dims.y + W2z.dims.x*W2z.dims.y != wroteheader + wroteW1 + wroteW2r + wroteW2z)
+  if(1 + W.dims.x*W.dims.y + b.dims.x*b.dims.y != wroteheader + wroteW + wroteb)
     throw IOError("Failed to save complete strength model to " + path);
 
   if(0 != std::fclose(file.release()))
@@ -215,14 +212,15 @@ void StrengthNet::setInput(const std::vector<MoveFeatures>& features) {
   }
 
   CUDA_ERR("StrengthNet::setInput", cudaMemcpy(x.data, rawfeatures.data(), in_ch * N * sizeof(float), cudaMemcpyHostToDevice));
-  x.dims.x = h.dims.x = r.dims.x = a.dims.x = N;
-  h_grad.dims.x = hr_grad.dims.x = hz_grad.dims.x = r_grad.dims.x = z_grad.dims.x = N;
+  x.dims.x = h.dims.x = /*r.dims.x = a.dims.x =*/ N;
+  h_grad.dims.x = /*hr_grad.dims.x = hz_grad.dims.x = r_grad.dims.x = z_grad.dims.x =*/ N;
 }
 
 void StrengthNet::setBatchSize(size_t batchSize_) noexcept {
   assert(batchSize_ <= maxBatchSize);
   batchSize = batchSize_;
-  W1_grad.dims.z = W2r_grad.dims.z = W2z_grad.dims.z = batchSize_;  // parameter update gradients
+  W_grad.dims.z = b_grad.dims.z = batchSize_;  // parameter update gradients
+  // W1_grad.dims.z = W2r_grad.dims.z = W2z_grad.dims.z = batchSize_;  // parameter update gradients
 }
 
 float StrengthNet::getOutput() const {
@@ -232,27 +230,31 @@ float StrengthNet::getOutput() const {
 }
 
 void StrengthNet::printWeights(std::ostream& stream, const std::string& name) const {
-  stream << "* W1 *\n";   W1.print(stream, name);
-  stream << "* W2r *\n";  W2r.print(stream, name);
-  stream << "* W2z *\n";  W2z.print(stream, name);
+  stream << "* W *\n";   W.print(stream, name);
+  stream << "* b *\n";   b.print(stream, name);
+  // stream << "* W1 *\n";   W1.print(stream, name);
+  // stream << "* W2r *\n";  W2r.print(stream, name);
+  // stream << "* W2z *\n";  W2z.print(stream, name);
 }
 
 void StrengthNet::printState(std::ostream& stream, const std::string& name) const {
   stream << "* x *\n";  x.print(stream, name);
   stream << "* h *\n";  h.print(stream, name);
-  stream << "* r *\n";  r.print(stream, name);
-  stream << "* a *\n";  a.print(stream, name);
+  // stream << "* r *\n";  r.print(stream, name);
+  // stream << "* a *\n";  a.print(stream, name);
   stream << "* y *\n";  y.print(stream, name);
 }
 
 void StrengthNet::printGrads(std::ostream& stream, const std::string& name) const {
   stream << "* h_grad *\n";  h_grad.print(stream, name);
-  stream << "* hr_grad *\n";  hr_grad.print(stream, name);
-  stream << "* hz_grad *\n";  hz_grad.print(stream, name);
-  stream << "* r_grad *\n";  r_grad.print(stream, name);
-  stream << "* z_grad *\n";  z_grad.print(stream, name);
+  // stream << "* hr_grad *\n";  hr_grad.print(stream, name);
+  // stream << "* hz_grad *\n";  hz_grad.print(stream, name);
+  // stream << "* r_grad *\n";  r_grad.print(stream, name);
+  // stream << "* z_grad *\n";  z_grad.print(stream, name);
   stream << "* y_grad *\n";  y_grad.print(stream, name);
-  stream << "* W1_grad *\n";  W1_grad.print(stream, name);   // only prints first grad (z==0)!
-  stream << "* W2r_grad *\n";  W2r_grad.print(stream, name); // only prints first grad (z==0)!
-  stream << "* W2z_grad *\n";  W2z_grad.print(stream, name); // only prints first grad (z==0)!
+  stream << "* W_grad *\n";  W_grad.print(stream, name);
+  stream << "* b_grad *\n";  b_grad.print(stream, name);
+  // stream << "* W1_grad *\n";  W1_grad.print(stream, name);   // only prints first grad (z==0)!
+  // stream << "* W2r_grad *\n";  W2r_grad.print(stream, name); // only prints first grad (z==0)!
+  // stream << "* W2z_grad *\n";  W2z_grad.print(stream, name); // only prints first grad (z==0)!
 }

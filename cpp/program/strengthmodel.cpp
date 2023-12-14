@@ -175,6 +175,7 @@ void StrengthModel::train(FeaturesAndTargets& xy, size_t split, int epochs, size
   assert(split <= xy.size());
   Rand rand; // TODO: allow seeding from outside StrengthModel
   net.randomInit(rand);
+  batchSize = 1; // TODO: properly implement batches
 
   for(int e = 0; e < epochs; e++) {
     float grads_sq = 0;
@@ -186,7 +187,7 @@ void StrengthModel::train(FeaturesAndTargets& xy, size_t split, int epochs, size
         net.setInput(xy[i+b].first);
         net.forward();
         // cout << "Sample #" << i << "(" << xy[i].first.size() << " moves): (" << y_hat << "-" << xy[i].second << ")^2 = " << (y_hat-xy[i].second)*(y_hat-xy[i].second) << "\n";
-        net.backward(xy[i+b].second, b);
+        net.backward(xy[i+b].second/*, b*/);
         grads_sq += net.gradsSq();
       }
       net.mergeGrads();

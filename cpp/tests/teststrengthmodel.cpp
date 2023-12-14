@@ -58,7 +58,7 @@ bool fitsOneSample(vector<MoveFeatures> features, float target, int epochs, floa
 
     for(int i = 0; i < epochs; i++) { // perfectly fit to threemoves input
       net.forward();
-      net.backward(target, 0);
+      net.backward(target); //, 0);
       net.update(weightPenalty, learnrate);
     }
 

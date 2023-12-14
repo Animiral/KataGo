@@ -6,13 +6,10 @@
 
 using namespace std;
 
-namespace StrengthNetImpl
-{
+namespace StrengthNetImpl {
 
 // definitions in strengthnet.cu
-__global__ void add(Tensor y, const Tensor a, const Tensor b);
 __global__ void dotproduct(Tensor y, const Tensor a, const Tensor b);
-__global__ void matmul(Tensor y, const Tensor W, const Tensor x);
 __global__ void transposeMatmul(Tensor y, const Tensor a, const Tensor b, uint z_index);
 __global__ void relu(Tensor h);
 __global__ void softmax(Tensor a);
@@ -22,6 +19,8 @@ __global__ void matmulDerived(Tensor x_grad, const Tensor y_grad, const Tensor W
 __global__ void updateTensor(Tensor W, const Tensor W_grad, float weightPenalty, float learnrate);
 
 void hadamard(Tensor& y, const Tensor& w) noexcept;
+void add(Tensor& y, const Tensor& x) noexcept;
+void matmul(Tensor& y, const Tensor& W, const Tensor& x) noexcept;
 }
 
 using namespace StrengthNetImpl;
@@ -55,6 +54,7 @@ void expectApprox(const Tensor& expected, const Tensor& result, const string& na
     result.print(cout, "result");
   }
 }
+
 }
 
 namespace Tests {
@@ -73,7 +73,7 @@ void runStrengthNetTests() {
     Tensor A = toTensor({1, -3, 3,  2, -2, -1,  1, 0, -1}, 3, 3); // (with bias column)
     Tensor B = toTensor({7, -10,  3, 8,  -11, 4,  8, 7}, 4, 2);
     Tensor C(4, 3);
-    matmul<<<1, {16, 16}>>>(C, A, B);
+    matmul(C, A, B);
     expectApprox(toTensor({-12, -1, 30,  20, -25, 0,  -2, 25, -38,  23, -38, 16}, 4, 3), C, "matmul");
   }
 
@@ -81,7 +81,7 @@ void runStrengthNetTests() {
     Tensor A = toTensor({1, -3, 3,  2, -2, -1}, 2, 3); // (with bias column)
     Tensor B = toTensor({7, 3}, 2, 1);
     Tensor C(2, 3);
-    matmul<<<{1, 2}, {2, 2}>>>(C, A, B);
+    matmul(C, A, B);
     expectApprox(toTensor({9, -23, 20,  5, -11, 8}, 2, 3), C, "matmul2");
   }
 
@@ -117,10 +117,9 @@ void runStrengthNetTests() {
   {
     Tensor A = toTensor({3, 4, 5, 6, 7}, 5, 1);
     Tensor B = toTensor({-8, 1, -2, -7, 0}, 5, 1);
-    Tensor C(5, 1);
-    add<<<1, 5>>>(C, A, B);
-    relu<<<1, 5>>>(C);
-    expectApprox(toTensor({0, 5, 3, 0, 7}, 5, 1), C, "add,relu");
+    add(A, B);
+    relu<<<1, 5>>>(A);
+    expectApprox(toTensor({0, 5, 3, 0, 7}, 5, 1), A, "add,relu");
   }
 
   {
@@ -148,7 +147,7 @@ void runStrengthNetTests() {
     for(int i = 0; i < 40*int(1.f/learnrate); i++) { // perfectly fit to threemoves input
       net.forward();
       // if(i%100==0)cout << "Training " << i << ": " << net.getOutput() << "\n";
-      net.backward(y, 0);
+      net.backward(y); // , 0);
       net.update(0.f, learnrate);
     }
 

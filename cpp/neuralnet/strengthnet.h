@@ -13,6 +13,7 @@ struct Tensor {
   float* data; // GPU device pointer; column-major order
   uint3 dims;
   uint3 viewDims; // for broadcasting data along some dimensions
+  bool transposed; // if true, data is considered in row-major order instead of column-major
 
   Tensor() = default;
   explicit Tensor(uint xdim, uint ydim, uint zdim = 1);
@@ -28,6 +29,7 @@ struct Tensor {
   void assignFrom(const Tensor& rhs);           // same-size assign
   void reshape(uint xdim, uint ydim = 1, uint zdim = 1);
   void broadcast(uint xdim, uint ydim = 1, uint zdim = 1);
+  void transpose();                             // swap dims.x & dims.y, flip transposed
   float variance() const;
   void print(std::ostream& stream, const std::string& name) const;
 
@@ -65,10 +67,10 @@ public:
   void saveModelFile(const std::string& path); // store weights
 
   void setInput(const std::vector<MoveFeatures>& features); // host to GPU, with scaling
-  void setBatchSize(size_t batchSize_) noexcept; // followed by forward&backward (batch_size times), then update()
+  void setBatchSize(size_t batchSize_) noexcept; // followed by forward&backward, then update()
   float getOutput() const;                     // GPU to host, with scaling
   void forward();
-  void backward(float target, size_t index);   // buffers must be filled by forward pass
+  void backward(float target);   // buffers must be filled by forward pass
   void mergeGrads();
   void update(float weightPenalty, float learnrate);
   void printWeights(std::ostream& stream, const std::string& name) const;
@@ -83,16 +85,16 @@ private:
   static constexpr std::size_t maxN = 1000; // max number of input moves (for workspace buffer)
   static constexpr std::size_t maxBatchSize = 100; // allocated 3rd dim of weight gradient tensors
   static constexpr std::size_t in_ch = 6;
-  static constexpr std::size_t hidden_ch = 32;
+  static constexpr std::size_t hidden_ch = 1; // 32;
   static constexpr std::size_t out_ch = 2;
 
   std::size_t N; // last seen N in forward(), remember for backward()
   std::size_t batchSize = 100; // allocated 3rd dim of weight gradient tensors
 
-  Tensor x, h, r, a, y;  // (intermediate) calculation values
-  Tensor h_grad, hr_grad, hz_grad, r_grad, z_grad, y_grad;  // intermediate gradients for backpropagation
-  Tensor W1, W2r, W2z;  // parameters: weights with included biases
-  Tensor W1_grad, W2r_grad, W2z_grad;  // parameter update gradients
+  Tensor x, h, /*r, a,*/ y;  // (intermediate) calculation values
+  Tensor h_grad, /*hr_grad, hz_grad, r_grad, z_grad,*/ y_grad, tgt;  // intermediate gradients for backpropagation
+  Tensor W, b; // W1, W2r, W2z;  // parameters: weights with included biases
+  Tensor W_grad, b_grad; // W1_grad, W2r_grad, W2z_grad;  // parameter update gradients
 
 };
 
