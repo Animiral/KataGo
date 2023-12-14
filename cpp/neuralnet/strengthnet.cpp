@@ -7,37 +7,18 @@
 #include <iomanip>
 
 Tensor::Tensor(uint xdim, uint ydim, uint zdim)
-: data(nullptr), dims{xdim, ydim, zdim}, isOwner(true) {
+: data(nullptr), dims{xdim, ydim, zdim}, viewDims(dims), isOwner(true) {
   size_t n = dims.x * dims.y * dims.z;
   CUDA_ERR("Tensor(dims)", cudaMalloc(&data, n * sizeof(float)));
 }
 
 Tensor::Tensor(const Tensor& rhs)
-: data(rhs.data), dims(rhs.dims), isOwner(false)
+: data(rhs.data), dims(rhs.dims), viewDims(rhs.viewDims), isOwner(false)
 {}
 
 Tensor::Tensor(Tensor&& rhs) noexcept
-: data(rhs.data), dims(rhs.dims), isOwner(true) {
+: data(rhs.data), dims(rhs.dims), viewDims(rhs.viewDims), isOwner(true) {
   rhs.data = nullptr;
-}
-
-Tensor& Tensor::operator=(const Tensor& rhs) {
-  size_t n = dims.x * dims.y;
-  assert(rhs.dims.x * dims.y == n);
-  if(isOwner)
-    cudaFree(data);
-  data = rhs.data;
-  isOwner = false;
-  return *this;
-}
-
-Tensor& Tensor::operator=(Tensor&& rhs) noexcept {
-  data = rhs.data;
-  dims = rhs.dims;
-  isOwner = rhs.isOwner;
-  rhs.data = nullptr;
-  rhs.isOwner = false;
-  return *this;
 }
 
 Tensor::~Tensor() noexcept {
@@ -47,7 +28,7 @@ Tensor::~Tensor() noexcept {
 }
 
 Tensor::operator std::vector<float>() const {
-  size_t n = dims.x * dims.y;
+  size_t n = dims.x * dims.y * dims.z;
   std::vector<float> result(n);
   CUDA_ERR("Tensor::operator std::vector<float>()", cudaMemcpy(result.data(), data, n * sizeof(float), cudaMemcpyDeviceToHost));
   return result;
@@ -56,6 +37,7 @@ Tensor::operator std::vector<float>() const {
 void Tensor::randomInit(Rand& rand) {
   size_t n = dims.x;
   size_t m = dims.y;
+  size_t o = dims.z;
 
   // init all parameters uniformly in (-n^(-2), +n^(-2))
   vector<float> buffer(n*m);
@@ -63,13 +45,15 @@ void Tensor::randomInit(Rand& rand) {
   double low = -high;
   for(size_t i = 0; i < m; i++)
     for(size_t j = 0; j < n; j++)
-      buffer[i * n + j] = static_cast<float>(rand.nextDouble(low, high));
-  CUDA_ERR("Tensor.randomInit", cudaMemcpy(data, buffer.data(), n * m * sizeof(float), cudaMemcpyHostToDevice));
+      for(size_t k = 0; k < o; k++)
+        buffer[i * n * o + j * o + k] = static_cast<float>(rand.nextDouble(low, high));
+  CUDA_ERR("Tensor.randomInit", cudaMemcpy(data, buffer.data(), n * m * o * sizeof(float), cudaMemcpyHostToDevice));
 }
 
 Tensor Tensor::clone() const {
-  Tensor copy(dims.x, dims.y);
-  size_t n = dims.x * dims.y;
+  Tensor copy(dims.x, dims.y, dims.z);
+  copy.viewDims = viewDims;
+  size_t n = dims.x * dims.y * dims.z;
   CUDA_ERR("Tensor::clone()", cudaMemcpy(copy.data, data, n * sizeof(float), cudaMemcpyDeviceToDevice));
   return copy;
 }
@@ -77,11 +61,26 @@ Tensor Tensor::clone() const {
 void Tensor::assignFrom(const Tensor& rhs) {
   assert(dims.x == rhs.dims.x);
   assert(dims.y == rhs.dims.y);
+  assert(dims.z == rhs.dims.z);
   CUDA_ERR("Tensor::assignFrom()", cudaMemcpy(data, rhs.data, dims.x * dims.y * sizeof(float), cudaMemcpyDeviceToDevice));
 }
 
+void Tensor::reshape(uint xdim, uint ydim, uint zdim) {
+  assert(xdim * ydim * zdim == dims.x * dims.y * dims.z);
+  dims.x = xdim;
+  dims.y = ydim;
+  dims.z = zdim;
+}
+
+void Tensor::broadcast(uint xdim, uint ydim, uint zdim) {
+  assert(1 == dims.x || xdim == dims.x);
+  assert(1 == dims.y || ydim == dims.y);
+  assert(1 == dims.z || zdim == dims.z);
+  viewDims = {xdim, ydim, zdim};
+}
+
 float Tensor::variance() const {
-  size_t n = dims.x * dims.y;
+  size_t n = dims.x * dims.y * dims.z;
   assert(n > 1); // 1 number has no variance
   vector<float> buffer(n);
   CUDA_ERR("Tensor.variance", cudaMemcpy(buffer.data(), data, n * sizeof(float), cudaMemcpyDeviceToHost));

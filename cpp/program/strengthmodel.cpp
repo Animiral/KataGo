@@ -176,13 +176,6 @@ void StrengthModel::train(FeaturesAndTargets& xy, size_t split, int epochs, size
   Rand rand; // TODO: allow seeding from outside StrengthModel
   net.randomInit(rand);
 
-  // // DEBUG: only 1 data point to train, 1 to test
-  // xy[0] = xy[700];
-  // xy[1] = xy[701];
-  // xy.resize(2);
-  // batchSize = 1;
-  // split = 1;
-
   for(int e = 0; e < epochs; e++) {
     float grads_sq = 0;
     std::shuffle(&xy[0], &xy[split], rand);

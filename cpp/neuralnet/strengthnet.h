@@ -12,20 +12,22 @@ struct Tensor {
 
   float* data; // GPU device pointer; column-major order
   uint3 dims;
+  uint3 viewDims; // for broadcasting data along some dimensions
 
   Tensor() = default;
   explicit Tensor(uint xdim, uint ydim, uint zdim = 1);
   Tensor(const Tensor& rhs);                    // copy without ownership (for passing as arg to kernel)
   Tensor(Tensor&& rhs) noexcept;
-  Tensor& operator=(const Tensor& rhs);         // ownership remains with rhs; use clone() or copyFrom() for a full copy
-  Tensor& operator=(Tensor&& rhs) noexcept;
-  // Tensor& operator=(std::vector<float> data_);
+  Tensor& operator=(const Tensor& rhs) = delete;
+  Tensor& operator=(Tensor&& rhs) = delete;
   ~Tensor() noexcept;
 
   explicit operator std::vector<float>() const; // GPU to host
   void randomInit(Rand& rand);                  // new weights
   Tensor clone() const;                         // copy with ownership
   void assignFrom(const Tensor& rhs);           // same-size assign
+  void reshape(uint xdim, uint ydim = 1, uint zdim = 1);
+  void broadcast(uint xdim, uint ydim = 1, uint zdim = 1);
   float variance() const;
   void print(std::ostream& stream, const std::string& name) const;
 
