@@ -30,8 +30,10 @@ struct Tensor {
   void reshape(uint xdim, uint ydim = 1, uint zdim = 1);
   void broadcast(uint xdim, uint ydim = 1, uint zdim = 1);
   void transpose();                             // swap dims.x & dims.y, flip transposed
-  float variance() const;
   void print(std::ostream& stream, const std::string& name) const;
+
+  static float mean(std::initializer_list<Tensor> ts);
+  static float variance(std::initializer_list<Tensor> ts);
 
 private:
 
@@ -48,6 +50,9 @@ struct MoveFeatures {
   float winrateLoss;  // compared to previous move
   float pointsLoss;  // compared to previous move
 };
+
+namespace Tests {
+void runStrengthModelTests();}
 
 // Implements the strength network.
 // Currently this is a feed-forward network with one hidden layer which takes MoveFeatures as input
@@ -76,8 +81,8 @@ public:
   void printWeights(std::ostream& stream, const std::string& name) const;
   void printState(std::ostream& stream, const std::string& name) const;
   void printGrads(std::ostream& stream, const std::string& name) const;
-  float thetaSq() const; // average of squared parameters (W1, W2r, W2z);
-  float gradsSq() const; // average of squared parameter gradients (W1_grad, W2r_grad, W2z_grad);
+  float thetaVar() const; // variance of parameters (W1, W2r, W2z);
+  float gradsVar() const; // variance of parameter gradients (W1_grad, W2r_grad, W2z_grad);
 
 private:
 
@@ -95,6 +100,8 @@ private:
   Tensor h_grad, /*hr_grad, hz_grad, r_grad, z_grad,*/ y_grad, tgt;  // intermediate gradients for backpropagation
   Tensor W, b; // W1, W2r, W2z;  // parameters: weights with included biases
   Tensor W_grad, b_grad; // W1_grad, W2r_grad, W2z_grad;  // parameter update gradients
+
+  friend void Tests::runStrengthModelTests();
 
 };
 

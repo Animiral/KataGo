@@ -7,34 +7,91 @@ namespace {
 bool fitsOneSample(vector<MoveFeatures> features, float target, int epochs, float weightPenalty, float learnrate, float& estimate);
 }
 
+namespace StrengthNetImpl {
+void matmul(Tensor& y, const Tensor& W, const Tensor& x);
+}
+
 namespace Tests {
 void runStrengthModelTests() {
+  // string listFile = "games_labels_20.csv"; // shorter
+  string listFile = "games_labels.csv";
+  string featureDir = "featurecache";
+  Dataset dataset;
+  FeaturesAndTargets featuresTargets;
 
-  if(0) // disabled for calculation time (1000 epochs per data sample)
+  try {
+    dataset = StrengthModel::loadDataset(listFile);
+    featuresTargets = StrengthModel::getFeaturesAndTargetsCached(dataset, featureDir);
+  }
+  catch(const StringError& e) {
+    cout << "skip strength model tests (" << e.what() << ")\n";
+    return;
+  }
+
+  // if(0) // disabled for calculation time
   {
-    string listFile = "games_labels.csv";
-    string featureDir = "featurecache";
-    cout << "- fits all samples from list file " << listFile << ": ";
+    size_t sample = 47;
+    cout << "- fits sample " << sample << " from list file " << listFile << ": ";
 
+    float estimate;
+    bool pass;
+    float weightPenalty = 0;
+    float learnrate = 0.01f;
+
+    auto& fat = featuresTargets[sample];
     StrengthNet net;
     Rand rand(123ull); // reproducible seed
     net.randomInit(rand);
-    Dataset dataset;
-    FeaturesAndTargets featuresTargets;
+    net.setInput(fat.first);
+    net.setBatchSize(1);
+    cout << fat.first.size() << " input features\n";
+    // net.printWeights(cout, "initial values");
+
+    for(int i = 0; i < 60; i++) {
+      net.forward();
+      net.backward(fat.second); //, 0);
+      net.update(weightPenalty, learnrate);
+      cout << "epoch " << i << ": thetavar=" << net.thetaVar() << "\n";
+    }
+
+    // // reconstruct the matrix multiplication
+    // net.forward();
+    // net.backward(fat.second); //, 0);
+    // net.h_grad.print(cout, "h_grad (left)");
+    // net.x.print(cout, "x (right)");
+    // net.x.transpose();
+    // StrengthNetImpl::matmul(net.W_grad, net.h_grad, net.x);
+    // net.x.transpose();
+    // net.W_grad.print(cout, "W_grad (result)");
+
+    // GET THE FULL PICTURE
+    // net.printState(cout, "after 50 epochs ");
+    // net.printGrads(cout, "after 50 epochs ");
+    // net.printWeights(cout, "after 50 epochs ");
+    // net.forward();
+    // net.backward(fat.second); //, 0);
+    // net.update(weightPenalty, learnrate);
+    // net.printState(cout, "after 51 epochs ");
+    // net.printGrads(cout, "after 51 epochs ");
+    // net.printWeights(cout, "after 51 epochs ");
+
+    net.forward();
+    estimate = net.getOutput();
+    pass = fabs(net.getOutput() - fat.second) <= 0.1f;
+
+    cout << "Estimate: " << estimate << ", target: " << fat.second << "\n";
+    cout << (pass ? "pass" : "fail") << "\n";
+  }
+
+  if(0) // disabled for calculation time (1000 epochs per data sample)
+  {
+    cout << "- fits all samples from list file " << listFile << ": ";
+
     float estimate;
     bool pass;
 
-    try {
-      dataset = StrengthModel::loadDataset(listFile);
-      featuresTargets = StrengthModel::getFeaturesAndTargetsCached(dataset, featureDir);
-    }
-    catch(const StringError& e) {
-      cout << "skip (" << e.what() << ")\n";
-      goto skip_test_fitall;
-    }
-
     pass = true;
-    for(int i = 0; i < featuresTargets.size(); i++) {
+    for(int i = 0; i < featuresTargets.size() && i < 100; i++) {
       auto& fat = featuresTargets[i];
       if(!fitsOneSample(fat.first, fat.second, 1000, 0, 0.01f, estimate)) {
         pass = false;
@@ -43,7 +100,6 @@ void runStrengthModelTests() {
     }
 
     cout << (pass ? "pass" : "fail") << "\n";
-    skip_test_fitall:;
   }
 }
 }
@@ -56,7 +112,7 @@ bool fitsOneSample(vector<MoveFeatures> features, float target, int epochs, floa
     net.setInput(features);
     net.setBatchSize(1);
 
-    for(int i = 0; i < epochs; i++) { // perfectly fit to threemoves input
+    for(int i = 0; i < epochs; i++) {
       net.forward();
       net.backward(target); //, 0);
       net.update(weightPenalty, learnrate);

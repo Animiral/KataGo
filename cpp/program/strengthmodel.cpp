@@ -178,7 +178,7 @@ void StrengthModel::train(FeaturesAndTargets& xy, size_t split, int epochs, size
   batchSize = 1; // TODO: properly implement batches
 
   for(int e = 0; e < epochs; e++) {
-    float grads_sq = 0;
+    float grads_var = 0;
     std::shuffle(&xy[0], &xy[split], rand);
     // train weights
     for(int i = 0; i < split; i += batchSize) {
@@ -188,7 +188,7 @@ void StrengthModel::train(FeaturesAndTargets& xy, size_t split, int epochs, size
         net.forward();
         // cout << "Sample #" << i << "(" << xy[i].first.size() << " moves): (" << y_hat << "-" << xy[i].second << ")^2 = " << (y_hat-xy[i].second)*(y_hat-xy[i].second) << "\n";
         net.backward(xy[i+b].second/*, b*/);
-        grads_sq += net.gradsSq();
+        grads_var += net.gradsVar();
       }
       net.mergeGrads();
 
@@ -200,7 +200,7 @@ void StrengthModel::train(FeaturesAndTargets& xy, size_t split, int epochs, size
 
       net.update(weightPenalty, learnrate);
     }
-    grads_sq /= split; // average in 1 training update
+    grads_var /= split; // average in 1 training update
     // net.printWeights(cout, "epoch " + Global::intToString(e));
     // net.printState(cout, "epoch " + Global::intToString(e));
 
@@ -224,9 +224,9 @@ void StrengthModel::train(FeaturesAndTargets& xy, size_t split, int epochs, size
       mse += sqerr;
     }
     mse /= xy.size() - split;
-    float theta_sq = net.thetaSq();
+    float theta_var = net.thetaVar();
     // cout << "Epoch " << e << ": mse=" << std::fixed << std::setprecision(3) << mse << "\n";
-    cout << custom_format("Epoch %d: mse_training=%.2f, mse=%.2f, theta^2=%.4f, grad^2=%.4f\n", e, mse_training, mse, theta_sq, grads_sq);
+    cout << custom_format("Epoch %d: mse_training=%.2f, mse=%.2f, theta^2=%.4f, grad^2=%.4f\n", e, mse_training, mse, theta_var, grads_var);
   }
   net.saveModelFile(strengthModelFile);
 }

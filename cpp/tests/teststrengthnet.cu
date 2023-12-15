@@ -18,9 +18,14 @@ __global__ void softmaxDerived(Tensor z_grad, const Tensor a);
 __global__ void matmulDerived(Tensor x_grad, const Tensor y_grad, const Tensor W);
 __global__ void updateTensor(Tensor W, const Tensor W_grad, float weightPenalty, float learnrate);
 
+void scale(Tensor& y, float w);
 void hadamard(Tensor& y, const Tensor& w) noexcept;
-void add(Tensor& y, const Tensor& x) noexcept;
 void matmul(Tensor& y, const Tensor& W, const Tensor& x) noexcept;
+void add(Tensor& y, const Tensor& x) noexcept;
+void min(Tensor& y, const Tensor& x);
+void minDerived(Tensor& x_grad, const Tensor& y_grad, const Tensor& x, const Tensor& y);
+void sum(Tensor& y, const Tensor& x);
+
 }
 
 using namespace StrengthNetImpl;
@@ -70,19 +75,20 @@ void runStrengthNetTests() {
   }
 
   {
-    Tensor A = toTensor({1, -3, 3,  2, -2, -1,  1, 0, -1}, 3, 3); // (with bias column)
+    Tensor A = toTensor({1, -3, 3,  2, -2, -1}, 2, 3);
     Tensor B = toTensor({7, -10,  3, 8,  -11, 4,  8, 7}, 4, 2);
     Tensor C(4, 3);
     matmul(C, A, B);
-    expectApprox(toTensor({-12, -1, 30,  20, -25, 0,  -2, 25, -38,  23, -38, 16}, 4, 3), C, "matmul");
+    expectApprox(toTensor({-13, -1, 31,  19, -25, 1,  -3, 25, -37,  22, -38, 17}, 4, 3), C, "matmul");
   }
 
   {
-    Tensor A = toTensor({1, -3, 3,  2, -2, -1}, 2, 3); // (with bias column)
-    Tensor B = toTensor({7, 3}, 2, 1);
+    Tensor A = toTensor({1, -3, 3,  -1, 1, -1}, 2, 3);
+    Tensor B = toTensor({7, 3,  2, 6}, 2, 2);
     Tensor C(2, 3);
+    B.transpose();
     matmul(C, A, B);
-    expectApprox(toTensor({9, -23, 20,  5, -11, 8}, 2, 3), C, "matmul2");
+    expectApprox(toTensor({5, -19, 19,  -3, -3, 3}, 2, 3), C, "matmul2");
   }
 
   {

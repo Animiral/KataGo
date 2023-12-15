@@ -13,11 +13,11 @@ Tensor::Tensor(uint xdim, uint ydim, uint zdim)
 }
 
 Tensor::Tensor(const Tensor& rhs)
-: data(rhs.data), dims(rhs.dims), viewDims(rhs.viewDims), transposed(false), isOwner(false)
+: data(rhs.data), dims(rhs.dims), viewDims(rhs.viewDims), transposed(rhs.transposed), isOwner(false)
 {}
 
 Tensor::Tensor(Tensor&& rhs) noexcept
-: data(rhs.data), dims(rhs.dims), viewDims(rhs.viewDims), transposed(false), isOwner(true) {
+: data(rhs.data), dims(rhs.dims), viewDims(rhs.viewDims), transposed(rhs.transposed), isOwner(true) {
   rhs.data = nullptr;
 }
 
@@ -84,29 +84,6 @@ void Tensor::transpose() {
   transposed = !transposed;
 }
 
-float Tensor::variance() const {
-  size_t n = dims.x * dims.y * dims.z;
-  assert(n > 1); // 1 number has no variance
-  vector<float> buffer(n);
-  CUDA_ERR("Tensor.variance", cudaMemcpy(buffer.data(), data, n * sizeof(float), cudaMemcpyDeviceToHost));
-
-  // est. average
-  vector<float> mubuffer = buffer;
-  float mu = 0;
-  for(size_t s = 1; s < n; s*=2)
-    for(size_t i = 0; i+s < n; i+=2*s)
-      mubuffer[i] += mubuffer[i+s];
-  mu = mubuffer[0] / n;
-
-  // est. variance
-  for(size_t i = 0; i < n; i++)
-    buffer[i] = (buffer[i] - mu) * (buffer[i] - mu);
-  for(size_t s = 1; s < n; s*=2)
-    for(size_t i = 0; i+s < n; i+=2*s)
-      buffer[i] += buffer[i+s];
-  return buffer[0] / (n - 1);
-}
-
 void Tensor::print(std::ostream& stream, const std::string& name) const {
   vector<float> hostdata(dims.x * dims.y);
   CUDA_ERR("Tensor::print", cudaMemcpy(hostdata.data(), data, dims.x * dims.y * sizeof(float), cudaMemcpyDeviceToHost));
@@ -118,6 +95,31 @@ void Tensor::print(std::ostream& stream, const std::string& name) const {
     stream << "\n";
   }
   stream << "===\n";
+}
+
+float Tensor::mean(std::initializer_list<Tensor> ts) {
+  float sum = 0;
+  size_t N = 0;
+  for(const Tensor& t : ts) {
+    auto data = static_cast<vector<float>>(t);
+    for(float f : data)
+      sum += f;
+    N += data.size();
+  }
+  return sum / N;
+}
+
+float Tensor::variance(std::initializer_list<Tensor> ts) {
+  float mu = mean(ts);
+  float sumSq = 0;
+  size_t N = 0;
+  for(const Tensor& t : ts) {
+    auto data = static_cast<vector<float>>(t);
+    for(float f : data)
+      sumSq += (f-mu) * (f-mu);
+    N += data.size();
+  }
+  return sumSq / (N - 1);
 }
 
 StrengthNet::StrengthNet()
@@ -137,6 +139,25 @@ void StrengthNet::randomInit(Rand& rand) {
 
 const uint32_t StrengthNet::STRNET_HEADER = 0x57237;
 
+namespace {
+void tensorFromFile(Tensor& tensor, FILE* file) {
+  size_t bufferSize = tensor.dims.x * tensor.dims.y * tensor.dims.z;
+  vector<float> buffer(bufferSize);
+  size_t readSize = std::fread(buffer.data(), sizeof(float), bufferSize, file);
+  if(bufferSize != readSize)
+    throw IOError("Failed to read strength model from file.");
+  CUDA_ERR("tensorFromFile", cudaMemcpy(tensor.data, buffer.data(), bufferSize * sizeof(float), cudaMemcpyHostToDevice));
+}
+void tensorToFile(Tensor& tensor, FILE* file) {
+  size_t bufferSize = tensor.dims.x * tensor.dims.y * tensor.dims.z;
+  vector<float> buffer(bufferSize);
+  CUDA_ERR("tensorToFile", cudaMemcpy(buffer.data(), tensor.data, bufferSize * sizeof(float), cudaMemcpyDeviceToHost));
+  size_t wroteSize = std::fwrite(buffer.data(), sizeof(float), bufferSize, file);
+  if(bufferSize != wroteSize)
+    throw IOError("Failed to save strength model to file.");
+}
+}
+
 bool StrengthNet::loadModelFile(const std::string& path) {
   auto file = std::unique_ptr<std::FILE, decltype(&std::fclose)>(std::fopen(path.c_str(), "rb"), &std::fclose);
   if(nullptr == file)
@@ -145,24 +166,11 @@ bool StrengthNet::loadModelFile(const std::string& path) {
   size_t readheader = std::fread(&header, 4, 1, file.get());
   if(1 != readheader || STRNET_HEADER != header)
     throw IOError(path + " is not a strength model file.");
-
-  size_t bufferSize = (in_ch+1)*hidden_ch + (hidden_ch+1)*out_ch;
-  vector<float> buffer(bufferSize);
-  size_t readW = std::fread(buffer.data(), sizeof(float), W.dims.x*W.dims.y, file.get());
-  CUDA_ERR("StrengthNet.loadModelFile", cudaMemcpy(W.data, buffer.data(), W.dims.x*W.dims.y * sizeof(float), cudaMemcpyHostToDevice));
-  size_t readb = std::fread(buffer.data(), sizeof(float), b.dims.x*b.dims.y, file.get());
-  CUDA_ERR("StrengthNet.loadModelFile", cudaMemcpy(b.data, buffer.data(), b.dims.x*b.dims.y * sizeof(float), cudaMemcpyHostToDevice));
-  // size_t readW1 = std::fread(buffer.data(), sizeof(float), W1.dims.x*W1.dims.y, file.get());
-  // CUDA_ERR("StrengthNet.loadModelFile", cudaMemcpy(W1.data, buffer.data(), W1.dims.x*W1.dims.y * sizeof(float), cudaMemcpyHostToDevice));
-  // size_t readW2r = std::fread(buffer.data(), sizeof(float), W2r.dims.x*W2r.dims.y, file.get());
-  // CUDA_ERR("StrengthNet.loadModelFile", cudaMemcpy(W2r.data, buffer.data(), W2r.dims.x*W2r.dims.y * sizeof(float), cudaMemcpyHostToDevice));
-  // size_t readW2z = std::fread(buffer.data(), sizeof(float), W2z.dims.x*W2z.dims.y, file.get());
-  // CUDA_ERR("StrengthNet.loadModelFile", cudaMemcpy(W2z.data, buffer.data(), W2z.dims.x*W2z.dims.y * sizeof(float), cudaMemcpyHostToDevice));
-
-  // if(W1.dims.x*W1.dims.y + W2r.dims.x*W2r.dims.y + W2z.dims.x*W2z.dims.y != readW1 + readW2r + readW2z)
-  if(W.dims.x*W.dims.y + b.dims.x*b.dims.y != readW + readb)
-    throw IOError("Failed to read complete strength model from " + path);
-
+  tensorFromFile(W, file.get());
+  tensorFromFile(b, file.get());
+  // tensorFromFile(W1, file.get());
+  // tensorFromFile(W2r, file.get());
+  // tensorFromFile(W2z, file.get());
   std::fclose(file.release());
   return true;
 }
@@ -172,26 +180,13 @@ void StrengthNet::saveModelFile(const std::string& path) {
   if(nullptr == file)
     throw IOError("Could not save strength model to " + path);
 	size_t wroteheader = std::fwrite(&STRNET_HEADER, 4, 1, file.get());
-
-  size_t bufferSize = (in_ch+1)*hidden_ch + (hidden_ch+1)*out_ch;
-  vector<float> buffer(bufferSize);
-
-  CUDA_ERR("StrengthNet.saveModelFile", cudaMemcpy(buffer.data(), W.data, W.dims.x*W.dims.y * sizeof(float), cudaMemcpyDeviceToHost));
-  size_t wroteW = std::fwrite(buffer.data(), sizeof(float), W.dims.x*W.dims.y, file.get());
-  CUDA_ERR("StrengthNet.saveModelFile", cudaMemcpy(buffer.data(), b.data, b.dims.x*b.dims.y * sizeof(float), cudaMemcpyDeviceToHost));
-  size_t wroteb = std::fwrite(buffer.data(), sizeof(float), b.dims.x*b.dims.y, file.get());
-
-  // CUDA_ERR("StrengthNet.saveModelFile", cudaMemcpy(buffer.data(), W1.data, W1.dims.x*W1.dims.y * sizeof(float), cudaMemcpyDeviceToHost));
-	// size_t wroteW1 = std::fwrite(buffer.data(), sizeof(float), W1.dims.x*W1.dims.y, file.get());
-  // CUDA_ERR("StrengthNet.saveModelFile", cudaMemcpy(buffer.data(), W2r.data, W2r.dims.x*W2r.dims.y * sizeof(float), cudaMemcpyDeviceToHost));
-  // size_t wroteW2r = std::fwrite(buffer.data(), sizeof(float), W2r.dims.x*W2r.dims.y, file.get());
-  // CUDA_ERR("StrengthNet.saveModelFile", cudaMemcpy(buffer.data(), W2z.data, W2z.dims.x*W2z.dims.y * sizeof(float), cudaMemcpyDeviceToHost));
-  // size_t wroteW2z = std::fwrite(buffer.data(), sizeof(float), W2z.dims.x*W2z.dims.y, file.get());
-
-  // if(1 + W1.dims.x*W1.dims.y + W2r.dims.x*W2r.dims.y + W2z.dims.x*W2z.dims.y != wroteheader + wroteW1 + wroteW2r + wroteW2z)
-  if(1 + W.dims.x*W.dims.y + b.dims.x*b.dims.y != wroteheader + wroteW + wroteb)
+  if(1 != wroteheader)
     throw IOError("Failed to save complete strength model to " + path);
-
+  tensorToFile(W, file.get());
+  tensorToFile(b, file.get());
+  // tensorToFile(W1, file.get());
+  // tensorToFile(W2r, file.get());
+  // tensorToFile(W2z, file.get());
   if(0 != std::fclose(file.release()))
     throw IOError("Failed to save complete strength model to " + path);
 }
@@ -212,8 +207,15 @@ void StrengthNet::setInput(const std::vector<MoveFeatures>& features) {
   }
 
   CUDA_ERR("StrengthNet::setInput", cudaMemcpy(x.data, rawfeatures.data(), in_ch * N * sizeof(float), cudaMemcpyHostToDevice));
-  x.dims.x = h.dims.x = /*r.dims.x = a.dims.x =*/ N;
-  h_grad.dims.x = /*hr_grad.dims.x = hz_grad.dims.x = r_grad.dims.x = z_grad.dims.x =*/ N;
+  x.dims.x = x.viewDims.x = N;
+  h.dims.x = h.viewDims.x = N;
+  // r.dims.x = r.viewDims.x = N;
+  // a.dims.x = a.viewDims.x = N;
+  h_grad.dims.x = h_grad.viewDims.x = N;
+  // hr_grad.dims.x = hr_grad.viewDims.x = N;
+  // hz_grad.dims.x = hz_grad.viewDims.x = N;
+  // r_grad.dims.x = r_grad.viewDims.x = N;
+  // z_grad.dims.x = z_grad.viewDims.x = N;
 }
 
 void StrengthNet::setBatchSize(size_t batchSize_) noexcept {
@@ -257,4 +259,12 @@ void StrengthNet::printGrads(std::ostream& stream, const std::string& name) cons
   // stream << "* W1_grad *\n";  W1_grad.print(stream, name);   // only prints first grad (z==0)!
   // stream << "* W2r_grad *\n";  W2r_grad.print(stream, name); // only prints first grad (z==0)!
   // stream << "* W2z_grad *\n";  W2z_grad.print(stream, name); // only prints first grad (z==0)!
+}
+
+float StrengthNet::thetaVar() const {
+  return Tensor::variance({W, b});
+}
+
+float StrengthNet::gradsVar() const {
+  return Tensor::variance({W_grad, b_grad});
 }

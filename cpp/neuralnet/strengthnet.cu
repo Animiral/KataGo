@@ -32,7 +32,6 @@ __global__ void softmaxDerived(Tensor z_grad, const Tensor a); // z_grad = d_sof
 __global__ void matmulDerived(Tensor x_grad, const Tensor y_grad, const Tensor W); // x_grad = y_grad * d_y / d_x, where y = W * x
 __global__ void accumulateTensorZ(Tensor W); // reduce z dimension by sum
 __global__ void updateTensor(Tensor W, const Tensor W_grad, float weightPenalty, float learnrate); // W = W - W_grad * learnrate - d_(W ⊙ W) / d_W * weightPenalty
-__global__ void sumOfSquares(Tensor y, const Tensor t); // y = sum(t ⊙ t)
 
 void scale(Tensor& y, float w);
 void hadamard(Tensor& y, const Tensor& w);
@@ -136,77 +135,6 @@ void StrengthNet::update(float weightPenalty, float learnrate) {
   // updateTensor<<<1, {W2z.dims.x, W2z.dims.y}>>>(W2z, W2z_grad, weightPenalty, learnrate);
 }
 
-float StrengthNet::thetaSq() const {
-  float sosW, sosb; // sosW1, sosW2r, sosW2z;
-  Tensor result(1, 1);
-  dim3 blockDim2d(16, 16);
-  size_t shmemSize = (in_ch + out_ch) * hidden_ch * sizeof(float);
-
-  dim3 numBlocks = numBlocksForTensor(W, blockDim2d);
-  sumOfSquares<<<numBlocks, blockDim2d, shmemSize>>>(result, W);
-  cudaMemcpy(&sosW, result.data, sizeof(float), cudaMemcpyDeviceToHost);
-
-  numBlocks = numBlocksForTensor(b, blockDim2d);
-  sumOfSquares<<<numBlocks, blockDim2d, shmemSize>>>(result, b);
-  cudaError_t status = cudaMemcpy(&sosb, result.data, sizeof(float), cudaMemcpyDeviceToHost);
-
-  // dim3 numBlocks = numBlocksForTensor(W1, blockDim2d);
-  // sumOfSquares<<<numBlocks, blockDim2d, shmemSize>>>(result, W1);
-  // cudaMemcpy(&sosW1, result.data, sizeof(float), cudaMemcpyDeviceToHost);
-
-  // numBlocks = numBlocksForTensor(W2r, blockDim2d);
-  // sumOfSquares<<<numBlocks, blockDim2d, shmemSize>>>(result, W2r);
-  // cudaMemcpy(&sosW2r, result.data, sizeof(float), cudaMemcpyDeviceToHost);
-
-  // numBlocks = numBlocksForTensor(W2z, blockDim2d);
-  // sumOfSquares<<<numBlocks, blockDim2d, shmemSize>>>(result, W2z);
-  // cudaError_t status = cudaMemcpy(&sosW2z, result.data, sizeof(float), cudaMemcpyDeviceToHost);
-
-  if(status != cudaSuccess)
-    throw std::runtime_error(cudaGetErrorString(status));
-
-  size_t paramCount = W.dims.x * W.dims.y + b.dims.x * b.dims.y;
-  return (sosW + sosb) / paramCount;
-  // return (sosW1 + sosW2r + sosW2z) / paramCount;
-  // size_t paramCount = W1.dims.x * W1.dims.y + W2r.dims.x * W2r.dims.y + W2z.dims.x * W2z.dims.y;
-}
-
-float StrengthNet::gradsSq() const {
-  float sosW, sosb; // sosW1, sosW2r, sosW2z;
-  Tensor result(1, 1);
-  dim3 blockDim2d(16, 16);
-  size_t shmemSize = (in_ch + out_ch) * hidden_ch * sizeof(float);
-
-  dim3 numBlocks = numBlocksForTensor(W_grad, blockDim2d);
-  sumOfSquares<<<numBlocks, blockDim2d, shmemSize>>>(result, W_grad);
-  cudaMemcpy(&sosW, result.data, sizeof(float), cudaMemcpyDeviceToHost);
-
-  numBlocks = numBlocksForTensor(b_grad, blockDim2d);
-  sumOfSquares<<<numBlocks, blockDim2d, shmemSize>>>(result, b_grad);
-  cudaError_t status = cudaMemcpy(&sosb, result.data, sizeof(float), cudaMemcpyDeviceToHost);
-
-  // dim3 numBlocks = numBlocksForTensor(W1_grad, blockDim2d);
-  // sumOfSquares<<<numBlocks, blockDim2d, shmemSize>>>(result, W1_grad);
-  // cudaMemcpy(&sosW1, result.data, sizeof(float), cudaMemcpyDeviceToHost);
-
-  // numBlocks = numBlocksForTensor(W2r_grad, blockDim2d);
-  // sumOfSquares<<<numBlocks, blockDim2d, shmemSize>>>(result, W2r_grad);
-  // cudaMemcpy(&sosW2r, result.data, sizeof(float), cudaMemcpyDeviceToHost);
-
-  // numBlocks = numBlocksForTensor(W2z_grad, blockDim2d);
-  // sumOfSquares<<<numBlocks, blockDim2d, shmemSize>>>(result, W2z_grad);
-  // cudaError_t status = cudaMemcpy(&sosW2z, result.data, sizeof(float), cudaMemcpyDeviceToHost);
-
-  if(status != cudaSuccess)
-    throw std::runtime_error(cudaGetErrorString(status));
-
-  size_t paramCount = W.dims.x * W.dims.y + b.dims.x * b.dims.y;
-  return (sosW + sosb) / paramCount;
-  // size_t paramCount = W1_grad.dims.x * W1_grad.dims.y + W2r_grad.dims.x * W2r_grad.dims.y + W2z_grad.dims.x * W2z_grad.dims.y;
-  // return (sosW1 + sosW2r + sosW2z) / paramCount;
-}
-
-
 namespace {
 
 constexpr dim3 numBlocksForTensor(const Tensor& t, dim3 blockDim) {
@@ -234,14 +162,15 @@ __device__ float& at(const Tensor& t, uint x, uint y, uint z) {
   if(1 == t.dims.z)
     z = 0;
 
+  uint xy;
+
   // implement transposition
-  if(t.transposed) {
-    uint t = x;
-    x = y;
-    y = t;
-  }
+  if(t.transposed)
+    xy = y * t.dims.x + x;
+  else
+    xy = x * t.dims.y + y;
   
-  return t.data[z * t.dims.x * t.dims.y + x * t.dims.y + y];
+  return t.data[z * t.dims.x * t.dims.y + xy];
 }
 
 __device__ float accumulate(float* data, uint n, float (*func)(float, float)) {
@@ -249,10 +178,13 @@ __device__ float accumulate(float* data, uint n, float (*func)(float, float)) {
   assert(blockDim.x >= n); // must have enough threads
   extern __shared__ float buffer[];
   uint i = threadIdx.x;
-  buffer[i] = data[i];
+
+  if(i < n)
+    buffer[i] = data[i];
+
   __syncthreads();
 
-  for (uint s = n/2; s > 0; s /= 2) {
+  for (uint s = n/2; s > 0; s = n/2) {
       if (i + n - s < n) { // accumulate second half of data into first half
           buffer[i] = func(buffer[i], buffer[i + n - s]);
       }
@@ -291,11 +223,11 @@ __global__ void hadamardK(Tensor y, const Tensor w) {
 // y = W*x
 // set blocks to partition y into squares
 __global__ void matmulK(Tensor y, const Tensor W, const Tensor x) {
-  assert(W.dims.x - x.dims.y <= 1); // weight.dims.x must either match x dims or have exactly 1 more column of bias weights
-  assert(y.dims.x == x.dims.x);     // output size must match
-  assert(y.dims.y == W.dims.y);     // output size must match
+  assert(W.dims.x == x.dims.y); // input size must match
+  assert(y.dims.x == x.dims.x); // output size must match
+  assert(y.dims.y == W.dims.y); // output size must match
   assert(1 == W.dims.z);
-  assert(1 == x.dims.z);
+  assert(1 == x.dims.z); // TODO: support parallelism
 
   // naive implementation
   uint row = blockIdx.y * blockDim.y + threadIdx.y;
@@ -309,9 +241,6 @@ __global__ void matmulK(Tensor y, const Tensor W, const Tensor x) {
   for (uint i = 0; i < x.dims.y; i++) {
     h += at(W, i, row) * at(x, col, i);
   }
-  if(W.dims.x - x.dims.y > 0) // weight matrix includes bias row
-    h += at(W, W.dims.x - 1, row);
-
   at(y, col, row) = h;
 }
 
@@ -339,7 +268,7 @@ __global__ void minK(Tensor y, const Tensor x) {
   // if(yy >= y.dims.y || zz >= y.dims.z)
   //   return;
 
-  float minValue = accumulate(x.data, x.viewDims.x, [](float a, float b) { return a < b ? a : b; });
+  float minValue = accumulate(x.data, x.dims.x, [](float a, float b) { return a < b ? a : b; });
   if(0 == threadIdx.x)
     y.data[0] = minValue;
 }
@@ -356,6 +285,10 @@ __global__ void minDerivedK(Tensor x_grad, const Tensor y_grad, const Tensor x, 
   assert(y.viewDims.z == x.viewDims.z);
   assert(1 == y.viewDims.y); // TODO: parallelism support
   assert(1 == y.viewDims.z); // TODO: parallelism support
+  assert(0 == blockIdx.x); // TODO: parallelism support
+
+  if(threadIdx.x >= x_grad.dims.x)
+    return;
 
   float minValue = y.data[0];
   x_grad.data[threadIdx.x] = y_grad.data[0] * (x.data[threadIdx.x] == minValue);
@@ -505,27 +438,6 @@ __global__ void updateTensor(Tensor W, const Tensor W_grad, float weightPenalty,
 //   float cosa = cosf(outputx[threadIdx.x*2 + 1]);
 //   outgrads[threadIdx.x*2 + 1] = ingrads[threadIdx.x*2 + 1] * 10.f / (cosa*cosa);
 // }
-
-__global__ void sumOfSquares(Tensor y, const Tensor t) {
-  extern __shared__ float buffer[];
-  int i = blockIdx.x * blockDim.x + threadIdx.x;
-  uint n = t.dims.x * t.dims.y;
-  if(i >= n)
-    return;
-
-  buffer[i] = t.data[i] * t.data[i];
-  __syncthreads();
-
-  for (uint s = 1; s < n; s *= 2) {
-      if (i + s < n) {
-          buffer[i] += buffer[i + s];
-      }
-      __syncthreads();
-  }
-
-  if(0 == i)
-    y.data[0] = buffer[0];
-}
 
 void scale(Tensor& y, float w) {
   dim3 blockDim(16, 16, 4);
