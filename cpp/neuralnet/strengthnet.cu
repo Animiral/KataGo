@@ -23,13 +23,9 @@ __global__ void minK(Tensor y, const Tensor x); // y = min(x) across x-dimension
 __global__ void minDerivedK(Tensor x_grad, const Tensor y_grad, const Tensor x, const Tensor y); // x_grad = y_grad * d_min(x) / d_x
 __global__ void sumK(Tensor y, const Tensor x); // y = sum(x) across x-dimension
 
-__global__ void dotproduct(Tensor y, const Tensor a, const Tensor b); // y = a^T * b
-__global__ void transposeMatmul(Tensor y, const Tensor a, const Tensor b, uint z_index); // y = a * b^T
 __global__ void relu(Tensor h); // in-place relu
 __global__ void softmax(Tensor a); // in-place softmax
-__global__ void lossDerived(Tensor y_grad, float target, const Tensor y); // y_grad = d_y / d_target
 __global__ void softmaxDerived(Tensor z_grad, const Tensor a); // z_grad = d_softmax(z) / d_z where a = softmax(z)
-__global__ void matmulDerived(Tensor x_grad, const Tensor y_grad, const Tensor W); // x_grad = y_grad * d_y / d_x, where y = W * x
 __global__ void accumulateTensorZ(Tensor W); // reduce z dimension by sum
 __global__ void updateTensor(Tensor W, const Tensor W_grad, float weightPenalty, float learnrate); // W = W - W_grad * learnrate - d_(W ⊙ W) / d_W * weightPenalty
 
@@ -141,6 +137,7 @@ constexpr dim3 numBlocksForTensor(const Tensor& t, dim3 blockDim) {
   dim3 numBlocks(1, 1, 1);
   numBlocks.x = (t.dims.x + blockDim.x - 1) / blockDim.x;
   numBlocks.y = (t.dims.y + blockDim.y - 1) / blockDim.y;
+  numBlocks.z = (t.dims.z + blockDim.z - 1) / blockDim.z;
   return numBlocks;
 }
 
@@ -308,41 +305,6 @@ __global__ void sumK(Tensor y, const Tensor x) {
     y.data[0] = sumValue;
 }
 
-__global__ void dotproduct(Tensor y, const Tensor a, const Tensor b) {
-  assert(a.dims.x == b.dims.x);
-
-  float s = 0;
-  for(int i = 0; i < a.dims.x; i++)
-    s += at(a, i) * at(b, i);
-  at(y, 0) = s;
-}
-
-// y[z_index] = a*b^T
-// set blocks to partition y into squares
-__global__ void transposeMatmul(Tensor y, const Tensor a, const Tensor b, uint z_index) {
-  assert(a.dims.x == b.dims.x);  // input sizes must match
-  assert(y.dims.x - b.dims.y <= 1);  // output size must either match or fit exactly 1 more column of bias weights
-  assert(y.dims.y == a.dims.y);  // output size must match
-  assert(z_index < y.dims.z); // must have room to store the result
-
-  // naive implementation
-  int row = blockIdx.y * blockDim.y + threadIdx.y;
-  int col = blockIdx.x * blockDim.x + threadIdx.x;
-
-  // early exit for overspilling blocks
-  if(row >= y.dims.y || col >= y.dims.x)
-    return;
-
-  float h = 0.0f;
-  for (int i = 0; i < b.dims.x; i++) {
-    if(col < b.dims.y)
-      h += at(a, i, row) * at(b, i, col);
-    else // construct bias row (as if b.data[...] == 1)
-      h += at(a, i, row);
-  }
-  at(y, col, row, z_index) = h;
-}
-
 __global__ void relu(Tensor h) {
   int i = blockIdx.x * blockDim.x + threadIdx.x;
   if(i >= h.dims.x * h.dims.y)
@@ -368,10 +330,6 @@ __global__ void softmax(Tensor a) {
   at(a, i) /= sum_a;
 }
 
-__global__ void lossDerived(Tensor y_grad, float target, const Tensor y) {
-  at(y_grad, 0) = 2.f * (at(y, 0) - target);
-}
-
 __global__ void softmaxDerived(Tensor z_grad, const Tensor a) {
   assert(z_grad.dims.x == a.dims.x);
 
@@ -387,26 +345,6 @@ __global__ void softmaxDerived(Tensor z_grad, const Tensor a) {
   }
   __syncthreads();
   at(z_grad, j) = b;
-}
-
-// set blocks to partition x_grad into squares
-__global__ void matmulDerived(Tensor x_grad, const Tensor y_grad, const Tensor W) {
-  assert(W.dims.x - x_grad.dims.y <= 1);  // weight.dims.x must either match x dims or have exactly 1 more column of bias weights
-  assert(y_grad.dims.x == x_grad.dims.x); // output size must match
-  assert(y_grad.dims.y == W.dims.y);      // output size must match
-
-  int row = blockIdx.y * blockDim.y + threadIdx.y;
-  int col = blockIdx.x * blockDim.x + threadIdx.x;
-
-  // early exit for overspilling blocks
-  if(row >= x_grad.dims.y || col >= x_grad.dims.x)
-    return;
-
-  float h = 0.0f;
-  for (int i = 0; i < y_grad.dims.y; i++) {
-    h += at(W, row, i) * at(y_grad, col, i);
-  }
-  at(x_grad, col, row) = h;
 }
 
 // 1 block with W.dims threads
