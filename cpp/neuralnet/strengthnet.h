@@ -30,7 +30,7 @@ struct Tensor {
   void reshape(uint xdim, uint ydim = 1, uint zdim = 1);
   void broadcast(uint xdim, uint ydim = 1, uint zdim = 1);
   void transpose();                             // swap dims.x & dims.y, flip transposed
-  void print(std::ostream& stream, const std::string& name) const;
+  void print(std::ostream& stream, const std::string& name, bool humanReadable = true) const;
 
   static float mean(std::initializer_list<Tensor> ts);
   static float variance(std::initializer_list<Tensor> ts);
@@ -78,9 +78,9 @@ public:
   void backward(float target);   // buffers must be filled by forward pass
   void mergeGrads();
   void update(float weightPenalty, float learnrate);
-  void printWeights(std::ostream& stream, const std::string& name) const;
-  void printState(std::ostream& stream, const std::string& name) const;
-  void printGrads(std::ostream& stream, const std::string& name) const;
+  void printWeights(std::ostream& stream, const std::string& name, bool humanReadable = true) const;
+  void printState(std::ostream& stream, const std::string& name, bool humanReadable = true) const;
+  void printGrads(std::ostream& stream, const std::string& name, bool humanReadable = true) const;
   float thetaVar() const; // variance of parameters (W1, W2r, W2z);
   float gradsVar() const; // variance of parameter gradients (W1_grad, W2r_grad, W2z_grad);
 

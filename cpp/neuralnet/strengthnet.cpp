@@ -84,17 +84,22 @@ void Tensor::transpose() {
   transposed = !transposed;
 }
 
-void Tensor::print(std::ostream& stream, const std::string& name) const {
+void Tensor::print(std::ostream& stream, const std::string& name, bool humanReadable) const {
   vector<float> hostdata(dims.x * dims.y);
   CUDA_ERR("Tensor::print", cudaMemcpy(hostdata.data(), data, dims.x * dims.y * sizeof(float), cudaMemcpyDeviceToHost));
-  stream << "=== DUMP " << name << "\n";
+  if(humanReadable)
+    stream << "=== DUMP " << name << "\n";
   for(int c = 0; c < dims.y; c++) {
     for(int i = 0; i < dims.x; i++) {
-      stream << std::setw(6) << std::fixed << std::setprecision(4) << hostdata[i * dims.y + c] << " ";
+      if(humanReadable)
+        stream << std::setw(6) << std::fixed << std::setprecision(4);
+      stream << hostdata[i * dims.y + c] << (humanReadable ? " " : ",");
     }
     stream << "\n";
   }
-  stream << "===\n";
+  if(humanReadable)
+    stream << "===";
+  stream << "\n";
 }
 
 float Tensor::mean(std::initializer_list<Tensor> ts) {
@@ -231,34 +236,34 @@ float StrengthNet::getOutput() const {
   return output * 500.f + 1500.f;
 }
 
-void StrengthNet::printWeights(std::ostream& stream, const std::string& name) const {
-  stream << "* W *\n";   W.print(stream, name);
-  stream << "* b *\n";   b.print(stream, name);
-  // stream << "* W1 *\n";   W1.print(stream, name);
-  // stream << "* W2r *\n";  W2r.print(stream, name);
-  // stream << "* W2z *\n";  W2z.print(stream, name);
+void StrengthNet::printWeights(std::ostream& stream, const std::string& name, bool humanReadable) const {
+  stream << "* W *\n";   W.print(stream, name, humanReadable);
+  stream << "* b *\n";   b.print(stream, name, humanReadable);
+  // stream << "* W1 *\n";   W1.print(stream, name, humanReadable);
+  // stream << "* W2r *\n";  W2r.print(stream, name, humanReadable);
+  // stream << "* W2z *\n";  W2z.print(stream, name, humanReadable);
 }
 
-void StrengthNet::printState(std::ostream& stream, const std::string& name) const {
-  stream << "* x *\n";  x.print(stream, name);
-  stream << "* h *\n";  h.print(stream, name);
-  // stream << "* r *\n";  r.print(stream, name);
-  // stream << "* a *\n";  a.print(stream, name);
-  stream << "* y *\n";  y.print(stream, name);
+void StrengthNet::printState(std::ostream& stream, const std::string& name, bool humanReadable) const {
+  stream << "* x *\n";  x.print(stream, name, humanReadable);
+  stream << "* h *\n";  h.print(stream, name, humanReadable);
+  // stream << "* r *\n";  r.print(stream, name, humanReadable);
+  // stream << "* a *\n";  a.print(stream, name, humanReadable);
+  stream << "* y *\n";  y.print(stream, name, humanReadable);
 }
 
-void StrengthNet::printGrads(std::ostream& stream, const std::string& name) const {
-  stream << "* h_grad *\n";  h_grad.print(stream, name);
-  // stream << "* hr_grad *\n";  hr_grad.print(stream, name);
-  // stream << "* hz_grad *\n";  hz_grad.print(stream, name);
-  // stream << "* r_grad *\n";  r_grad.print(stream, name);
-  // stream << "* z_grad *\n";  z_grad.print(stream, name);
-  stream << "* y_grad *\n";  y_grad.print(stream, name);
-  stream << "* W_grad *\n";  W_grad.print(stream, name);
-  stream << "* b_grad *\n";  b_grad.print(stream, name);
-  // stream << "* W1_grad *\n";  W1_grad.print(stream, name);   // only prints first grad (z==0)!
-  // stream << "* W2r_grad *\n";  W2r_grad.print(stream, name); // only prints first grad (z==0)!
-  // stream << "* W2z_grad *\n";  W2z_grad.print(stream, name); // only prints first grad (z==0)!
+void StrengthNet::printGrads(std::ostream& stream, const std::string& name, bool humanReadable) const {
+  stream << "* h_grad *\n";  h_grad.print(stream, name, humanReadable);
+  // stream << "* hr_grad *\n";  hr_grad.print(stream, name, humanReadable);
+  // stream << "* hz_grad *\n";  hz_grad.print(stream, name, humanReadable);
+  // stream << "* r_grad *\n";  r_grad.print(stream, name, humanReadable);
+  // stream << "* z_grad *\n";  z_grad.print(stream, name, humanReadable);
+  stream << "* y_grad *\n";  y_grad.print(stream, name, humanReadable);
+  stream << "* W_grad *\n";  W_grad.print(stream, name, humanReadable);
+  stream << "* b_grad *\n";  b_grad.print(stream, name, humanReadable);
+  // stream << "* W1_grad *\n";  W1_grad.print(stream, name, humanReadable);   // only prints first grad (z==0)!
+  // stream << "* W2r_grad *\n";  W2r_grad.print(stream, name, humanReadable); // only prints first grad (z==0)!
+  // stream << "* W2z_grad *\n";  W2z_grad.print(stream, name, humanReadable); // only prints first grad (z==0)!
 }
 
 float StrengthNet::thetaVar() const {

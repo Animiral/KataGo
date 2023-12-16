@@ -249,11 +249,13 @@ __global__ void addK(Tensor y, const Tensor x) {
   assert(y.dims.y == x.viewDims.y);
   assert(y.dims.z == x.viewDims.z);
 
-  uint i = blockIdx.x * blockDim.x + threadIdx.x;
-  if(i >= y.dims.x * y.dims.y)
+  uint xx = blockIdx.x * blockDim.x + threadIdx.x;
+  uint yy = blockIdx.y * blockDim.y + threadIdx.y;
+  uint zz = blockIdx.z * blockDim.z + threadIdx.z;
+  if(xx >= y.dims.x || yy >= y.dims.y || zz >= y.dims.z)
     return;
 
-  y.data[i] += x.data[i];
+  at(y, xx, yy, zz) += at(x, xx, yy, zz);
 }
 
 __global__ void minK(Tensor y, const Tensor x) {
@@ -458,8 +460,9 @@ void matmul(Tensor& y, const Tensor& W, const Tensor& x) {
 }
 
 void add(Tensor& y, const Tensor& x) {
-  uint numBlocks = (y.dims.x * y.dims.y * y.dims.z + 1023) / 1024;
-  addK<<<numBlocks, 1024>>>(y, x);
+  dim3 blockDim(16, 16, 4);
+  dim3 numBlocks = numBlocksForTensor(y, blockDim);
+  addK<<<numBlocks, blockDim>>>(y, x);
 }
 
 void min(Tensor& y, const Tensor& x) {

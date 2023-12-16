@@ -28,7 +28,7 @@ void runStrengthModelTests() {
     return;
   }
 
-  // if(0) // disabled for calculation time
+  if(0) // disabled for calculation time
   {
     size_t sample = 47;
     cout << "- fits sample " << sample << " from list file " << listFile << ": ";
@@ -46,13 +46,18 @@ void runStrengthModelTests() {
     net.setBatchSize(1);
     cout << fat.first.size() << " input features\n";
     // net.printWeights(cout, "initial values");
+    // std::ofstream hfile("h_values.csv"); // debug csv
 
-    for(int i = 0; i < 60; i++) {
+    int i;
+    for(i = 0; i < 100; i++) {
       net.forward();
+      // net.h.print(hfile, "h", false);
       net.backward(fat.second); //, 0);
       net.update(weightPenalty, learnrate);
       cout << "epoch " << i << ": thetavar=" << net.thetaVar() << "\n";
     }
+
+    // hfile.close();
 
     // // reconstruct the matrix multiplication
     // net.forward();
@@ -65,15 +70,14 @@ void runStrengthModelTests() {
     // net.W_grad.print(cout, "W_grad (result)");
 
     // GET THE FULL PICTURE
-    // net.printState(cout, "after 50 epochs ");
-    // net.printGrads(cout, "after 50 epochs ");
-    // net.printWeights(cout, "after 50 epochs ");
+    // net.printWeights(cout, "after " + Global::intToString(i) + " epochs ");
     // net.forward();
     // net.backward(fat.second); //, 0);
     // net.update(weightPenalty, learnrate);
-    // net.printState(cout, "after 51 epochs ");
-    // net.printGrads(cout, "after 51 epochs ");
-    // net.printWeights(cout, "after 51 epochs ");
+    // i++;
+    // net.printState(cout, "after " + Global::intToString(i) + " epochs ");
+    // net.printGrads(cout, "after " + Global::intToString(i) + " epochs ");
+    // net.printWeights(cout, "after " + Global::intToString(i) + " epochs ");
 
     net.forward();
     estimate = net.getOutput();
@@ -89,9 +93,10 @@ void runStrengthModelTests() {
 
     float estimate;
     bool pass;
+    size_t upTo = min(featuresTargets.size(), 100ul); // speedup: cap samples to test
 
     pass = true;
-    for(int i = 0; i < featuresTargets.size() && i < 100; i++) {
+    for(int i = 0; i < upTo; i++) {
       auto& fat = featuresTargets[i];
       if(!fitsOneSample(fat.first, fat.second, 1000, 0, 0.01f, estimate)) {
         pass = false;

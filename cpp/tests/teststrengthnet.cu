@@ -50,7 +50,6 @@ void expectApprox(const Tensor& expected, const Tensor& result, const string& na
   for(size_t i = 0; i < exp.size(); i++)
     if(fabs(exp[i] - res[i]) > epsilon)
       pass = false;
-  pass = true;
 
   cout << "- " << name << ": " << (pass ? "pass" : "fail") << "\n";
 
@@ -126,6 +125,14 @@ void runStrengthNetTests() {
     add(A, B);
     relu<<<1, 5>>>(A);
     expectApprox(toTensor({0, 5, 3, 0, 7}, 5, 1), A, "add,relu");
+  }
+
+  {
+    Tensor A = toTensor({3, 4, 5, 6, 7, 8}, 3, 2);
+    Tensor B = toTensor({2, -1}, 1, 2);
+    B.broadcast(3, 2);
+    add(A, B);
+    expectApprox(toTensor({5, 3, 7, 5, 9, 7}, 3, 2), A, "broadcast,add");
   }
 
   {
