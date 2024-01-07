@@ -10,12 +10,10 @@ namespace StrengthNetImpl {
 
 // definitions in strengthnet.cu
 __global__ void dotproduct(Tensor y, const Tensor a, const Tensor b);
-__global__ void transposeMatmul(Tensor y, const Tensor a, const Tensor b, uint z_index);
 __global__ void relu(Tensor h);
 __global__ void softmax(Tensor a);
 __global__ void lossDerived(Tensor y_grad, float target, const Tensor y);
 __global__ void softmaxDerived(Tensor z_grad, const Tensor a);
-__global__ void matmulDerived(Tensor x_grad, const Tensor y_grad, const Tensor W);
 __global__ void updateTensor(Tensor W, const Tensor W_grad, float weightPenalty, float learnrate);
 
 void scale(Tensor& y, float w);
@@ -93,9 +91,10 @@ void runStrengthNetTests() {
   {
     Tensor A = toTensor({1, -3, 3,  2, -2, -1}, 2, 3);
     Tensor B = toTensor({7, 3, -11, 8,  -10, 8, 4, 7}, 2, 4);
-    Tensor C(5, 3);
-    transposeMatmul<<<1, {16, 16}>>>(C, A, B, 0);
-    expectApprox(toTensor({-13, -1, 31,  19, -25, 1,  -3, 25, -37,  22, -38, 17,  3, -5, 2}, 5, 3), C, "transposeMatmul");
+    Tensor C(4, 3);
+    B.transpose();
+    matmul(C, A, B);
+    expectApprox(toTensor({-13, -1, 31,  19, -25, 1,  -3, 25, -37,  22, -38, 17}, 4, 3), C, "transpose, matmul");
   }
 
   {
@@ -112,11 +111,14 @@ void runStrengthNetTests() {
   }
 
   {
+    // matmul in backpropagation: Y = output grads, W = weights, D = input grads
     Tensor Y = toTensor({-2, -1, 3,  2, -5, 0,  -2, 5, -8,  3, -3, 1}, 4, 3);
-    Tensor W = toTensor({1, -3, 3,  2, -2, -1,  1, 0, -1}, 3, 3);
+    // Tensor W = toTensor({1, -3, 3,  2, -2, -1,  1, 0, -1}, 3, 3);
+    Tensor W = toTensor({1, -3, 3,  2, -2, -1}, 2, 3);
     Tensor D(4, 2);
-    matmulDerived<<<1, {16, 16}>>>(D, Y, W);
-    expectApprox(toTensor({10, -5,  17, 14,  -41, -6,  15, 11}, 4, 2), D, "matmulDerived");
+    W.transpose();
+    matmul(D, W, Y);
+    expectApprox(toTensor({10, -5,  17, 14,  -41, -6,  15, 11}, 4, 2), D, "matmul (derived)");
   }
 
   {
