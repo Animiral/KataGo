@@ -9,7 +9,9 @@
 #include <cstdio>
 #include <memory>
 
+using std::string;
 using std::vector;
+using std::map;
 using std::cout;
 using std::cerr;
 
@@ -26,6 +28,102 @@ std::string custom_format( const std::string& format, Args ... args ) {
   return std::string( buf.get(), buf.get() + size - 1 ); // We don't want the '\0' inside
 }
 
+}
+
+void Dataset::load(const string& path) {
+  std::ifstream istrm(path);
+  if (!istrm.is_open())
+    throw IOError("Could not read dataset from " + path);
+
+  std::string line;
+  std::getline(istrm, line);
+  if(!istrm)
+    throw IOError("Could not read header line from " + path);
+  line = Global::trim(line);
+
+  // map known fieldnames to row indexes, wherever they may be
+  enum class F { ignore, sgfPath, whiteName, blackName, whiteLabel, blackLabel, winner };
+  vector<F> fields;
+  std::string field;
+  std::istringstream iss(line);
+  while(std::getline(iss, field, ',')) {
+    if("File" == field) fields.push_back(F::sgfPath);
+    else if("Player White" == field) fields.push_back(F::whiteName);
+    else if("Player Black" == field) fields.push_back(F::blackName);
+    else if("WhiteLabel" == field) fields.push_back(F::whiteLabel);
+    else if("BlackLabel" == field) fields.push_back(F::blackLabel);
+    else if("Winner" == field || "Judgement" == field) fields.push_back(F::winner);
+    else fields.push_back(F::ignore);
+  }
+
+  while (std::getline(istrm, line)) {
+    line = Global::trim(line);
+    Game game;
+    iss = std::istringstream(line);
+    int fieldIndex = 0;
+    while(std::getline(iss, field, ',')) {
+      switch(fields[fieldIndex++]) {
+      case F::sgfPath:
+        game.sgfPath = field;
+        break;
+      case F::whiteName:
+        game.whitePlayer = getOrInsertNameIndex(field);
+        break;
+      case F::blackName:
+        game.blackPlayer = getOrInsertNameIndex(field);
+        break;
+      case F::whiteLabel:
+        game.whiteRating = Global::stringToFloat(field);
+        break;
+      case F::blackLabel:
+        game.blackRating = Global::stringToFloat(field);
+        break;
+      case F::winner:
+        if('b' == field[0] || 'B' == field[0])
+          game.score = 1;
+        else if('w' == field[0] || 'W' == field[0])
+          game.score = 0;
+        break;
+      default:
+      case F::ignore:
+        break;
+      }
+    }
+    if(!istrm)
+      throw IOError("Error while reading from " + path);
+    game.prevWhiteGame = player_[game.whitePlayer].lastOccurrence;
+    game.prevBlackGame = player_[game.blackPlayer].lastOccurrence;
+    size_t gameIndex = game_.size();
+    game_.push_back(game);
+    player_[game.whitePlayer].lastOccurrence = gameIndex;
+    player_[game.blackPlayer].lastOccurrence = gameIndex;
+  }
+
+  istrm.close();
+}
+
+size_t Dataset::countPlayers() const noexcept {
+  return player_.size();
+}
+
+const string& Dataset::playerName(size_t index) const noexcept {
+  return player_[index].name;
+}
+
+const vector<Dataset::Game>& Dataset::games() const noexcept {
+  return game_;
+}
+
+
+size_t Dataset::getOrInsertNameIndex(const std::string& name) {
+  auto it = nameIndex_.find(name);
+  if(nameIndex_.end() == it) {
+    size_t index = player_.size();
+    player_.push_back({name, 0});
+    bool success;
+    std::tie(it, success) = nameIndex_.insert({name, index});
+  }
+  return it->second;
 }
 
 bool GameFeatures::present() const noexcept {
@@ -77,85 +175,24 @@ GameFeatures StrengthModel::getGameFeatures(const CompactSgf& sgf) const {
 }
 
 Dataset StrengthModel::loadDataset(const string& path) {
-  std::ifstream istrm(path);
-  if (!istrm.is_open())
-    throw IOError("Could not read dataset from " + path);
-
-  std::string line;
-  std::getline(istrm, line);
-  if(!istrm)
-    throw IOError("Could not read header line from " + path);
-  line = Global::trim(line);
-
-  // map known fieldnames to row indexes, wherever they may be
-  enum class F { ignore, sgfPath, whiteName, blackName, whiteLabel, blackLabel, winner };
-  vector<F> fields;
-  std::string field;
-  std::istringstream iss(line);
-  while(std::getline(iss, field, ',')) {
-    if("File" == field) fields.push_back(F::sgfPath);
-    else if("Player White" == field) fields.push_back(F::whiteName);
-    else if("Player Black" == field) fields.push_back(F::blackName);
-    else if("WhiteLabel" == field) fields.push_back(F::whiteLabel);
-    else if("BlackLabel" == field) fields.push_back(F::blackLabel);
-    else if("Winner" == field || "Judgement" == field) fields.push_back(F::winner);
-    else fields.push_back(F::ignore);
-  }
-
   Dataset dataset;
-
-  while (std::getline(istrm, line)) {
-    line = Global::trim(line);
-    GameMeta gm;
-    iss = std::istringstream(line);
-    int fieldIndex = 0;
-    while(std::getline(iss, field, ',')) {
-      switch(fields[fieldIndex++]) {
-      case F::sgfPath:
-        gm.sgfPath = field;
-        break;
-      case F::whiteName:
-        gm.whiteName = field;
-        break;
-      case F::blackName:
-        gm.blackName = field;
-        break;
-      case F::whiteLabel:
-        gm.whiteLabel = field;
-        break;
-      case F::blackLabel:
-        gm.blackLabel = field;
-        break;
-      default:
-      case F::ignore:
-        break;
-      }
-    }
-    if(!istrm)
-      throw IOError("Error while reading from " + path);
-    gm.winner = Global::toLower(Global::trim(gm.winner));
-    dataset.push_back(gm);
-  }
-
-  istrm.close();
+  dataset.load(path);
   return dataset;
 }
 
 FeaturesAndTargets StrengthModel::getFeaturesAndTargets(const Dataset& dataset) const {
   FeaturesAndTargets featuresTargets;
-  for(const GameMeta& gm : dataset) {
+  for(const Dataset::Game& gm : dataset.games()) {
     GameFeatures features = getGameFeatures(gm.sgfPath);
-    StrengthNet::Output blackTarget = Global::stringToFloat(gm.blackLabel);
-    StrengthNet::Output whiteTarget = Global::stringToFloat(gm.whiteLabel);
-    featuresTargets.emplace_back(features.blackFeatures, blackTarget);
-    featuresTargets.emplace_back(features.whiteFeatures, whiteTarget);
+    featuresTargets.emplace_back(features.blackFeatures, gm.blackRating);
+    featuresTargets.emplace_back(features.whiteFeatures, gm.whiteRating);
   }
   return featuresTargets;
 }
 
 FeaturesAndTargets StrengthModel::getFeaturesAndTargetsCached(const Dataset& dataset, const string& featureDir) {
   FeaturesAndTargets featuresTargets;
-  for(const GameMeta& gm : dataset) {
+  for(const Dataset::Game& gm : dataset.games()) {
     auto blackFeaturesPath = cachePath(featureDir, gm.sgfPath, P_BLACK);
     auto blackFeatures = maybeGetMoveFeaturesCached(blackFeaturesPath);
     auto whiteFeaturesPath = cachePath(featureDir, gm.sgfPath, P_WHITE);
@@ -163,10 +200,8 @@ FeaturesAndTargets StrengthModel::getFeaturesAndTargetsCached(const Dataset& dat
     if(blackFeatures.empty() || whiteFeatures.empty())
       throw StringError("Incomplete feature cache for " + gm.sgfPath);
 
-    StrengthNet::Output blackTarget = Global::stringToFloat(gm.blackLabel);
-    StrengthNet::Output whiteTarget = Global::stringToFloat(gm.whiteLabel);
-    featuresTargets.emplace_back(blackFeatures, blackTarget);
-    featuresTargets.emplace_back(whiteFeatures, whiteTarget);
+    featuresTargets.emplace_back(blackFeatures, gm.blackRating);
+    featuresTargets.emplace_back(whiteFeatures, gm.whiteRating);
   }
   return featuresTargets;
 }
@@ -462,7 +497,7 @@ RatingSystem::RatingSystem(StrengthModel& model) noexcept
 
 void RatingSystem::calculate(const string& sgfList, const string& outFile) {
   Dataset dataset = strengthModel->loadDataset(sgfList);
-  map< string, vector<MoveFeatures> > playerHistory;
+  map< size_t, vector<MoveFeatures> > playerHistory;
   int successCount = 0;
   int sgfCount = 0;
   float logp = 0;
@@ -473,17 +508,17 @@ void RatingSystem::calculate(const string& sgfList, const string& outFile) {
 
   ostrm << "File,Player White,Player Black,Winner,WhiteWinrate,BlackRating,WhiteRating\n"; // header
 
-  for(const GameMeta& gm : dataset) {
-    std::cout << gm.blackName << " vs " << gm.whiteName << ": " << gm.winner << "\n";
+  for(const Dataset::Game& gm : dataset.games()) {
+    string blackName = dataset.playerName(gm.blackPlayer);
+    string whiteName = dataset.playerName(gm.whitePlayer);
+    string winner = gm.score > .5 ? "B+":"W+";
+    std::cout << blackName << " vs " << whiteName << ": " << winner << "\n";
 
     // determine winner and count
-    float blackRating = playerRating[gm.blackName] = strengthModel->rating(playerHistory[gm.blackName]);
-    float whiteRating = playerRating[gm.whiteName] = strengthModel->rating(playerHistory[gm.whiteName]);
-    float whiteWinrate = strengthModel->whiteWinrate(playerHistory[gm.whiteName], playerHistory[gm.blackName]);
-    float z = .5f; // result representation
-    if(Global::isPrefix(gm.winner,"b+") || Global::isPrefix(gm.winner,"black+")) z = 0.f;
-    if(Global::isPrefix(gm.winner,"w+") || Global::isPrefix(gm.winner,"white+")) z = 1.f;
-    float winnerPred = std::abs(1.f - z - whiteWinrate);
+    float blackRating = playerRating[gm.blackPlayer] = strengthModel->rating(playerHistory[gm.blackPlayer]);
+    float whiteRating = playerRating[gm.whitePlayer] = strengthModel->rating(playerHistory[gm.whitePlayer]);
+    float whiteWinrate = strengthModel->whiteWinrate(playerHistory[gm.whitePlayer], playerHistory[gm.blackPlayer]);
+    float winnerPred = std::abs(gm.score - whiteWinrate);
     if(winnerPred > .5f)
       successCount++;
     logp += std::log(winnerPred);
@@ -491,14 +526,14 @@ void RatingSystem::calculate(const string& sgfList, const string& outFile) {
 
     // expand player histories with new move features
     GameFeatures features = strengthModel->getGameFeatures(gm.sgfPath);
-    playerHistory[gm.blackName].insert(playerHistory[gm.blackName].end(), features.blackFeatures.begin(), features.blackFeatures.end());
-    playerHistory[gm.whiteName].insert(playerHistory[gm.whiteName].end(), features.whiteFeatures.begin(), features.whiteFeatures.end());
+    playerHistory[gm.blackPlayer].insert(playerHistory[gm.blackPlayer].end(), features.blackFeatures.begin(), features.blackFeatures.end());
+    playerHistory[gm.whitePlayer].insert(playerHistory[gm.whitePlayer].end(), features.whiteFeatures.begin(), features.whiteFeatures.end());
 
     // file output
-    size_t bufsize = gm.sgfPath.size() + gm.whiteName.size() + gm.blackName.size() + gm.winner.size() + 100;
+    size_t bufsize = gm.sgfPath.size() + whiteName.size() + blackName.size() + winner.size() + 100;
     std::unique_ptr<char[]> buffer( new char[ bufsize ] );
     int printed = std::snprintf(buffer.get(), bufsize, "%s,%s,%s,%s,%.2f,%.2f,%.2f\n",
-      gm.sgfPath.c_str(), gm.whiteName.c_str(), gm.blackName.c_str(), gm.winner.c_str(), whiteWinrate, blackRating, whiteRating);
+      gm.sgfPath.c_str(), whiteName.c_str(), blackName.c_str(), winner.c_str(), whiteWinrate, blackRating, whiteRating);
     if(printed <= 0)
       throw IOError( "Error during formatting." );
     ostrm << buffer.get();
