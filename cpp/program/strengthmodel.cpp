@@ -102,12 +102,42 @@ void Dataset::load(const string& path) {
   istrm.close();
 }
 
+void Dataset::store(const string& path) const {
+  std::ofstream ostrm(path);
+  if (!ostrm.is_open())
+    throw IOError("Could not write SGF list to " + path);
+
+  ostrm << "File,Player White,Player Black,Score,BlackRating,WhiteRating,PredictedScore,PredictedBlackRating,PredictedWhiteRating\n"; // header
+
+  for(const Game& game : game_) {
+    string blackName = player_[game.blackPlayer].name;
+    string whiteName = player_[game.whitePlayer].name;
+
+    // file output
+    size_t bufsize = game.sgfPath.size() + whiteName.size() + blackName.size() + 100;
+    std::unique_ptr<char[]> buffer( new char[ bufsize ] );
+    int printed = std::snprintf(buffer.get(), bufsize, "%s,%s,%s,%.2f,%.2f,%.2f,%f,%f,%f\n",
+      game.sgfPath.c_str(), whiteName.c_str(), blackName.c_str(),
+      game.score, game.blackRating, game.whiteRating,
+      game.predictedScore, game.predictedBlackRating, game.predictedWhiteRating);
+    if(printed <= 0)
+      throw IOError("Error during formatting.");
+    ostrm << buffer.get();
+  }
+
+  ostrm.close();
+}
+
 size_t Dataset::countPlayers() const noexcept {
   return player_.size();
 }
 
 const string& Dataset::playerName(size_t index) const noexcept {
   return player_[index].name;
+}
+
+vector<Dataset::Game>& Dataset::games() noexcept {
+  return game_;
 }
 
 const vector<Dataset::Game>& Dataset::games() const noexcept {
@@ -172,12 +202,6 @@ GameFeatures StrengthModel::getGameFeatures(const CompactSgf& sgf) const {
     return features;
 
   return extractGameFeatures(sgf, blackFeaturesPath, whiteFeaturesPath);
-}
-
-Dataset StrengthModel::loadDataset(const string& path) {
-  Dataset dataset;
-  dataset.load(path);
-  return dataset;
 }
 
 FeaturesAndTargets StrengthModel::getFeaturesAndTargets(const Dataset& dataset) const {
@@ -496,28 +520,24 @@ RatingSystem::RatingSystem(StrengthModel& model) noexcept
 }
 
 void RatingSystem::calculate(const string& sgfList, const string& outFile) {
-  Dataset dataset = strengthModel->loadDataset(sgfList);
+  Dataset dataset;
+  dataset.load(sgfList);
   map< size_t, vector<MoveFeatures> > playerHistory;
   int successCount = 0;
   int sgfCount = 0;
   float logp = 0;
 
-  std::ofstream ostrm(outFile);
-  if (!ostrm.is_open())
-    throw IOError("Could not write SGF list to " + outFile);
-
-  ostrm << "File,Player White,Player Black,Winner,WhiteWinrate,BlackRating,WhiteRating\n"; // header
-
-  for(const Dataset::Game& gm : dataset.games()) {
+  for(Dataset::Game& gm : dataset.games()) {
     string blackName = dataset.playerName(gm.blackPlayer);
     string whiteName = dataset.playerName(gm.whitePlayer);
     string winner = gm.score > .5 ? "B+":"W+";
     std::cout << blackName << " vs " << whiteName << ": " << winner << "\n";
 
     // determine winner and count
-    float blackRating = playerRating[gm.blackPlayer] = strengthModel->rating(playerHistory[gm.blackPlayer]);
-    float whiteRating = playerRating[gm.whitePlayer] = strengthModel->rating(playerHistory[gm.whitePlayer]);
+    gm.predictedBlackRating = playerRating[gm.blackPlayer] = strengthModel->rating(playerHistory[gm.blackPlayer]);
+    gm.predictedWhiteRating = playerRating[gm.whitePlayer] = strengthModel->rating(playerHistory[gm.whitePlayer]);
     float whiteWinrate = strengthModel->whiteWinrate(playerHistory[gm.whitePlayer], playerHistory[gm.blackPlayer]);
+    gm.predictedScore = 1 - whiteWinrate;
     float winnerPred = std::abs(gm.score - whiteWinrate);
     if(winnerPred > .5f)
       successCount++;
@@ -528,18 +548,9 @@ void RatingSystem::calculate(const string& sgfList, const string& outFile) {
     GameFeatures features = strengthModel->getGameFeatures(gm.sgfPath);
     playerHistory[gm.blackPlayer].insert(playerHistory[gm.blackPlayer].end(), features.blackFeatures.begin(), features.blackFeatures.end());
     playerHistory[gm.whitePlayer].insert(playerHistory[gm.whitePlayer].end(), features.whiteFeatures.begin(), features.whiteFeatures.end());
-
-    // file output
-    size_t bufsize = gm.sgfPath.size() + whiteName.size() + blackName.size() + winner.size() + 100;
-    std::unique_ptr<char[]> buffer( new char[ bufsize ] );
-    int printed = std::snprintf(buffer.get(), bufsize, "%s,%s,%s,%s,%.2f,%.2f,%.2f\n",
-      gm.sgfPath.c_str(), whiteName.c_str(), blackName.c_str(), winner.c_str(), whiteWinrate, blackRating, whiteRating);
-    if(printed <= 0)
-      throw IOError( "Error during formatting." );
-    ostrm << buffer.get();
   }
 
-  ostrm.close();
+  dataset.store(outFile);
 
   successRate = float(successCount) / sgfCount;
   successLogp = logp;

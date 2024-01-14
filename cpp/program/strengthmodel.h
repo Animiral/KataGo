@@ -20,9 +20,12 @@ public:
     std::string sgfPath;
     std::size_t whitePlayer; // index of white player (given as name string in list file)
     std::size_t blackPlayer; // index of black player (given as name string in list file)
-    float whiteRating; // rating number target
-    float blackRating; // rating number target
-    float score; // game outcome for black: 0 for loss, 1 for win
+    float whiteRating;       // rating number target
+    float blackRating;       // rating number target
+    float score;             // game outcome for black: 0 for loss, 1 for win
+    float predictedWhiteRating; // prediction by model
+    float predictedBlackRating; // prediction by model
+    float predictedScore;       // prediction by model
     std::size_t prevWhiteGame; // index of most recent game with white player before this
     std::size_t prevBlackGame; // index of most recent game with black player before this
     // TODO: link to move features
@@ -35,9 +38,11 @@ public:
   };
 
   void load(const std::string& path);
+  void store(const std::string& path) const;
 
   std::size_t countPlayers() const noexcept;
   const std::string& playerName(std::size_t index) const noexcept;
+  std::vector<Game>& games() noexcept;
   const std::vector<Game>& games() const noexcept;
 
 private:
@@ -74,8 +79,6 @@ public:
   // Analyze SGF and use the strength model to determine the embedded features of every move
   GameFeatures getGameFeatures(const std::string& sgfPath) const;
   GameFeatures getGameFeatures(const CompactSgf& sgf) const;
-  // get dataset from a list file
-  static Dataset loadDataset(const std::string& path);
   FeaturesAndTargets getFeaturesAndTargets(const Dataset& dataset) const;
   static FeaturesAndTargets getFeaturesAndTargetsCached(const Dataset& dataset, const std::string& featureDir);
 

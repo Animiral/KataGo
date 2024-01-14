@@ -20,7 +20,7 @@ void runStrengthModelTests() {
   FeaturesAndTargets featuresTargets;
 
   try {
-    dataset = StrengthModel::loadDataset(listFile);
+    dataset.load(listFile);
     featuresTargets = StrengthModel::getFeaturesAndTargetsCached(dataset, featureDir);
   }
   catch(const StringError& e) {

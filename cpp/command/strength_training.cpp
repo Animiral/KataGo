@@ -168,7 +168,8 @@ int MainCmds::strength_training(const vector<string>& args) {
     // Search search(searchParams, nnEval, &logger, "");
     StrengthModel strengthModel(strengthModelFile, nullptr /*search*/, featureDir);
     logger.write("Loaded strength model "+ strengthModelFile);
-    Dataset dataset = strengthModel.loadDataset(listFile);
+    Dataset dataset;
+    dataset.load(listFile);
     // Dataset dataset = mockDataset();
     // dataset.resize(10);
     
