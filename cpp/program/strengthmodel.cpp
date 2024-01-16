@@ -8,12 +8,9 @@
 #include <cstring>
 #include <cstdio>
 #include <memory>
+#include "core/using.h"
 
-using std::string;
-using std::vector;
 using std::map;
-using std::cout;
-using std::cerr;
 
 namespace {
 
@@ -30,7 +27,7 @@ std::string custom_format( const std::string& format, Args ... args ) {
 
 }
 
-void Dataset::load(const string& path) {
+void Dataset::load(const string& path, const std::string& featureDir) {
   std::ifstream istrm(path);
   if (!istrm.is_open())
     throw IOError("Could not read dataset from " + path);
@@ -57,8 +54,11 @@ void Dataset::load(const string& path) {
   }
 
   while (std::getline(istrm, line)) {
+    size_t gameIndex = games.size();
+    games.emplace_back();
+    Game& game = games[gameIndex];
+
     line = Global::trim(line);
-    Game game;
     iss = std::istringstream(line);
     int fieldIndex = 0;
     while(std::getline(iss, field, ',')) {
@@ -93,8 +93,13 @@ void Dataset::load(const string& path) {
       throw IOError("Error while reading from " + path);
     game.prevWhiteGame = players[game.whitePlayer].lastOccurrence;
     game.prevBlackGame = players[game.blackPlayer].lastOccurrence;
-    size_t gameIndex = games.size();
-    games.push_back(game);
+
+    string sgfPathWithoutExt = Global::chopSuffix(game.sgfPath, ".sgf");
+    string blackFeaturesPath = Global::strprintf("%s/%s_BlackFeatures.bin", featureDir.c_str(), sgfPathWithoutExt.c_str());
+    string whiteFeaturesPath = Global::strprintf("%s/%s_WhiteFeatures.bin", featureDir.c_str(), sgfPathWithoutExt.c_str());
+    game.blackFeatures = readFeaturesFromFile(blackFeaturesPath);
+    game.whiteFeatures = readFeaturesFromFile(whiteFeaturesPath);
+
     players[game.whitePlayer].lastOccurrence = gameIndex;
     players[game.blackPlayer].lastOccurrence = gameIndex;
   }
@@ -128,6 +133,8 @@ void Dataset::store(const string& path) const {
   ostrm.close();
 }
 
+const uint32_t Dataset::FEATURE_HEADER = 0xfea70235;
+
 size_t Dataset::getOrInsertNameIndex(const std::string& name) {
   auto it = nameIndex.find(name);
   if(nameIndex.end() == it) {
@@ -139,12 +146,26 @@ size_t Dataset::getOrInsertNameIndex(const std::string& name) {
   return it->second;
 }
 
-bool GameFeatures::present() const noexcept {
-  return !blackFeatures.empty() && !whiteFeatures.empty();
+vector<MoveFeatures> Dataset::readFeaturesFromFile(const string& featurePath) {
+  vector<MoveFeatures> features;
+  auto featureFile = std::unique_ptr<std::FILE, decltype(&std::fclose)>(std::fopen(featurePath.c_str(), "rb"), &std::fclose);
+  if(nullptr == featureFile)
+    return features;
+  uint32_t header; // must match
+  size_t readcount = std::fread(&header, 4, 1, featureFile.get());
+  if(1 != readcount || FEATURE_HEADER != header)
+    return features;
+  while(!std::feof(featureFile.get())) {
+    MoveFeatures mf;
+    readcount = std::fread(&mf, sizeof(MoveFeatures), 1, featureFile.get());
+    if(1 == readcount)
+      features.push_back(mf);
+  }
+  return features;
 }
 
 StrengthModel::StrengthModel(const string& strengthModelFile_, Search* search_, const string& featureDir_) noexcept
-  : strengthModelFile(strengthModelFile_), net(), search(search_), featureDir(featureDir_)
+  : featureDir(featureDir_), strengthModelFile(strengthModelFile_), net(), search(search_)
 {
   if(!net.loadModelFile(strengthModelFile)) {
     cerr << "Could not load existing strength model from " << strengthModelFile << ". Random-initializing new strength model.\n";
@@ -157,60 +178,113 @@ StrengthModel::StrengthModel(const string& strengthModelFile_, Search& search_, 
   : StrengthModel(strengthModelFile_, &search_, featureDir_)
 {}
 
-namespace {
-string cachePath(const string& featureDir, const string& sgfPath, Player player) {
-  string sgfPathWithoutExt = Global::chopSuffix(sgfPath, ".sgf");
-  return custom_format("%s/%s_%sFeatures.bin", featureDir.c_str(), sgfPathWithoutExt.c_str(), PlayerIO::playerToString(player).c_str());
-}
-}
-
-GameFeatures StrengthModel::getGameFeatures(const string& sgfPath) const {
-  string blackFeaturesPath, whiteFeaturesPath;
-  GameFeatures features = maybeGetGameFeaturesCachedForSgf(sgfPath, blackFeaturesPath, whiteFeaturesPath);
-  if(features.present())
-    return features;
-
-  auto sgf = std::unique_ptr<CompactSgf>(CompactSgf::loadFile(sgfPath));
-  if(NULL == sgf)
-    throw IOError(string("Failed to open SGF: ") + sgfPath + ".");
-  cout << "Evaluate game \"" << sgf->fileName << "\": " << sgf->rootNode.getSingleProperty("PB") << " vs " << sgf->rootNode.getSingleProperty("PW") << "\n";
-
-  return extractGameFeatures(*sgf, blackFeaturesPath, whiteFeaturesPath);
-}
-
-GameFeatures StrengthModel::getGameFeatures(const CompactSgf& sgf) const {
-  string blackFeaturesPath, whiteFeaturesPath;
-  GameFeatures features = maybeGetGameFeaturesCachedForSgf(sgf.fileName, blackFeaturesPath, whiteFeaturesPath);
-  if(features.present())
-    return features;
-
-  return extractGameFeatures(sgf, blackFeaturesPath, whiteFeaturesPath);
-}
-
 FeaturesAndTargets StrengthModel::getFeaturesAndTargets(const Dataset& dataset) const {
   FeaturesAndTargets featuresTargets;
   for(const Dataset::Game& gm : dataset.games) {
-    GameFeatures features = getGameFeatures(gm.sgfPath);
-    featuresTargets.emplace_back(features.blackFeatures, gm.blackRating);
-    featuresTargets.emplace_back(features.whiteFeatures, gm.whiteRating);
+    featuresTargets.emplace_back(gm.blackFeatures, gm.blackRating);
+    featuresTargets.emplace_back(gm.whiteFeatures, gm.whiteRating);
   }
   return featuresTargets;
 }
 
-FeaturesAndTargets StrengthModel::getFeaturesAndTargetsCached(const Dataset& dataset, const string& featureDir) {
-  FeaturesAndTargets featuresTargets;
-  for(const Dataset::Game& gm : dataset.games) {
-    auto blackFeaturesPath = cachePath(featureDir, gm.sgfPath, P_BLACK);
-    auto blackFeatures = maybeGetMoveFeaturesCached(blackFeaturesPath);
-    auto whiteFeaturesPath = cachePath(featureDir, gm.sgfPath, P_WHITE);
-    auto whiteFeatures = maybeGetMoveFeaturesCached(whiteFeaturesPath);
-    if(blackFeatures.empty() || whiteFeatures.empty())
-      throw StringError("Incomplete feature cache for " + gm.sgfPath);
+void StrengthModel::extractGameFeatures(const CompactSgf& sgf, const Search& search, vector<MoveFeatures>& blackFeatures, vector<MoveFeatures>& whiteFeatures) {
+  const auto& moves = sgf.moves;
+  Rules rules = sgf.getRulesOrFailAllowUnspecified(Rules::getTrompTaylorish());
+  Board board;
+  BoardHistory history;
+  Player initialPla;
+  sgf.setupInitialBoardAndHist(rules, board, initialPla, history);
 
-    featuresTargets.emplace_back(blackFeatures, gm.blackRating);
-    featuresTargets.emplace_back(whiteFeatures, gm.whiteRating);
+  NNResultBuf nnResultBuf;
+  MiscNNInputParams nnInputParams;
+  // evaluate initial board once for initial prev-features
+  search.nnEvaluator->evaluate(board, history, initialPla, nnInputParams, nnResultBuf, false, false);
+  assert(nnResultBuf.hasResult);
+  const NNOutput* nnout = nnResultBuf.result.get();
+  float prevWhiteWinProb = nnout->whiteWinProb;
+  float prevWhiteLossProb = nnout->whiteLossProb;
+  float prevWhiteLead = nnout->whiteLead;
+  float movePolicy = moves.empty() ? 0.f : nnout->policyProbs[nnout->getPos(moves[0].loc, board)];
+  float maxPolicy = *std::max_element(std::begin(nnout->policyProbs), std::end(nnout->policyProbs));
+
+  for(int turnIdx = 0; turnIdx < moves.size(); turnIdx++) {
+    Move move = moves[turnIdx];
+
+    // apply move
+    bool suc = history.makeBoardMoveTolerant(board, move.loc, move.pla);
+    if(!suc)
+      throw StringError(Global::strprintf("Illegal move %s at %s", PlayerIO::playerToString(move.pla), Location::toString(move.loc, sgf.xSize, sgf.ySize)));
+
+    // === get raw NN eval and features ===
+    search.nnEvaluator->evaluate(board, history, getOpp(move.pla), nnInputParams, nnResultBuf, false, false);
+    assert(nnResultBuf.hasResult);
+    nnout = nnResultBuf.result.get();
+
+    if(P_WHITE == move.pla) {
+      whiteFeatures.push_back({
+        nnout->whiteWinProb, nnout->whiteLead, movePolicy, maxPolicy,
+        prevWhiteWinProb-nnout->whiteWinProb, prevWhiteLead-nnout->whiteLead
+      });
+    }
+    else {
+      blackFeatures.push_back({
+        nnout->whiteLossProb, -nnout->whiteLead, movePolicy, maxPolicy,
+        prevWhiteLossProb-nnout->whiteLossProb, -prevWhiteLead+nnout->whiteLead
+      });
+    }
+
+    // === search ===
+
+    // SearchParams searchParams = search->searchParams;
+    // nnInputParams.drawEquivalentWinsForWhite = searchParams.drawEquivalentWinsForWhite;
+    // nnInputParams.conservativePassAndIsRoot = searchParams.conservativePass;
+    // nnInputParams.enablePassingHacks = searchParams.enablePassingHacks;
+    // nnInputParams.nnPolicyTemperature = searchParams.nnPolicyTemperature;
+    // nnInputParams.avoidMYTDaggerHack = searchParams.avoidMYTDaggerHackPla == move.pla;
+    // nnInputParams.policyOptimism = searchParams.rootPolicyOptimism;
+    // if(searchParams.playoutDoublingAdvantage != 0) {
+    //   Player playoutDoublingAdvantagePla = searchParams.playoutDoublingAdvantagePla == C_EMPTY ? move.pla : searchParams.playoutDoublingAdvantagePla;
+    //   nnInputParams.playoutDoublingAdvantage = (
+    //     getOpp(pla) == playoutDoublingAdvantagePla ? -searchParams.playoutDoublingAdvantage : searchParams.playoutDoublingAdvantage
+    //   );
+    // }
+    // if(searchParams.ignorePreRootHistory || searchParams.ignoreAllHistory)
+    //   nnInputParams.maxHistory = 0;
+
+    // search.setPosition(move.pla, board, history);
+    // search.runWholeSearch(move.pla, false);
+    // // use search results
+    // Loc chosenLoc = search.getChosenMoveLoc();
+    // const SearchNode* node = search.rootNode;
+    // double sharpScore;
+    // suc = search.getSharpScore(node, sharpScore);
+    // cout << "SharpScore: " << sharpScore << "\n";
+    // vector<AnalysisData> data;
+    // search.getAnalysisData(data, 1, false, 50, false);
+    // cout << "Got " << data.size() << " analysis data. \n";
+
+    // ReportedSearchValues values = search.getRootValuesRequireSuccess();
+
+    // cout << "Root values:\n "
+    //      << "  win:" << values.winValue << "\n"
+    //      << "  loss:" << values.lossValue << "\n"
+    //      << "  noResult:" << values.noResultValue << "\n"
+    //      << "  staticScoreValue:" << values.staticScoreValue << "\n"
+    //      << "  dynamicScoreValue:" << values.dynamicScoreValue << "\n"
+    //      << "  expectedScore:" << values.expectedScore << "\n"
+    //      << "  expectedScoreStdev:" << values.expectedScoreStdev << "\n"
+    //      << "  lead:" << values.lead << "\n"
+    //      << "  winLossValue:" << values.winLossValue << "\n"
+    //      << "  utility:" << values.utility << "\n"
+    //      << "  weight:" << values.weight << "\n"
+    //      << "  visits:" << values.visits << "\n";
+
+    prevWhiteWinProb = nnout->whiteWinProb;
+    prevWhiteLossProb = nnout->whiteLossProb;
+    prevWhiteLead = nnout->whiteLead;
+    movePolicy = turnIdx >= moves.size()-1 ? 0.f : nnout->policyProbs[nnout->getPos(moves[turnIdx+1].loc, board)]; // policy of next move
+    maxPolicy = *std::max_element(std::begin(nnout->policyProbs), std::end(nnout->policyProbs));
   }
-  return featuresTargets;
 }
 
 void StrengthModel::train(FeaturesAndTargets& xy, size_t split, int epochs, size_t batchSize, float weightPenalty, float learnrate) {
@@ -273,40 +347,6 @@ void StrengthModel::train(FeaturesAndTargets& xy, size_t split, int epochs, size
   net.saveModelFile(strengthModelFile);
 }
 
-GameFeatures StrengthModel::maybeGetGameFeaturesCachedForSgf(const string& sgfPath, string& blackFeaturesPath, string& whiteFeaturesPath) const {
-  GameFeatures features;
-  if(featureDir.empty()) {
-    blackFeaturesPath = whiteFeaturesPath = "";
-    return features;
-  }
-
-  blackFeaturesPath = cachePath(featureDir, sgfPath, P_BLACK);
-  whiteFeaturesPath = cachePath(featureDir, sgfPath, P_WHITE);
-  features.blackFeatures = maybeGetMoveFeaturesCached(blackFeaturesPath);
-  features.whiteFeatures = maybeGetMoveFeaturesCached(whiteFeaturesPath);
-  if(features.blackFeatures.empty() ^ features.whiteFeatures.empty())
-    cerr << "Incomplete feature cache for " << sgfPath << "\n";
-  return features;
-}
-
-vector<MoveFeatures> StrengthModel::maybeGetMoveFeaturesCached(const string& cachePath) {
-  vector<MoveFeatures> features;
-  auto cacheFile = std::unique_ptr<std::FILE, decltype(&std::fclose)>(std::fopen(cachePath.c_str(), "rb"), &std::fclose);
-  if(nullptr == cacheFile)
-    return features;
-  uint32_t header; // must match
-  size_t readcount = std::fread(&header, 4, 1, cacheFile.get());
-  if(1 != readcount || FEATURE_HEADER != header)
-    return features;
-  while(!std::feof(cacheFile.get())) {
-    MoveFeatures mf;
-    readcount = std::fread(&mf, sizeof(MoveFeatures), 1, cacheFile.get());
-    if(1 == readcount)
-      features.push_back(mf);
-  }
-  return features;
-}
-
 bool StrengthModel::maybeWriteMoveFeaturesCached(const string& cachePath, const vector<MoveFeatures>& features) const {
   if(featureDir.empty() || features.empty())
     return false;
@@ -316,7 +356,7 @@ bool StrengthModel::maybeWriteMoveFeaturesCached(const string& cachePath, const 
   auto cacheFile = std::unique_ptr<std::FILE, decltype(&std::fclose)>(std::fopen(cachePath.c_str(), "wb"), &std::fclose);
   if(nullptr == cacheFile)
     return false;
-  size_t writecount = std::fwrite(&FEATURE_HEADER, 4, 1, cacheFile.get());
+  size_t writecount = std::fwrite(&Dataset::FEATURE_HEADER, 4, 1, cacheFile.get());
   if(1 != writecount)
     return false;
   writecount = std::fwrite(features.data(), sizeof(MoveFeatures), features.size(), cacheFile.get());
@@ -325,119 +365,6 @@ bool StrengthModel::maybeWriteMoveFeaturesCached(const string& cachePath, const 
   if(0 != std::fclose(cacheFile.release()))
     return false;
   return true;
-}
-
-GameFeatures StrengthModel::extractGameFeatures(const CompactSgf& sgf, const string& blackFeaturesPath, const string& whiteFeaturesPath) const {
-  if(!search)
-    throw StringError("StrengthModel: no search object configured for extracting game features");
-  GameFeatures features;
-  const auto& moves = sgf.moves;
-  Rules rules = sgf.getRulesOrFailAllowUnspecified(Rules::getTrompTaylorish());
-  Board board;
-  BoardHistory history;
-  Player initialPla;
-  sgf.setupInitialBoardAndHist(rules, board, initialPla, history);
-
-  NNResultBuf nnResultBuf;
-  MiscNNInputParams nnInputParams;
-  // evaluate initial board once for initial prev-features
-  search->nnEvaluator->evaluate(board, history, initialPla, nnInputParams, nnResultBuf, false, false);
-  assert(nnResultBuf.hasResult);
-  const NNOutput* nnout = nnResultBuf.result.get();
-  float prevWhiteWinProb = nnout->whiteWinProb;
-  float prevWhiteLossProb = nnout->whiteLossProb;
-  float prevWhiteLead = nnout->whiteLead;
-  float movePolicy = moves.empty() ? 0.f : nnout->policyProbs[nnout->getPos(moves[0].loc, board)];
-  float maxPolicy = *std::max_element(std::begin(nnout->policyProbs), std::end(nnout->policyProbs));
-
-  for(int turnIdx = 0; turnIdx < moves.size(); turnIdx++) {
-    Move move = moves[turnIdx];
-
-    // apply move
-    bool suc = history.makeBoardMoveTolerant(board, move.loc, move.pla);
-    if(!suc) {
-      cerr << "Illegal move " << PlayerIO::playerToString(move.pla) << " at " << Location::toString(move.loc, sgf.xSize, sgf.ySize) << "\n";
-      return {};
-    }
-
-    // === get raw NN eval and features ===
-    search->nnEvaluator->evaluate(board, history, getOpp(move.pla), nnInputParams, nnResultBuf, false, false);
-    assert(nnResultBuf.hasResult);
-    nnout = nnResultBuf.result.get();
-
-    if(P_WHITE == move.pla) {
-      features.whiteFeatures.push_back({
-        nnout->whiteWinProb, nnout->whiteLead, movePolicy, maxPolicy,
-        prevWhiteWinProb-nnout->whiteWinProb, prevWhiteLead-nnout->whiteLead
-      });
-    }
-    else {
-      features.blackFeatures.push_back({
-        nnout->whiteLossProb, -nnout->whiteLead, movePolicy, maxPolicy,
-        prevWhiteLossProb-nnout->whiteLossProb, -prevWhiteLead+nnout->whiteLead
-      });
-    }
-
-    // === search ===
-
-    // SearchParams searchParams = search->searchParams;
-    // nnInputParams.drawEquivalentWinsForWhite = searchParams.drawEquivalentWinsForWhite;
-    // nnInputParams.conservativePassAndIsRoot = searchParams.conservativePass;
-    // nnInputParams.enablePassingHacks = searchParams.enablePassingHacks;
-    // nnInputParams.nnPolicyTemperature = searchParams.nnPolicyTemperature;
-    // nnInputParams.avoidMYTDaggerHack = searchParams.avoidMYTDaggerHackPla == move.pla;
-    // nnInputParams.policyOptimism = searchParams.rootPolicyOptimism;
-    // if(searchParams.playoutDoublingAdvantage != 0) {
-    //   Player playoutDoublingAdvantagePla = searchParams.playoutDoublingAdvantagePla == C_EMPTY ? move.pla : searchParams.playoutDoublingAdvantagePla;
-    //   nnInputParams.playoutDoublingAdvantage = (
-    //     getOpp(pla) == playoutDoublingAdvantagePla ? -searchParams.playoutDoublingAdvantage : searchParams.playoutDoublingAdvantage
-    //   );
-    // }
-    // if(searchParams.ignorePreRootHistory || searchParams.ignoreAllHistory)
-    //   nnInputParams.maxHistory = 0;
-
-    // search.setPosition(move.pla, board, history);
-    // search.runWholeSearch(move.pla, false);
-    // // use search results
-    // Loc chosenLoc = search.getChosenMoveLoc();
-    // const SearchNode* node = search.rootNode;
-    // double sharpScore;
-    // suc = search.getSharpScore(node, sharpScore);
-    // cout << "SharpScore: " << sharpScore << "\n";
-    // vector<AnalysisData> data;
-    // search.getAnalysisData(data, 1, false, 50, false);
-    // cout << "Got " << data.size() << " analysis data. \n";
-
-    // ReportedSearchValues values = search.getRootValuesRequireSuccess();
-
-    // cout << "Root values:\n "
-    //      << "  win:" << values.winValue << "\n"
-    //      << "  loss:" << values.lossValue << "\n"
-    //      << "  noResult:" << values.noResultValue << "\n"
-    //      << "  staticScoreValue:" << values.staticScoreValue << "\n"
-    //      << "  dynamicScoreValue:" << values.dynamicScoreValue << "\n"
-    //      << "  expectedScore:" << values.expectedScore << "\n"
-    //      << "  expectedScoreStdev:" << values.expectedScoreStdev << "\n"
-    //      << "  lead:" << values.lead << "\n"
-    //      << "  winLossValue:" << values.winLossValue << "\n"
-    //      << "  utility:" << values.utility << "\n"
-    //      << "  weight:" << values.weight << "\n"
-    //      << "  visits:" << values.visits << "\n";
-
-    prevWhiteWinProb = nnout->whiteWinProb;
-    prevWhiteLossProb = nnout->whiteLossProb;
-    prevWhiteLead = nnout->whiteLead;
-    movePolicy = turnIdx >= moves.size()-1 ? 0.f : nnout->policyProbs[nnout->getPos(moves[turnIdx+1].loc, board)]; // policy of next move
-    maxPolicy = *std::max_element(std::begin(nnout->policyProbs), std::end(nnout->policyProbs));
-  }
-
-  // save to cache
-  bool blackCached = maybeWriteMoveFeaturesCached(blackFeaturesPath, features.blackFeatures);
-  bool whiteCached = maybeWriteMoveFeaturesCached(whiteFeaturesPath, features.whiteFeatures);
-  if(!blackCached || !whiteCached)
-    cerr << "Failed to save cached features for " << sgf.fileName << ".\n";
-
-  return features;
 }
 
 namespace {
@@ -496,15 +423,13 @@ float StrengthModel::whiteWinrate(const vector<MoveFeatures>& whiteHistory, cons
   return normcdf(wstdadv);
 }
 
-const uint32_t StrengthModel::FEATURE_HEADER = 0xfea70235;
-
 RatingSystem::RatingSystem(StrengthModel& model) noexcept
 : strengthModel(&model) {
 }
 
 void RatingSystem::calculate(const string& sgfList, const string& outFile) {
   Dataset dataset;
-  dataset.load(sgfList);
+  dataset.load(sgfList, strengthModel->featureDir);
   map< size_t, vector<MoveFeatures> > playerHistory;
   int successCount = 0;
   int sgfCount = 0;
@@ -528,9 +453,8 @@ void RatingSystem::calculate(const string& sgfList, const string& outFile) {
     sgfCount++;
 
     // expand player histories with new move features
-    GameFeatures features = strengthModel->getGameFeatures(gm.sgfPath);
-    playerHistory[gm.blackPlayer].insert(playerHistory[gm.blackPlayer].end(), features.blackFeatures.begin(), features.blackFeatures.end());
-    playerHistory[gm.whitePlayer].insert(playerHistory[gm.whitePlayer].end(), features.whiteFeatures.begin(), features.whiteFeatures.end());
+    playerHistory[gm.blackPlayer].insert(playerHistory[gm.blackPlayer].end(), gm.blackFeatures.begin(), gm.blackFeatures.end());
+    playerHistory[gm.whitePlayer].insert(playerHistory[gm.whitePlayer].end(), gm.whiteFeatures.begin(), gm.whiteFeatures.end());
   }
 
   dataset.store(outFile);

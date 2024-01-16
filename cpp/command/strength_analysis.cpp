@@ -134,11 +134,12 @@ int MainCmds::strength_analysis(const vector<string>& args) {
       cerr << "Player \"" << playerName << "\" not found in " << sgfPath << ".\n";
       continue;
     }
-    GameFeatures features = strengthModel.getGameFeatures(CompactSgf(std::move(*sgf)));
+    vector<MoveFeatures> blackFeatures, whiteFeatures;
+    strengthModel.extractGameFeatures(CompactSgf(std::move(*sgf)), search, blackFeatures, whiteFeatures);
     if(P_BLACK == p)
-      playerFeatures.insert(playerFeatures.end(), features.blackFeatures.begin(), features.blackFeatures.end());
+      playerFeatures.insert(playerFeatures.end(), blackFeatures.begin(), blackFeatures.end());
     if(P_WHITE == p)
-      playerFeatures.insert(playerFeatures.end(), features.whiteFeatures.begin(), features.whiteFeatures.end());
+      playerFeatures.insert(playerFeatures.end(), whiteFeatures.begin(), whiteFeatures.end());
   }
 
   float wloss=0.f, ploss=0.f;

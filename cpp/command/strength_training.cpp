@@ -34,25 +34,6 @@ void loadParams(ConfigParser& config, SearchParams& params, Player& perspective,
     params.conservativePass = true;
 }
 
-Dataset mockDataset() {
-  return {};
-}
-
-FeaturesAndTargets mockFeaturesAndTargets() {
-  FeaturesAndTargets fat;
-  vector<MoveFeatures> mfs; // winProb, lead, movePolicy, maxPolicy, winrateLoss, pointsLoss
-  mfs.push_back(MoveFeatures{.5f,  0.f, .99f, .99f,  0.f, 0.0f});
-  mfs.push_back(MoveFeatures{.8f,  1.f, .91f, .94f,  5.f, 0.4f});
-  mfs.push_back(MoveFeatures{.2f, -1.f, .20f, .30f, 10.f, 2.0f});
-  fat.emplace_back(mfs, 2000);
-  mfs.clear();
-  mfs.push_back(MoveFeatures{.5f,  0.f, .03f, .70f, 20.f, 5.0f});
-  mfs.push_back(MoveFeatures{.2f, -1.f, .01f, .50f, 30.f, 10.f});
-  mfs.push_back(MoveFeatures{.9f,  3.f, .20f, .30f, 10.f, 2.0f});
-  fat.emplace_back(mfs, 1000);
-  return fat;
-}
-
 // this is what we give as input to the strength model for a single move
 struct MoveFeatures {
   float winProb;
@@ -80,7 +61,6 @@ int MainCmds::strength_training(const vector<string>& args) {
   KataGoCommandLine cmd("Use labeled games to train the strength model from move features.");
   try {
     cmd.addConfigFileArg("","strength_analysis_example.cfg");
-    cmd.addModelFileArg();
     TCLAP::ValueArg<string> strengthModelFileArg("","strengthmodel","Neural net strength model file.",true,"","STRENGTH_MODEL_FILE");
     cmd.add(strengthModelFileArg);
     cmd.setShortUsageArgLimit();
@@ -96,7 +76,6 @@ int MainCmds::strength_training(const vector<string>& args) {
 
     listFile = listArg.getValue();
     featureDir = featureDirArg.getValue();
-    modelFile = cmd.getModelFile();
     strengthModelFile = strengthModelFileArg.getValue();
     numAnalysisThreadsCmdlineSpecified = numAnalysisThreadsArg.isSet();
     numAnalysisThreadsCmdline = numAnalysisThreadsArg.getValue();
@@ -135,7 +114,6 @@ int MainCmds::strength_training(const vector<string>& args) {
   cfg.warnUnusedKeys(cerr,&logger);
 
   logger.write("Loaded config "+ cfg.getFileName());
-  logger.write("Loaded model "+ modelFile);
   cmd.logOverrides(logger);
 
   logger.write("Strength Training starting...");
@@ -144,38 +122,15 @@ int MainCmds::strength_training(const vector<string>& args) {
     cerr << Version::getKataGoVersionForHelp() << endl;
   }
 
-  SearchParams searchParams;
-  Player defaultPerspective;
-  loadParams(cfg, searchParams, defaultPerspective, C_EMPTY);
-
-  NNEvaluator* nnEval;
-  // {
-  //   Setup::initializeSession(cfg);
-  //   const int maxConcurrentEvals = numAnalysisThreads * searchParams.numThreads * 2 + 16; // * 2 + 16 just to give plenty of headroom
-  //   const int expectedConcurrentEvals = numAnalysisThreads * searchParams.numThreads;
-  //   const bool defaultRequireExactNNLen = false;
-  //   const int defaultMaxBatchSize = -1;
-  //   const bool disableFP16 = false;
-  //   const string expectedSha256 = "";
-  //   nnEval = Setup::initializeNNEvaluator(
-  //     modelFile,modelFile,expectedSha256,cfg,logger,seedRand,maxConcurrentEvals,expectedConcurrentEvals,
-  //     NNPos::MAX_BOARD_LEN,NNPos::MAX_BOARD_LEN,defaultMaxBatchSize,defaultRequireExactNNLen,disableFP16,
-  //     Setup::SETUP_FOR_ANALYSIS
-  //   );
-  // }
-
   { // main training
-    // Search search(searchParams, nnEval, &logger, "");
     StrengthModel strengthModel(strengthModelFile, nullptr /*search*/, featureDir);
     logger.write("Loaded strength model "+ strengthModelFile);
     Dataset dataset;
-    dataset.load(listFile);
-    // Dataset dataset = mockDataset();
+    dataset.load(listFile, featureDir);
     // dataset.resize(10);
     
     logger.write("Loaded dataset with " + Global::intToString(dataset.games.size()) + " games from " + listFile);
     FeaturesAndTargets featuresTargets = strengthModel.getFeaturesAndTargets(dataset);
-    // FeaturesAndTargets featuresTargets = mockFeaturesAndTargets();
 
     size_t split = static_cast<size_t>(featuresTargets.size() * splitFraction);
     logger.write(customFormat("Training on set of size %d (%d training, %d test)",
@@ -184,9 +139,6 @@ int MainCmds::strength_training(const vector<string>& args) {
     strengthModel.train(featuresTargets, split, epochs, batchSize, weightPenalty, learnrate);
   }
 
-  delete nnEval;
-  NeuralNet::globalCleanup();
-  ScoreValue::freeTables();
   logger.write("All cleaned up, quitting");
   return 0;
 }

@@ -6,7 +6,7 @@
 using std::min;
 
 namespace {
-void createFeatureCache(const Dataset& dataset, const string& featureDir);
+void createFeatureCache(const string& listFile, const string& featureDir);
 bool fitsOneSample(vector<MoveFeatures> features, float target, int epochs, float weightPenalty, float learnrate, float& estimate);
 }
 
@@ -22,9 +22,8 @@ void runStrengthModelTests(const string& modelFile, const string& listFile, cons
   StrengthModel StrengthModel(modelFile, nullptr, featureDir);
 
   try {
-    dataset.load(listFile);
-    createFeatureCache(dataset, featureDir);
-    featuresTargets = StrengthModel::getFeaturesAndTargetsCached(dataset, featureDir);
+    createFeatureCache(listFile, featureDir);
+    dataset.load(listFile, featureDir);
   }
   catch(const StringError& e) {
     cout << "skip strength model tests (" << e.what() << ")\n";
@@ -34,14 +33,14 @@ void runStrengthModelTests(const string& modelFile, const string& listFile, cons
   {
     cout << "- UT dataset contains " << dataset.games.size() << " games and " << dataset.players.size() << " players:\n";
     for(const Dataset::Game& game : dataset.games)
-      cout << "\tGame " << game.sgfPath << "\n";
+      cout << "\tGame " << game.sgfPath << " - " << game.blackFeatures.size() << " black features, " << game.whiteFeatures.size() << " white features\n";
     for(const Dataset::Player& player : dataset.players)
       cout << "\tPlayer " << player.name << ", last occurred in game [" << player.lastOccurrence << "]\n";
   }
 
   if(0) // disabled for calculation time
   {
-    size_t sample = 47;
+    size_t sample = 0;
     cout << "- fits sample " << sample << " from list file " << listFile << ": ";
 
     float estimate;
@@ -49,13 +48,13 @@ void runStrengthModelTests(const string& modelFile, const string& listFile, cons
     float weightPenalty = 0;
     float learnrate = 0.01f;
 
-    auto& fat = featuresTargets[sample];
+    auto& game = dataset.games[sample];
     StrengthNet net;
     Rand rand(123ull); // reproducible seed
     net.randomInit(rand);
-    net.setInput(fat.first);
+    net.setInput(game.blackFeatures);
     net.setBatchSize(1);
-    cout << fat.first.size() << " input features\n";
+    cout << game.blackFeatures.size() << " input features\n";
     // net.printWeights(cout, "initial values");
     // std::ofstream hfile("h_values.csv"); // debug csv
 
@@ -63,7 +62,7 @@ void runStrengthModelTests(const string& modelFile, const string& listFile, cons
     for(i = 0; i < 100; i++) {
       net.forward();
       // net.h.print(hfile, "h", false);
-      net.backward(fat.second); //, 0);
+      net.backward(game.blackRating); //, 0);
       net.update(weightPenalty, learnrate);
       cout << "epoch " << i << ": thetavar=" << net.thetaVar() << "\n";
     }
@@ -92,9 +91,9 @@ void runStrengthModelTests(const string& modelFile, const string& listFile, cons
 
     net.forward();
     estimate = net.getOutput();
-    pass = fabs(net.getOutput() - fat.second) <= 0.1f;
+    pass = fabs(net.getOutput() - game.blackRating) <= 0.1f;
 
-    cout << "Estimate: " << estimate << ", target: " << fat.second << "\n";
+    cout << "Estimate: " << estimate << ", target: " << game.blackRating << "\n";
     cout << (pass ? "pass" : "fail") << "\n";
   }
 
@@ -104,14 +103,14 @@ void runStrengthModelTests(const string& modelFile, const string& listFile, cons
 
     float estimate;
     bool pass;
-    size_t upTo = min(featuresTargets.size(), 100ul); // speedup: cap samples to test
+    size_t upTo = min(dataset.games.size(), 100ul); // speedup: cap samples to test
 
     pass = true;
     for(int i = 0; i < upTo; i++) {
-      auto& fat = featuresTargets[i];
-      if(!fitsOneSample(fat.first, fat.second, 1000, 0, 0.01f, estimate)) {
+      auto& game = dataset.games[i];
+      if(!fitsOneSample(game.blackFeatures, game.blackRating, 1000, 0, 0.01f, estimate)) {
         pass = false;
-        cerr << "Failed to fit sample " << i << " (" << fat.first.size() << " moves, target=" << fat.second << ", estimate=" << estimate << ")\n";
+        cerr << "Failed to fit sample " << i << " (" << game.blackFeatures.size() << " moves, target=" << game.blackRating << ", estimate=" << estimate << ")\n";
       }
     }
 
@@ -122,8 +121,8 @@ void runStrengthModelTests(const string& modelFile, const string& listFile, cons
 
 namespace {
 
-void mockGameFeatures(const Dataset::Game& game, vector<MoveFeatures>& blackFeaturesOut, vector<MoveFeatures>& whiteFeaturesOut) {
-  auto sgf = std::unique_ptr<CompactSgf>(CompactSgf::loadFile(game.sgfPath));
+void mockGameFeatures(const string& sgfPath, vector<MoveFeatures>& blackFeaturesOut, vector<MoveFeatures>& whiteFeaturesOut) {
+  auto sgf = std::unique_ptr<CompactSgf>(CompactSgf::loadFile(sgfPath));
   for(int turnIdx = 0; turnIdx < sgf->moves.size(); turnIdx++) {
     Move move = sgf->moves[turnIdx];
     // just make up some half plausible float values from move.loc
@@ -138,13 +137,16 @@ void mockGameFeatures(const Dataset::Game& game, vector<MoveFeatures>& blackFeat
   }
 }
 
-void createFeatureCache(const Dataset& dataset, const string& featureDir) {
+void createFeatureCache(const string& listFile, const string& featureDir) {
   const uint32_t FEATURE_HEADER = 0xfea70235; // same as in strengthmodel.h
-  for(const Dataset::Game& game : dataset.games) {
+  std::ifstream istrm(listFile);
+  string sgfPath; // we just assume that sgfPath is the first field in the CSV
+  std::getline(istrm, sgfPath); // throw away header
+  while (std::getline(istrm, sgfPath, ',')) {
     vector<MoveFeatures> blackFeatures, whiteFeatures;
-    mockGameFeatures(game, blackFeatures, whiteFeatures);
-    string blackFeaturePath = Global::strprintf("%s/%s_%sFeatures.bin", featureDir.c_str(), Global::chopSuffix(game.sgfPath, ".sgf").c_str(), PlayerIO::playerToString(P_BLACK).c_str());
-    string whiteFeaturePath = Global::strprintf("%s/%s_%sFeatures.bin", featureDir.c_str(), Global::chopSuffix(game.sgfPath, ".sgf").c_str(), PlayerIO::playerToString(P_WHITE).c_str());
+    mockGameFeatures(sgfPath, blackFeatures, whiteFeatures);
+    string blackFeaturePath = Global::strprintf("%s/%s_%sFeatures.bin", featureDir.c_str(), Global::chopSuffix(sgfPath, ".sgf").c_str(), PlayerIO::playerToString(P_BLACK).c_str());
+    string whiteFeaturePath = Global::strprintf("%s/%s_%sFeatures.bin", featureDir.c_str(), Global::chopSuffix(sgfPath, ".sgf").c_str(), PlayerIO::playerToString(P_WHITE).c_str());
     FileUtils::create_directories(FileUtils::dirname(blackFeaturePath)); // ensure dir structure
     auto blackFeatureFile = std::unique_ptr<std::FILE, decltype(&std::fclose)>(std::fopen(blackFeaturePath.c_str(), "wb"), &std::fclose);
     auto whiteFeatureFile = std::unique_ptr<std::FILE, decltype(&std::fclose)>(std::fopen(whiteFeaturePath.c_str(), "wb"), &std::fclose);
@@ -156,6 +158,7 @@ void createFeatureCache(const Dataset& dataset, const string& featureDir) {
                           0 != std::fclose(whiteFeatureFile.release())) {
       throw IOError("Failed to create feature cache for test SGFs.");
     }
+    std::getline(istrm, sgfPath); // throw away remaining line
   }
 }
 

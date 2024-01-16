@@ -28,7 +28,8 @@ public:
     float predictedScore;       // prediction by model
     std::size_t prevWhiteGame; // index of most recent game with white player before this
     std::size_t prevBlackGame; // index of most recent game with black player before this
-    // TODO: link to move features
+    std::vector<MoveFeatures> blackFeatures;
+    std::vector<MoveFeatures> whiteFeatures;
   };
 
   // data on one player
@@ -37,29 +38,21 @@ public:
     size_t lastOccurrence; // max index of game where this player participated
   };
 
-  void load(const std::string& path);
+  void load(const std::string& path, const std::string& featureDir);
   void store(const std::string& path) const;
-
-  std::size_t countPlayers() const noexcept;
-  const std::string& playerName(std::size_t index) const noexcept;
 
   std::vector<Game> games;
   std::vector<Player> players;
+
+  static const uint32_t FEATURE_HEADER; // magic bytes for feature file
 
 private:
 
   std::map<std::string, std::size_t> nameIndex;  // player names to unique index into player_
 
   std::size_t getOrInsertNameIndex(const std::string& name);  // insert with lastOccurrence
+  std::vector<MoveFeatures> readFeaturesFromFile(const std::string& featurePath);
 
-};
-
-// all the strength model relevant information extracted from a game
-struct GameFeatures {
-  std::vector<MoveFeatures> blackFeatures;
-  std::vector<MoveFeatures> whiteFeatures;
-
-  bool present() const noexcept;
 };
 
 using FeaturesAndTargets = std::vector<std::pair<StrengthNet::Input, StrengthNet::Output> >;
@@ -75,11 +68,9 @@ public:
   explicit StrengthModel(const std::string& strengthModelFile_, Search* search_, const std::string& featureDir_) noexcept;
   explicit StrengthModel(const std::string& strengthModelFile_, Search& search_, const std::string& featureDir_) noexcept;
 
-  // Analyze SGF and use the strength model to determine the embedded features of every move
-  GameFeatures getGameFeatures(const std::string& sgfPath) const;
-  GameFeatures getGameFeatures(const CompactSgf& sgf) const;
   FeaturesAndTargets getFeaturesAndTargets(const Dataset& dataset) const;
-  static FeaturesAndTargets getFeaturesAndTargetsCached(const Dataset& dataset, const std::string& featureDir);
+  // Analyze SGF with KataGo network and search to determine the embedded features of every move
+  static void extractGameFeatures(const CompactSgf& sgf, const Search& search, std::vector<MoveFeatures>& blackFeatures, std::vector<MoveFeatures>& whiteFeatures);
 
   // training loop, save result to file
   void train(FeaturesAndTargets& xy, size_t split, int epochs, size_t batchSize, float weightPenalty, float learnrate);
@@ -90,18 +81,15 @@ public:
   // Predict winning chances given the moves from their games
   float whiteWinrate(const std::vector<MoveFeatures>& whiteHistory, const std::vector<MoveFeatures>& blackHistory) const;
 
+  std::string featureDir;
+
 private:
 
   std::string strengthModelFile;
   StrengthNet net;
   Search* search;
-  std::string featureDir;
-  static const uint32_t FEATURE_HEADER;
 
-  GameFeatures maybeGetGameFeaturesCachedForSgf(const std::string& sgfPath, std::string& blackFeaturesPath, std::string& whiteFeaturesPath) const;
-  static std::vector<MoveFeatures> maybeGetMoveFeaturesCached(const std::string& cachePath);
   bool maybeWriteMoveFeaturesCached(const std::string& cachePath, const std::vector<MoveFeatures>& features) const;
-  GameFeatures extractGameFeatures(const CompactSgf& sgf, const std::string& blackFeaturesPath, const std::string& whiteFeaturesPath) const;
 
 };
 
