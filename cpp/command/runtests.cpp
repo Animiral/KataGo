@@ -310,9 +310,18 @@ int MainCmds::runnnonmanyposestest(const vector<string>& args) {
 }
 
 int MainCmds::runstrengthmodeltests(const vector<string>& args) {
-  (void) args;
+  if(args.size() != 2) {
+    cerr << "Must supply argument: MODEL_FILE" << endl;
+    return 1;
+  }
+
+  // This test must be executed from the katago/cpp/tests/data subdirectory
+  // to use the accompanying test data.
+  string listFile = "games_labels.csv";
+  string featureDir = "featurecache";
+
   Tests::runStrengthNetTests();
-  Tests::runStrengthModelTests();
+  Tests::runStrengthModelTests(args[1], listFile, featureDir);
   return 0;
 }
 

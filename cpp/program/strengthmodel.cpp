@@ -91,12 +91,12 @@ void Dataset::load(const string& path) {
     }
     if(!istrm)
       throw IOError("Error while reading from " + path);
-    game.prevWhiteGame = player_[game.whitePlayer].lastOccurrence;
-    game.prevBlackGame = player_[game.blackPlayer].lastOccurrence;
-    size_t gameIndex = game_.size();
-    game_.push_back(game);
-    player_[game.whitePlayer].lastOccurrence = gameIndex;
-    player_[game.blackPlayer].lastOccurrence = gameIndex;
+    game.prevWhiteGame = players[game.whitePlayer].lastOccurrence;
+    game.prevBlackGame = players[game.blackPlayer].lastOccurrence;
+    size_t gameIndex = games.size();
+    games.push_back(game);
+    players[game.whitePlayer].lastOccurrence = gameIndex;
+    players[game.blackPlayer].lastOccurrence = gameIndex;
   }
 
   istrm.close();
@@ -109,9 +109,9 @@ void Dataset::store(const string& path) const {
 
   ostrm << "File,Player White,Player Black,Score,BlackRating,WhiteRating,PredictedScore,PredictedBlackRating,PredictedWhiteRating\n"; // header
 
-  for(const Game& game : game_) {
-    string blackName = player_[game.blackPlayer].name;
-    string whiteName = player_[game.whitePlayer].name;
+  for(const Game& game : games) {
+    string blackName = players[game.blackPlayer].name;
+    string whiteName = players[game.whitePlayer].name;
 
     // file output
     size_t bufsize = game.sgfPath.size() + whiteName.size() + blackName.size() + 100;
@@ -128,30 +128,13 @@ void Dataset::store(const string& path) const {
   ostrm.close();
 }
 
-size_t Dataset::countPlayers() const noexcept {
-  return player_.size();
-}
-
-const string& Dataset::playerName(size_t index) const noexcept {
-  return player_[index].name;
-}
-
-vector<Dataset::Game>& Dataset::games() noexcept {
-  return game_;
-}
-
-const vector<Dataset::Game>& Dataset::games() const noexcept {
-  return game_;
-}
-
-
 size_t Dataset::getOrInsertNameIndex(const std::string& name) {
-  auto it = nameIndex_.find(name);
-  if(nameIndex_.end() == it) {
-    size_t index = player_.size();
-    player_.push_back({name, 0});
+  auto it = nameIndex.find(name);
+  if(nameIndex.end() == it) {
+    size_t index = players.size();
+    players.push_back({name, 0});
     bool success;
-    std::tie(it, success) = nameIndex_.insert({name, index});
+    std::tie(it, success) = nameIndex.insert({name, index});
   }
   return it->second;
 }
@@ -206,7 +189,7 @@ GameFeatures StrengthModel::getGameFeatures(const CompactSgf& sgf) const {
 
 FeaturesAndTargets StrengthModel::getFeaturesAndTargets(const Dataset& dataset) const {
   FeaturesAndTargets featuresTargets;
-  for(const Dataset::Game& gm : dataset.games()) {
+  for(const Dataset::Game& gm : dataset.games) {
     GameFeatures features = getGameFeatures(gm.sgfPath);
     featuresTargets.emplace_back(features.blackFeatures, gm.blackRating);
     featuresTargets.emplace_back(features.whiteFeatures, gm.whiteRating);
@@ -216,7 +199,7 @@ FeaturesAndTargets StrengthModel::getFeaturesAndTargets(const Dataset& dataset) 
 
 FeaturesAndTargets StrengthModel::getFeaturesAndTargetsCached(const Dataset& dataset, const string& featureDir) {
   FeaturesAndTargets featuresTargets;
-  for(const Dataset::Game& gm : dataset.games()) {
+  for(const Dataset::Game& gm : dataset.games) {
     auto blackFeaturesPath = cachePath(featureDir, gm.sgfPath, P_BLACK);
     auto blackFeatures = maybeGetMoveFeaturesCached(blackFeaturesPath);
     auto whiteFeaturesPath = cachePath(featureDir, gm.sgfPath, P_WHITE);
@@ -527,9 +510,9 @@ void RatingSystem::calculate(const string& sgfList, const string& outFile) {
   int sgfCount = 0;
   float logp = 0;
 
-  for(Dataset::Game& gm : dataset.games()) {
-    string blackName = dataset.playerName(gm.blackPlayer);
-    string whiteName = dataset.playerName(gm.whitePlayer);
+  for(Dataset::Game& gm : dataset.games) {
+    string blackName = dataset.players[gm.blackPlayer].name;
+    string whiteName = dataset.players[gm.whitePlayer].name;
     string winner = gm.score > .5 ? "B+":"W+";
     std::cout << blackName << " vs " << whiteName << ": " << winner << "\n";
 

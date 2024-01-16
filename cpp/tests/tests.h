@@ -64,7 +64,7 @@ namespace Tests {
   //teststrengthnet.cu
   void runStrengthNetTests();
   //teststrengthmodel.cpp
-  void runStrengthModelTests();
+  void runStrengthModelTests(const std::string& modelFile, const std::string& listFile, const std::string& featureDir);
 
   //testtime.cpp
   void runTimeControlsTests();

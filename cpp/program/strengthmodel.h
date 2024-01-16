@@ -42,14 +42,13 @@ public:
 
   std::size_t countPlayers() const noexcept;
   const std::string& playerName(std::size_t index) const noexcept;
-  std::vector<Game>& games() noexcept;
-  const std::vector<Game>& games() const noexcept;
+
+  std::vector<Game> games;
+  std::vector<Player> players;
 
 private:
 
-  std::vector<Game> game_;
-  std::vector<Player> player_;
-  std::map<std::string, std::size_t> nameIndex_;  // player names to unique index into player_
+  std::map<std::string, std::size_t> nameIndex;  // player names to unique index into player_
 
   std::size_t getOrInsertNameIndex(const std::string& name);  // insert with lastOccurrence
 

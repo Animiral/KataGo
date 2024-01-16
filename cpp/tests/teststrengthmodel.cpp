@@ -1,9 +1,12 @@
 #include "program/strengthmodel.h"
 #include "tests/tests.h"
+#include "core/fileutils.h"
+#include "core/using.h"
 
-using namespace std;
+using std::min;
 
 namespace {
+void createFeatureCache(const Dataset& dataset, const string& featureDir);
 bool fitsOneSample(vector<MoveFeatures> features, float target, int epochs, float weightPenalty, float learnrate, float& estimate);
 }
 
@@ -12,20 +15,28 @@ void matmul(Tensor& y, const Tensor& W, const Tensor& x);
 }
 
 namespace Tests {
-void runStrengthModelTests() {
-  // string listFile = "games_labels_20.csv"; // shorter
-  string listFile = "games_labels.csv";
-  string featureDir = "featurecache";
+void runStrengthModelTests(const string& modelFile, const string& listFile, const string& featureDir) {
   Dataset dataset;
   FeaturesAndTargets featuresTargets;
 
+  StrengthModel StrengthModel(modelFile, nullptr, featureDir);
+
   try {
     dataset.load(listFile);
+    createFeatureCache(dataset, featureDir);
     featuresTargets = StrengthModel::getFeaturesAndTargetsCached(dataset, featureDir);
   }
   catch(const StringError& e) {
     cout << "skip strength model tests (" << e.what() << ")\n";
     return;
+  }
+
+  {
+    cout << "- UT dataset contains " << dataset.games.size() << " games and " << dataset.players.size() << " players:\n";
+    for(const Dataset::Game& game : dataset.games)
+      cout << "\tGame " << game.sgfPath << "\n";
+    for(const Dataset::Player& player : dataset.players)
+      cout << "\tPlayer " << player.name << ", last occurred in game [" << player.lastOccurrence << "]\n";
   }
 
   if(0) // disabled for calculation time
@@ -110,6 +121,44 @@ void runStrengthModelTests() {
 }
 
 namespace {
+
+void mockGameFeatures(const Dataset::Game& game, vector<MoveFeatures>& blackFeaturesOut, vector<MoveFeatures>& whiteFeaturesOut) {
+  auto sgf = std::unique_ptr<CompactSgf>(CompactSgf::loadFile(game.sgfPath));
+  for(int turnIdx = 0; turnIdx < sgf->moves.size(); turnIdx++) {
+    Move move = sgf->moves[turnIdx];
+    // just make up some half plausible float values from move.loc
+    MoveFeatures mf;
+    mf.winProb = move.loc / 400.f;
+    mf.lead = (move.loc - 200) / 10.f;
+    mf.movePolicy = (500 - move.loc) / 500.f;
+    mf.maxPolicy = (600 - move.loc) / 600.f;
+    mf.winrateLoss = .1f;
+    mf.pointsLoss = 2.f;
+    (P_WHITE == move.pla ? whiteFeaturesOut : blackFeaturesOut).push_back(mf);
+  }
+}
+
+void createFeatureCache(const Dataset& dataset, const string& featureDir) {
+  const uint32_t FEATURE_HEADER = 0xfea70235; // same as in strengthmodel.h
+  for(const Dataset::Game& game : dataset.games) {
+    vector<MoveFeatures> blackFeatures, whiteFeatures;
+    mockGameFeatures(game, blackFeatures, whiteFeatures);
+    string blackFeaturePath = Global::strprintf("%s/%s_%sFeatures.bin", featureDir.c_str(), Global::chopSuffix(game.sgfPath, ".sgf").c_str(), PlayerIO::playerToString(P_BLACK).c_str());
+    string whiteFeaturePath = Global::strprintf("%s/%s_%sFeatures.bin", featureDir.c_str(), Global::chopSuffix(game.sgfPath, ".sgf").c_str(), PlayerIO::playerToString(P_WHITE).c_str());
+    FileUtils::create_directories(FileUtils::dirname(blackFeaturePath)); // ensure dir structure
+    auto blackFeatureFile = std::unique_ptr<std::FILE, decltype(&std::fclose)>(std::fopen(blackFeaturePath.c_str(), "wb"), &std::fclose);
+    auto whiteFeatureFile = std::unique_ptr<std::FILE, decltype(&std::fclose)>(std::fopen(whiteFeaturePath.c_str(), "wb"), &std::fclose);
+    if(                   1 != std::fwrite(&FEATURE_HEADER, 4, 1, blackFeatureFile.get()) ||
+       blackFeatures.size() != std::fwrite(blackFeatures.data(), sizeof(MoveFeatures), blackFeatures.size(), blackFeatureFile.get()) ||
+                          1 != std::fwrite(&FEATURE_HEADER, 4, 1, whiteFeatureFile.get()) ||
+       whiteFeatures.size() != std::fwrite(whiteFeatures.data(), sizeof(MoveFeatures), whiteFeatures.size(), whiteFeatureFile.get()) ||
+                          0 != std::fclose(blackFeatureFile.release()) ||
+                          0 != std::fclose(whiteFeatureFile.release())) {
+      throw IOError("Failed to create feature cache for test SGFs.");
+    }
+  }
+}
+
 bool fitsOneSample(vector<MoveFeatures> features, float target, int epochs, float weightPenalty, float learnrate, float& estimate) {
     StrengthNet net;
     Rand rand(123ull); // reproducible seed
@@ -127,4 +176,5 @@ bool fitsOneSample(vector<MoveFeatures> features, float target, int epochs, floa
     estimate = net.getOutput();
     return fabs(net.getOutput() - target) <= 0.1f;
 }
-}
+
+} // end namespace

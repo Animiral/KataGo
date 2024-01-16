@@ -173,7 +173,7 @@ int MainCmds::strength_training(const vector<string>& args) {
     // Dataset dataset = mockDataset();
     // dataset.resize(10);
     
-    logger.write("Loaded dataset with " + Global::intToString(dataset.games().size()) + " games from " + listFile);
+    logger.write("Loaded dataset with " + Global::intToString(dataset.games.size()) + " games from " + listFile);
     FeaturesAndTargets featuresTargets = strengthModel.getFeaturesAndTargets(dataset);
     // FeaturesAndTargets featuresTargets = mockFeaturesAndTargets();
 
