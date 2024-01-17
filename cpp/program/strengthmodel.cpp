@@ -133,13 +133,54 @@ void Dataset::store(const string& path) const {
   ostrm.close();
 }
 
+size_t Dataset::getRecentMoves(size_t player, size_t game, MoveFeatures* buffer, size_t bufsize) {
+  assert(player < players.size());
+  assert(game <= games.size());
+
+  // start from the game preceding the specified index
+  int gameIndex;
+  if(games.size() == game) {
+      gameIndex = players[player].lastOccurrence;
+  }
+  else {
+    Game* gm = &games[game];
+    if(player == gm->blackPlayer)
+      gameIndex = gm->prevBlackGame;
+    else if(player == gm->whitePlayer)
+      gameIndex = gm->prevWhiteGame;
+    else
+      gameIndex = static_cast<int>(game) - 1;
+  }
+
+  // go backwards in player's history and fill the buffer in backwards order
+  MoveFeatures* outptr = buffer + bufsize;
+  while(gameIndex >= 0 && outptr > buffer) {
+    while(gameIndex >= 0 && player != games[gameIndex].blackPlayer && player != games[gameIndex].whitePlayer)
+      gameIndex--; // this is just defense to ensure that we find a game which the player occurs in
+    if(gameIndex < 0)
+      break;
+    Game* gm = &games[gameIndex];
+    bool isBlack = player == gm->blackPlayer;
+    const auto& features = isBlack ? gm->blackFeatures : gm->whiteFeatures;
+    for(int i = features.size(); i > 0 && outptr > buffer;)
+      *--outptr = features[--i];
+    gameIndex = isBlack ? gm->prevBlackGame : gm->prevWhiteGame;
+  }
+
+  // if there are not enough features in history to fill the buffer, adjust
+  size_t count = bufsize - (outptr - buffer);
+  if(outptr > buffer)
+    std::memmove(buffer, outptr, count * sizeof(MoveFeatures));
+  return count;
+}
+
 const uint32_t Dataset::FEATURE_HEADER = 0xfea70235;
 
 size_t Dataset::getOrInsertNameIndex(const std::string& name) {
   auto it = nameIndex.find(name);
   if(nameIndex.end() == it) {
     size_t index = players.size();
-    players.push_back({name, 0});
+    players.push_back({name, -1});
     bool success;
     std::tie(it, success) = nameIndex.insert({name, index});
   }

@@ -26,8 +26,8 @@ public:
     float predictedWhiteRating; // prediction by model
     float predictedBlackRating; // prediction by model
     float predictedScore;       // prediction by model
-    std::size_t prevWhiteGame; // index of most recent game with white player before this
-    std::size_t prevBlackGame; // index of most recent game with black player before this
+    int prevWhiteGame;       // index of most recent game with white player before this or -1
+    int prevBlackGame;       // index of most recent game with black player before this or -1
     std::vector<MoveFeatures> blackFeatures;
     std::vector<MoveFeatures> whiteFeatures;
   };
@@ -35,11 +35,13 @@ public:
   // data on one player
   struct Player {
     std::string name;
-    size_t lastOccurrence; // max index of game where this player participated
+    int lastOccurrence; // max index of game where this player participated or -1
   };
 
   void load(const std::string& path, const std::string& featureDir);
   void store(const std::string& path) const;
+  // retrieve up to bufsize moves played by the player in games before the game index, return # retrieved
+  size_t getRecentMoves(size_t player, size_t game, MoveFeatures* buffer, size_t bufsize);
 
   std::vector<Game> games;
   std::vector<Player> players;

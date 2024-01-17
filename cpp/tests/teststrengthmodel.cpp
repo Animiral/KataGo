@@ -1,13 +1,18 @@
 #include "program/strengthmodel.h"
 #include "tests/tests.h"
 #include "core/fileutils.h"
+#include <iomanip>
 #include "core/using.h"
 
 using std::min;
 
 namespace {
+
+void printFeatures(const MoveFeatures* features, size_t count); // to cout
 void createFeatureCache(const string& listFile, const string& featureDir);
 bool fitsOneSample(vector<MoveFeatures> features, float target, int epochs, float weightPenalty, float learnrate, float& estimate);
+bool featuresEqual(const MoveFeatures* actual, const MoveFeatures* expected, size_t count);
+
 }
 
 namespace StrengthNetImpl {
@@ -36,6 +41,50 @@ void runStrengthModelTests(const string& modelFile, const string& listFile, cons
       cout << "\tGame " << game.sgfPath << " - " << game.blackFeatures.size() << " black features, " << game.whiteFeatures.size() << " white features\n";
     for(const Dataset::Player& player : dataset.players)
       cout << "\tPlayer " << player.name << ", last occurred in game [" << player.lastOccurrence << "]\n";
+  }
+
+  {
+    cout << "- get recent moves: ";
+    assert(dataset.players.size() >= 3 && dataset.games.size() >= 3);
+    bool pass = true;
+    vector<MoveFeatures> buffer(10);
+    vector<MoveFeatures> expected(10);
+
+    // if there are no previous features, we expect the buffer to be unchanged.
+    buffer[0].winProb = 2;
+    size_t count = dataset.getRecentMoves(2, 1, buffer.data(), 10);
+    if(0 != count || 2 != buffer[0].winProb) {
+      cout << "expected 0 features, got " << count << ": ";
+      printFeatures(buffer.data(), count);
+      pass = false;
+    }
+
+    // expect features in a sequence ordered from old to new
+    count = dataset.getRecentMoves(0, 2, buffer.data(), 10);
+    expected[0] = dataset.games[0].whiteFeatures[0]; // this makes assumptions about the UT dataset
+    expected[1] = dataset.games[1].whiteFeatures[0];
+    expected[2] = dataset.games[1].whiteFeatures[1];
+    if(3 != count || !featuresEqual(buffer.data(), expected.data(), count)) {
+      cout << "expected 3 features: ";
+      printFeatures(expected.data(), 3);
+      cout << ", got " << count << ": ";
+      printFeatures(buffer.data(), count);
+      pass = false;
+    }
+
+    // expect features cut off at the specified count, expect game index working 1 past end
+    count = dataset.getRecentMoves(2, 3, buffer.data(), 2);
+    expected[0] = dataset.games[2].blackFeatures[1];
+    expected[1] = dataset.games[2].blackFeatures[2];
+    if(2 != count || !featuresEqual(buffer.data(), expected.data(), count)) {
+      cout << "expected 2 features: ";
+      printFeatures(expected.data(), 2);
+      cout << ", got " << count << ": ";
+      printFeatures(buffer.data(), count);
+      pass = false;
+    }
+
+    cout << (pass ? "pass" : "fail") << "\n";
   }
 
   if(0) // disabled for calculation time
@@ -121,6 +170,16 @@ void runStrengthModelTests(const string& modelFile, const string& listFile, cons
 
 namespace {
 
+void printFeatures(const MoveFeatures* features, size_t count) {
+  cout << "[" << std::setprecision(2);
+  for(auto* ft = features; ft < features + count; ft++) {
+    if(features != ft)
+      cout << ", ";
+    cout << "(" << ft->winProb << "," << ft->lead << "," << ft->movePolicy << "," << ft->maxPolicy << "," << ft->winrateLoss << "," << ft->pointsLoss << ")";
+  }
+  cout << "]";
+}
+
 void mockGameFeatures(const string& sgfPath, vector<MoveFeatures>& blackFeaturesOut, vector<MoveFeatures>& whiteFeaturesOut) {
   auto sgf = std::unique_ptr<CompactSgf>(CompactSgf::loadFile(sgfPath));
   for(int turnIdx = 0; turnIdx < sgf->moves.size(); turnIdx++) {
@@ -178,6 +237,20 @@ bool fitsOneSample(vector<MoveFeatures> features, float target, int epochs, floa
     net.forward();
     estimate = net.getOutput();
     return fabs(net.getOutput() - target) <= 0.1f;
+}
+
+bool featuresEqual(const MoveFeatures* actual, const MoveFeatures* expected, size_t count) {
+  for(size_t i = 0; i < count; i++) {
+    if(actual[i].winProb != expected[i].winProb || 
+       actual[i].lead != expected[i].lead ||
+       actual[i].movePolicy != expected[i].movePolicy ||
+       actual[i].maxPolicy != expected[i].maxPolicy ||
+       actual[i].winrateLoss != expected[i].winrateLoss ||
+       actual[i].pointsLoss != expected[i].pointsLoss) {
+      return false;
+    }
+  }
+  return true;
 }
 
 } // end namespace
