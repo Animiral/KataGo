@@ -123,7 +123,7 @@ int MainCmds::strength_training(const vector<string>& args) {
   }
 
   { // main training
-    StrengthModel strengthModel(strengthModelFile, nullptr /*search*/, featureDir);
+    StrengthModel strengthModel(strengthModelFile, featureDir);
     logger.write("Loaded strength model "+ strengthModelFile);
     Dataset dataset;
     dataset.load(listFile, featureDir);

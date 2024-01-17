@@ -119,7 +119,7 @@ int MainCmds::strength_analysis(const vector<string>& args) {
   Search search(searchParams, nnEval, &logger, "");
 
   vector<MoveFeatures> playerFeatures;
-  StrengthModel strengthModel(strengthModelFile, search, "");
+  StrengthModel strengthModel(strengthModelFile, "");
   for (const auto& sgfPath: sgfPaths)
   {
     auto sgf = std::unique_ptr<Sgf>(Sgf::loadFile(sgfPath));
@@ -149,7 +149,9 @@ int MainCmds::strength_analysis(const vector<string>& args) {
   }
   size_t N = playerFeatures.size();
   cout << "Avg win%% loss: "  << std::fixed << std::setprecision(3) << wloss/N << ", pt loss: " << ploss/N << ".\n";
-  cout << "Rating for " << playerName << ": " << std::fixed << std::setprecision(2) << strengthModel.rating(playerFeatures) << "\n";
+  strengthModel.net.setInput(playerFeatures);
+  strengthModel.net.forward();
+  cout << "Rating for " << playerName << ": " << std::fixed << std::setprecision(2) << strengthModel.net.getOutput() << "\n";
 
   delete nnEval;
   NeuralNet::globalCleanup();

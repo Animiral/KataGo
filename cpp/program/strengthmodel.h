@@ -15,6 +15,13 @@ class Dataset {
 
 public:
 
+  // prediction data to be computed by strength model based on recent moves
+  struct Prediction {
+    float whiteRating;
+    float blackRating;
+    float score;
+  };
+
   // data on one game from the dataset list file
   struct Game {
     std::string sgfPath;
@@ -23,9 +30,7 @@ public:
     float whiteRating;       // rating number target
     float blackRating;       // rating number target
     float score;             // game outcome for black: 0 for loss, 1 for win
-    float predictedWhiteRating; // prediction by model
-    float predictedBlackRating; // prediction by model
-    float predictedScore;       // prediction by model
+    Prediction prediction;
     int prevWhiteGame;       // index of most recent game with white player before this or -1
     int prevBlackGame;       // index of most recent game with black player before this or -1
     std::vector<MoveFeatures> blackFeatures;
@@ -57,6 +62,46 @@ private:
 
 };
 
+// The predictor, given a match between two opponents, estimates their ratings and the match score (win probability).
+// This is the abstract base class for our predictors:
+//   - The StochasticPredictor based on simple statistics
+//   - The SmallPredictor based on the StrengthNet
+//   - The FullPredictor (to be done!)
+class Predictor {
+
+public:
+
+  // The resulting prediction might keep the players' ratings at 0 (no prediction), but it always predicts the score.
+  virtual Dataset::Prediction predict(const MoveFeatures* blackFeatures, size_t blackCount, const MoveFeatures* whiteFeatures, size_t whiteCount) = 0;
+
+protected:
+
+  // give an expected score by assuming that the given ratings are Elo ratings.
+  static float eloScore(float blackRating, float whiteRating);
+
+};
+
+class StochasticPredictor : public Predictor {
+
+public:
+
+  Dataset::Prediction predict(const MoveFeatures* blackFeatures, size_t blackCount, const MoveFeatures* whiteFeatures, size_t whiteCount) override;
+
+};
+
+class SmallPredictor : public Predictor {
+
+public:
+
+  explicit SmallPredictor(StrengthNet& strengthNet) noexcept; // ownership of the net remains with the caller
+  Dataset::Prediction predict(const MoveFeatures* blackFeatures, size_t blackCount, const MoveFeatures* whiteFeatures, size_t whiteCount) override;
+
+private:
+
+  StrengthNet* net;
+
+};
+
 using FeaturesAndTargets = std::vector<std::pair<StrengthNet::Input, StrengthNet::Output> >;
 
 // The strength model uses an additional trained neural network to derive rating from
@@ -67,8 +112,7 @@ class StrengthModel
 public:
 
   // cache calculated move features for every sgfPath under featureDir
-  explicit StrengthModel(const std::string& strengthModelFile_, Search* search_, const std::string& featureDir_) noexcept;
-  explicit StrengthModel(const std::string& strengthModelFile_, Search& search_, const std::string& featureDir_) noexcept;
+  explicit StrengthModel(const std::string& strengthModelFile_, const std::string& featureDir_) noexcept;
 
   FeaturesAndTargets getFeaturesAndTargets(const Dataset& dataset) const;
   // Analyze SGF with KataGo network and search to determine the embedded features of every move
@@ -77,19 +121,12 @@ public:
   // training loop, save result to file
   void train(FeaturesAndTargets& xy, size_t split, int epochs, size_t batchSize, float weightPenalty, float learnrate);
 
-  // Predict rating of player given the moves from their games
-  float rating(const std::vector<MoveFeatures>& history) const;
-
-  // Predict winning chances given the moves from their games
-  float whiteWinrate(const std::vector<MoveFeatures>& whiteHistory, const std::vector<MoveFeatures>& blackHistory) const;
-
   std::string featureDir;
+  StrengthNet net;
 
 private:
 
   std::string strengthModelFile;
-  StrengthNet net;
-  Search* search;
 
   bool maybeWriteMoveFeaturesCached(const std::string& cachePath, const std::vector<MoveFeatures>& features) const;
 

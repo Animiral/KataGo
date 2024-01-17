@@ -124,7 +124,7 @@ void Dataset::store(const string& path) const {
     int printed = std::snprintf(buffer.get(), bufsize, "%s,%s,%s,%.2f,%.2f,%.2f,%f,%f,%f\n",
       game.sgfPath.c_str(), whiteName.c_str(), blackName.c_str(),
       game.score, game.blackRating, game.whiteRating,
-      game.predictedScore, game.predictedBlackRating, game.predictedWhiteRating);
+      game.prediction.score, game.prediction.blackRating, game.prediction.whiteRating);
     if(printed <= 0)
       throw IOError("Error during formatting.");
     ostrm << buffer.get();
@@ -205,8 +205,74 @@ vector<MoveFeatures> Dataset::readFeaturesFromFile(const string& featurePath) {
   return features;
 }
 
-StrengthModel::StrengthModel(const string& strengthModelFile_, Search* search_, const string& featureDir_) noexcept
-  : featureDir(featureDir_), strengthModelFile(strengthModelFile_), net(), search(search_)
+
+float Predictor::eloScore(float blackRating, float whiteRating) {
+  float Qblack = static_cast<float>(std::pow(10, blackRating / 400));
+  float Qwhite = static_cast<float>(std::pow(10, whiteRating / 400));
+  return Qblack / (Qblack + Qwhite);
+}
+
+namespace {
+
+float fSum(float a[], size_t N) noexcept {  // sum with slightly better numerical stability
+  if(N <= 0)
+    return 0;
+  for(size_t step = 1; step < N; step *= 2) {
+    for(size_t i = 0; i+step < N; i += 2*step)
+      a[i] += a[i+step];
+  }
+  return a[0];
+}
+
+float fAvg(float a[], size_t N) noexcept {
+  return fSum(a, N) / N;
+}
+
+float fVar(float a[], size_t N, float avg) noexcept { // corrected variance
+  for(size_t i = 0; i < N; i++)
+    a[i] = (a[i]-avg)*(a[i]-avg);
+  return fSum(a, N) / (N-1);
+}
+
+float normcdf(float x) noexcept {
+  return .5f * (1.f + std::erf(x / std::sqrt(2.f)));
+}
+
+}
+
+Dataset::Prediction StochasticPredictor::predict(const MoveFeatures* blackFeatures, size_t blackCount, const MoveFeatures* whiteFeatures, size_t whiteCount) {
+  constexpr float gamelength = 100; // assume 100 moves per player for an average game
+  vector<float> buffer(std::max(blackCount, whiteCount));
+  for(size_t i = 0; i < whiteCount; i++)
+    buffer[i] = whiteFeatures[i].pointsLoss;
+  float wplavg = fAvg(vector<float>(buffer).data(), whiteCount) * gamelength;  // average white points loss
+  float wplvar = fVar(buffer.data(), whiteCount, wplavg) * gamelength;  // variance of white points loss
+  for(size_t i = 0; i < blackCount; i++)
+    buffer[i] = blackFeatures[i].pointsLoss;
+  float bplavg = fAvg(vector<float>(buffer).data(), blackCount) * gamelength;  // average black points loss
+  float bplvar = fVar(buffer.data(), blackCount, bplavg) * gamelength;  // variance of black points loss
+  float z = (wplavg - bplavg) / std::sqrt(bplvar + wplvar); // white pt advantage in standard normal distribution at move# [2*gamelength]
+  return {0, 0, normcdf(z)};
+}
+
+SmallPredictor::SmallPredictor(StrengthNet& strengthNet) noexcept : net(&strengthNet)
+{}
+
+Dataset::Prediction SmallPredictor::predict(const MoveFeatures* blackFeatures, size_t blackCount, const MoveFeatures* whiteFeatures, size_t whiteCount) {
+  Dataset::Prediction prediction;
+  net->setInput(vector<MoveFeatures>(blackFeatures, blackFeatures + blackCount));
+  net->forward();
+  prediction.blackRating = net->getOutput();
+  net->setInput(vector<MoveFeatures>(whiteFeatures, whiteFeatures + whiteCount));
+  net->forward();
+  prediction.whiteRating = net->getOutput();
+  prediction.score = eloScore(prediction.blackRating, prediction.whiteRating);
+  return prediction;
+}
+
+
+StrengthModel::StrengthModel(const string& strengthModelFile_, const string& featureDir_) noexcept
+  : featureDir(featureDir_), net(), strengthModelFile(strengthModelFile_)
 {
   if(!net.loadModelFile(strengthModelFile)) {
     cerr << "Could not load existing strength model from " << strengthModelFile << ". Random-initializing new strength model.\n";
@@ -214,10 +280,6 @@ StrengthModel::StrengthModel(const string& strengthModelFile_, Search* search_, 
     net.randomInit(rand);
   }
 }
-
-StrengthModel::StrengthModel(const string& strengthModelFile_, Search& search_, const string& featureDir_) noexcept
-  : StrengthModel(strengthModelFile_, &search_, featureDir_)
-{}
 
 FeaturesAndTargets StrengthModel::getFeaturesAndTargets(const Dataset& dataset) const {
   FeaturesAndTargets featuresTargets;
@@ -408,61 +470,6 @@ bool StrengthModel::maybeWriteMoveFeaturesCached(const string& cachePath, const 
   return true;
 }
 
-namespace {
-
-float fSum(float a[], size_t N) noexcept {  // sum with slightly better numerical stability
-  if(N <= 0)
-    return 0;
-  for(size_t step = 1; step < N; step *= 2) {
-    for(size_t i = 0; i+step < N; i += 2*step)
-      a[i] += a[i+step];
-  }
-  return a[0];
-}
-
-float fAvg(float a[], size_t N) noexcept {
-  return fSum(a, N) / N;
-}
-
-float fVar(float a[], size_t N, float avg) noexcept { // corrected variance
-  for(size_t i = 0; i < N; i++)
-    a[i] = (a[i]-avg)*(a[i]-avg);
-  return fSum(a, N) / (N-1);
-}
-
-float normcdf(float x) noexcept {
-  return .5f * (1.f + std::erf(x / std::sqrt(2.f)));
-}
-
-void copyPloss(float a[], const vector<MoveFeatures>& m, size_t N) noexcept {
-  for(size_t i = 0; i < N; i++)
-    a[i] = m[i + m.size() - N].pointsLoss;
-}
-
-}
-
-float StrengthModel::rating(const vector<MoveFeatures>& history) const {
-  vector<float> ploss(history.size());
-  for(size_t i = 0; i < history.size(); i++)
-    ploss[i] = history[i].pointsLoss;
-  return 20.f - fAvg(ploss.data(), ploss.size());
-}
-
-float StrengthModel::whiteWinrate(const vector<MoveFeatures>& whiteHistory, const vector<MoveFeatures>& blackHistory) const {
-  constexpr float gamelength = 100; // assume 100 moves per player for an average game
-  constexpr size_t window = 1000; // only sample the most recent moves
-  const size_t wN = std::min(whiteHistory.size(), window);
-  const size_t bN = std::min(blackHistory.size(), window);
-  vector<float> buffer(window);
-  copyPloss(buffer.data(), whiteHistory, wN);
-  float wplavg = fAvg(vector<float>(buffer).data(), wN) * gamelength;  // average white points loss
-  float wplvar = fVar(buffer.data(), wN, wplavg) * gamelength;  // variance of white points loss
-  copyPloss(buffer.data(), blackHistory, bN);
-  float bplavg = fAvg(vector<float>(buffer).data(), bN) * gamelength;  // average black points loss
-  float bplvar = fVar(buffer.data(), bN, bplavg) * gamelength;  // variance of black points loss
-  float wstdadv = (bplavg - wplavg) / std::sqrt(bplvar + wplvar); // white pt advantage in standard normal distribution at move# [2*gamelength]
-  return normcdf(wstdadv);
-}
 
 RatingSystem::RatingSystem(StrengthModel& model) noexcept
 : strengthModel(&model) {
@@ -471,31 +478,30 @@ RatingSystem::RatingSystem(StrengthModel& model) noexcept
 void RatingSystem::calculate(const string& sgfList, const string& outFile) {
   Dataset dataset;
   dataset.load(sgfList, strengthModel->featureDir);
-  map< size_t, vector<MoveFeatures> > playerHistory;
+  const size_t windowSize = 1000; // number of most recent moves to take into consideration
+  vector<MoveFeatures> blackFeatures(windowSize);
+  vector<MoveFeatures> whiteFeatures(windowSize);
   int successCount = 0;
   int sgfCount = 0;
   float logp = 0;
+  auto predictor = std::make_unique<StochasticPredictor>();
 
-  for(Dataset::Game& gm : dataset.games) {
+  for(size_t i = 0; i < dataset.games.size(); i++) {
+    Dataset::Game& gm = dataset.games[i];
     string blackName = dataset.players[gm.blackPlayer].name;
     string whiteName = dataset.players[gm.whitePlayer].name;
     string winner = gm.score > .5 ? "B+":"W+";
     std::cout << blackName << " vs " << whiteName << ": " << winner << "\n";
 
     // determine winner and count
-    gm.predictedBlackRating = playerRating[gm.blackPlayer] = strengthModel->rating(playerHistory[gm.blackPlayer]);
-    gm.predictedWhiteRating = playerRating[gm.whitePlayer] = strengthModel->rating(playerHistory[gm.whitePlayer]);
-    float whiteWinrate = strengthModel->whiteWinrate(playerHistory[gm.whitePlayer], playerHistory[gm.blackPlayer]);
-    gm.predictedScore = 1 - whiteWinrate;
-    float winnerPred = std::abs(gm.score - whiteWinrate);
+    size_t blackCount = dataset.getRecentMoves(gm.blackPlayer, i, blackFeatures.data(), windowSize);
+    size_t whiteCount = dataset.getRecentMoves(gm.whitePlayer, i, whiteFeatures.data(), windowSize);
+    gm.prediction = predictor->predict(blackFeatures.data(), blackCount, whiteFeatures.data(), whiteCount);
+    float winnerPred = 1 - std::abs(gm.score - gm.prediction.score);
     if(winnerPred > .5f)
       successCount++;
     logp += std::log(winnerPred);
     sgfCount++;
-
-    // expand player histories with new move features
-    playerHistory[gm.blackPlayer].insert(playerHistory[gm.blackPlayer].end(), gm.blackFeatures.begin(), gm.blackFeatures.end());
-    playerHistory[gm.whitePlayer].insert(playerHistory[gm.whitePlayer].end(), gm.whiteFeatures.begin(), gm.whiteFeatures.end());
   }
 
   dataset.store(outFile);

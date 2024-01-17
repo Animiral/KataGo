@@ -24,7 +24,7 @@ void runStrengthModelTests(const string& modelFile, const string& listFile, cons
   Dataset dataset;
   FeaturesAndTargets featuresTargets;
 
-  StrengthModel StrengthModel(modelFile, nullptr, featureDir);
+  StrengthModel StrengthModel(modelFile, featureDir);
 
   try {
     createFeatureCache(listFile, featureDir);
