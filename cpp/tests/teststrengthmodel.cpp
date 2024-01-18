@@ -87,6 +87,25 @@ void runStrengthModelTests(const string& modelFile, const string& listFile, cons
     cout << (pass ? "pass" : "fail") << "\n";
   }
 
+  {
+    cout << "- StochasticPredictor.predict(): ";
+
+    MoveFeatures blackFeatures[] = {{0, 0, 0, 0, 0, 2.f}, {0, 0, 0, 0, 0, 2.2f}, {0, 0, 0, 0, 0, 2.4f}};
+    MoveFeatures whiteFeatures[] = {{0, 0, 0, 0, 0, 1.9f}, {0, 0, 0, 0, 0, 2.3f}, {0, 0, 0, 0, 0, 2.3f}};
+    StochasticPredictor predictor;
+    Dataset::Prediction prediction = predictor.predict(blackFeatures, 3, whiteFeatures, 3);
+    // black mean = 2.2; white mean = 2.16666
+    // black var = 0.04; white var = 0.053333
+    // with 100 moves both, total black ploss mean = 3.3333; total black ploss stdev = sqrt(9.3333)
+    float expectedScore = 0.137617f;
+    bool pass = std::abs(prediction.score - expectedScore) < 0.0001;
+
+    if(!pass)
+      cout << "expected p=" << expectedScore << ", got " << prediction.score << "; ";
+
+    cout << (pass ? "pass" : "fail") << "\n";
+  }
+
   if(0) // disabled for calculation time
   {
     size_t sample = 0;
@@ -159,7 +178,7 @@ void runStrengthModelTests(const string& modelFile, const string& listFile, cons
       auto& game = dataset.games[i];
       if(!fitsOneSample(game.blackFeatures, game.blackRating, 1000, 0, 0.01f, estimate)) {
         pass = false;
-        cerr << "Failed to fit sample " << i << " (" << game.blackFeatures.size() << " moves, target=" << game.blackRating << ", estimate=" << estimate << ")\n";
+        cout << "Failed to fit sample " << i << " (" << game.blackFeatures.size() << " moves, target=" << game.blackRating << ", estimate=" << estimate << ")\n";
       }
     }
 

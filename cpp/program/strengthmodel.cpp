@@ -245,13 +245,13 @@ Dataset::Prediction StochasticPredictor::predict(const MoveFeatures* blackFeatur
   vector<float> buffer(std::max(blackCount, whiteCount));
   for(size_t i = 0; i < whiteCount; i++)
     buffer[i] = whiteFeatures[i].pointsLoss;
-  float wplavg = fAvg(vector<float>(buffer).data(), whiteCount) * gamelength;  // average white points loss
-  float wplvar = fVar(buffer.data(), whiteCount, wplavg) * gamelength;  // variance of white points loss
+  float wplavg = fAvg(vector<float>(buffer).data(), whiteCount);  // average white points loss
+  float wplvar = fVar(buffer.data(), whiteCount, wplavg);  // variance of white points loss
   for(size_t i = 0; i < blackCount; i++)
     buffer[i] = blackFeatures[i].pointsLoss;
-  float bplavg = fAvg(vector<float>(buffer).data(), blackCount) * gamelength;  // average black points loss
-  float bplvar = fVar(buffer.data(), blackCount, bplavg) * gamelength;  // variance of black points loss
-  float z = (wplavg - bplavg) / std::sqrt(bplvar + wplvar); // white pt advantage in standard normal distribution at move# [2*gamelength]
+  float bplavg = fAvg(vector<float>(buffer).data(), blackCount);  // average black points loss
+  float bplvar = fVar(buffer.data(), blackCount, bplavg);  // variance of black points loss
+  float z = std::sqrt(gamelength) * (wplavg - bplavg) / std::sqrt(bplvar + wplvar); // white pt advantage in standard normal distribution at move# [2*gamelength]
   return {0, 0, normcdf(z)};
 }
 
@@ -484,7 +484,7 @@ void RatingSystem::calculate(const string& sgfList, const string& outFile) {
   int successCount = 0;
   int sgfCount = 0;
   float logp = 0;
-  auto predictor = std::make_unique<StochasticPredictor>();
+  StochasticPredictor predictor;
 
   for(size_t i = 0; i < dataset.games.size(); i++) {
     Dataset::Game& gm = dataset.games[i];
@@ -496,7 +496,7 @@ void RatingSystem::calculate(const string& sgfList, const string& outFile) {
     // determine winner and count
     size_t blackCount = dataset.getRecentMoves(gm.blackPlayer, i, blackFeatures.data(), windowSize);
     size_t whiteCount = dataset.getRecentMoves(gm.whitePlayer, i, whiteFeatures.data(), windowSize);
-    gm.prediction = predictor->predict(blackFeatures.data(), blackCount, whiteFeatures.data(), whiteCount);
+    gm.prediction = predictor.predict(blackFeatures.data(), blackCount, whiteFeatures.data(), whiteCount);
     float winnerPred = 1 - std::abs(gm.score - gm.prediction.score);
     if(winnerPred > .5f)
       successCount++;
