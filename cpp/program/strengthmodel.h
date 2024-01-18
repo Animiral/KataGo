@@ -4,8 +4,8 @@
 #include <string>
 #include <vector>
 #include <map>
-#include <filesystem>
 #include "neuralnet/strengthnet.h"
+#include "core/rand.h"
 #include "search/search.h"
 #include "dataio/sgf.h"
 
@@ -25,16 +25,21 @@ public:
   // data on one game from the dataset list file
   struct Game {
     std::string sgfPath;
-    std::size_t whitePlayer; // index of white player (given as name string in list file)
-    std::size_t blackPlayer; // index of black player (given as name string in list file)
-    float whiteRating;       // rating number target
-    float blackRating;       // rating number target
+    struct {
+      std::size_t player; // index of player (given as name string in CSV file)
+      float rating;       // target provided in input file
+      int prevGame;       // index of most recent game with this player before this or -1
+      std::vector<MoveFeatures> features; // precomputed from the moves of this player in this game
+    } white, black;
     float score;             // game outcome for black: 0 for loss, 1 for win
     Prediction prediction;
-    int prevWhiteGame;       // index of most recent game with white player before this or -1
-    int prevBlackGame;       // index of most recent game with black player before this or -1
-    std::vector<MoveFeatures> blackFeatures;
-    std::vector<MoveFeatures> whiteFeatures;
+    
+    enum {
+      training = 0,   // is in the training set if ~game.set & 1 is true
+      validation = 1, // is in validation set
+      batch = 2,      // is in active minibatch
+      test = 3        // is in test set
+    } set;
   };
 
   // data on one player
@@ -47,6 +52,10 @@ public:
   void store(const std::string& path) const;
   // retrieve up to bufsize moves played by the player in games before the game index, return # retrieved
   size_t getRecentMoves(size_t player, size_t game, MoveFeatures* buffer, size_t bufsize);
+  // randomly assign the `set` member of every game; *Part in [0.0, 1.0], testPart = 1-trainingPart-validationPart
+  void randomSplit(Rand& rand, float trainingPart, float validationPart);
+  // randomly assign set=batch to the given nr of training games (and reset previous batch to set=training)
+  void randomBatch(Rand& rand, size_t batchSize);
 
   std::vector<Game> games;
   std::vector<Player> players;

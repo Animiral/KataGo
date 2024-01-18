@@ -38,7 +38,7 @@ void runStrengthModelTests(const string& modelFile, const string& listFile, cons
   {
     cout << "- UT dataset contains " << dataset.games.size() << " games and " << dataset.players.size() << " players:\n";
     for(const Dataset::Game& game : dataset.games)
-      cout << "\tGame " << game.sgfPath << " - " << game.blackFeatures.size() << " black features, " << game.whiteFeatures.size() << " white features\n";
+      cout << "\tGame " << game.sgfPath << " - " << game.black.features.size() << " black features, " << game.white.features.size() << " white features\n";
     for(const Dataset::Player& player : dataset.players)
       cout << "\tPlayer " << player.name << ", last occurred in game [" << player.lastOccurrence << "]\n";
   }
@@ -61,9 +61,9 @@ void runStrengthModelTests(const string& modelFile, const string& listFile, cons
 
     // expect features in a sequence ordered from old to new
     count = dataset.getRecentMoves(0, 2, buffer.data(), 10);
-    expected[0] = dataset.games[0].whiteFeatures[0]; // this makes assumptions about the UT dataset
-    expected[1] = dataset.games[1].whiteFeatures[0];
-    expected[2] = dataset.games[1].whiteFeatures[1];
+    expected[0] = dataset.games[0].white.features[0]; // this makes assumptions about the UT dataset
+    expected[1] = dataset.games[1].white.features[0];
+    expected[2] = dataset.games[1].white.features[1];
     if(3 != count || !featuresEqual(buffer.data(), expected.data(), count)) {
       cout << "expected 3 features: ";
       printFeatures(expected.data(), 3);
@@ -74,8 +74,8 @@ void runStrengthModelTests(const string& modelFile, const string& listFile, cons
 
     // expect features cut off at the specified count, expect game index working 1 past end
     count = dataset.getRecentMoves(2, 3, buffer.data(), 2);
-    expected[0] = dataset.games[2].blackFeatures[1];
-    expected[1] = dataset.games[2].blackFeatures[2];
+    expected[0] = dataset.games[2].black.features[1];
+    expected[1] = dataset.games[2].black.features[2];
     if(2 != count || !featuresEqual(buffer.data(), expected.data(), count)) {
       cout << "expected 2 features: ";
       printFeatures(expected.data(), 2);
@@ -106,6 +106,43 @@ void runStrengthModelTests(const string& modelFile, const string& listFile, cons
     cout << (pass ? "pass" : "fail") << "\n";
   }
 
+  {
+    cout << "- Dataset::randomSplit():\n";
+
+    Rand rand(123ull); // reproducible seed
+    Dataset dataset2 = dataset; // 3 games
+    dataset2.games.insert(dataset2.games.end(), dataset.games.begin(), dataset.games.end()); // 3 more games
+    dataset2.games.insert(dataset2.games.end(), dataset.games.begin(), dataset.games.end()); // 3 more games
+    char setmarker[9];
+    cout << "    " << dataset2.games.size() << " games split 6/2/1: ";
+    dataset2.randomSplit(rand, 0.66f, 0.22f);
+    std::transform(dataset2.games.begin(), dataset2.games.end(), setmarker, [](auto& game) { return "TVBE"[game.set]; });
+    for(size_t i = 0; i < 9; i++)
+      cout << (i > 0 ? ", " : "") << setmarker[i];
+    cout << "\n";
+
+    cout << "    random 3-batch: ";
+    dataset2.randomBatch(rand, 3);
+    std::transform(dataset2.games.begin(), dataset2.games.end(), setmarker, [](auto& game) { return "TVBE"[game.set]; });
+    for(size_t i = 0; i < 9; i++)
+      cout << (i > 0 ? ", " : "") << setmarker[i];
+    cout << "\n";
+
+    cout << "    random 2-batch: ";
+    dataset2.randomBatch(rand, 2);
+    std::transform(dataset2.games.begin(), dataset2.games.end(), setmarker, [](auto& game) { return "TVBE"[game.set]; });
+    for(size_t i = 0; i < 9; i++)
+      cout << (i > 0 ? ", " : "") << setmarker[i];
+    cout << "\n";
+
+    cout << "    random 10-batch: ";
+    dataset2.randomBatch(rand, 10);
+    std::transform(dataset2.games.begin(), dataset2.games.end(), setmarker, [](auto& game) { return "TVBE"[game.set]; });
+    for(size_t i = 0; i < 9; i++)
+      cout << (i > 0 ? ", " : "") << setmarker[i];
+    cout << "\n";
+  }
+
   if(0) // disabled for calculation time
   {
     size_t sample = 0;
@@ -120,9 +157,9 @@ void runStrengthModelTests(const string& modelFile, const string& listFile, cons
     StrengthNet net;
     Rand rand(123ull); // reproducible seed
     net.randomInit(rand);
-    net.setInput(game.blackFeatures);
+    net.setInput(game.black.features);
     net.setBatchSize(1);
-    cout << game.blackFeatures.size() << " input features\n";
+    cout << game.black.features.size() << " input features\n";
     // net.printWeights(cout, "initial values");
     // std::ofstream hfile("h_values.csv"); // debug csv
 
@@ -130,7 +167,7 @@ void runStrengthModelTests(const string& modelFile, const string& listFile, cons
     for(i = 0; i < 100; i++) {
       net.forward();
       // net.h.print(hfile, "h", false);
-      net.backward(game.blackRating); //, 0);
+      net.backward(game.black.rating); //, 0);
       net.update(weightPenalty, learnrate);
       cout << "epoch " << i << ": thetavar=" << net.thetaVar() << "\n";
     }
@@ -159,9 +196,9 @@ void runStrengthModelTests(const string& modelFile, const string& listFile, cons
 
     net.forward();
     estimate = net.getOutput();
-    pass = fabs(net.getOutput() - game.blackRating) <= 0.1f;
+    pass = fabs(net.getOutput() - game.black.rating) <= 0.1f;
 
-    cout << "Estimate: " << estimate << ", target: " << game.blackRating << "\n";
+    cout << "Estimate: " << estimate << ", target: " << game.black.rating << "\n";
     cout << (pass ? "pass" : "fail") << "\n";
   }
 
@@ -176,9 +213,9 @@ void runStrengthModelTests(const string& modelFile, const string& listFile, cons
     pass = true;
     for(int i = 0; i < upTo; i++) {
       auto& game = dataset.games[i];
-      if(!fitsOneSample(game.blackFeatures, game.blackRating, 1000, 0, 0.01f, estimate)) {
+      if(!fitsOneSample(game.black.features, game.black.rating, 1000, 0, 0.01f, estimate)) {
         pass = false;
-        cout << "Failed to fit sample " << i << " (" << game.blackFeatures.size() << " moves, target=" << game.blackRating << ", estimate=" << estimate << ")\n";
+        cout << "Failed to fit sample " << i << " (" << game.black.features.size() << " moves, target=" << game.black.rating << ", estimate=" << estimate << ")\n";
       }
     }
 

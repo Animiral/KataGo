@@ -12,21 +12,6 @@
 
 using std::map;
 
-namespace {
-
-// poor man's pre-C++20 format, https://stackoverflow.com/questions/2342162/stdstring-formatting-like-sprintf
-template<typename ... Args>
-std::string custom_format( const std::string& format, Args ... args ) {
-  int size_s = std::snprintf( nullptr, 0, format.c_str(), args ... ) + 1; // Extra space for '\0'
-  if( size_s <= 0 ){ throw std::runtime_error( "Error during formatting." ); }
-  auto size = static_cast<size_t>( size_s );
-  std::unique_ptr<char[]> buf( new char[ size ] );
-  std::snprintf( buf.get(), size, format.c_str(), args ... );
-  return std::string( buf.get(), buf.get() + size - 1 ); // We don't want the '\0' inside
-}
-
-}
-
 void Dataset::load(const string& path, const std::string& featureDir) {
   std::ifstream istrm(path);
   if (!istrm.is_open())
@@ -67,16 +52,16 @@ void Dataset::load(const string& path, const std::string& featureDir) {
         game.sgfPath = field;
         break;
       case F::whiteName:
-        game.whitePlayer = getOrInsertNameIndex(field);
+        game.white.player = getOrInsertNameIndex(field);
         break;
       case F::blackName:
-        game.blackPlayer = getOrInsertNameIndex(field);
+        game.black.player = getOrInsertNameIndex(field);
         break;
       case F::whiteLabel:
-        game.whiteRating = Global::stringToFloat(field);
+        game.white.rating = Global::stringToFloat(field);
         break;
       case F::blackLabel:
-        game.blackRating = Global::stringToFloat(field);
+        game.black.rating = Global::stringToFloat(field);
         break;
       case F::winner:
         if('b' == field[0] || 'B' == field[0])
@@ -91,17 +76,17 @@ void Dataset::load(const string& path, const std::string& featureDir) {
     }
     if(!istrm)
       throw IOError("Error while reading from " + path);
-    game.prevWhiteGame = players[game.whitePlayer].lastOccurrence;
-    game.prevBlackGame = players[game.blackPlayer].lastOccurrence;
+    game.white.prevGame = players[game.white.player].lastOccurrence;
+    game.black.prevGame = players[game.black.player].lastOccurrence;
 
     string sgfPathWithoutExt = Global::chopSuffix(game.sgfPath, ".sgf");
     string blackFeaturesPath = Global::strprintf("%s/%s_BlackFeatures.bin", featureDir.c_str(), sgfPathWithoutExt.c_str());
     string whiteFeaturesPath = Global::strprintf("%s/%s_WhiteFeatures.bin", featureDir.c_str(), sgfPathWithoutExt.c_str());
-    game.blackFeatures = readFeaturesFromFile(blackFeaturesPath);
-    game.whiteFeatures = readFeaturesFromFile(whiteFeaturesPath);
+    game.black.features = readFeaturesFromFile(blackFeaturesPath);
+    game.white.features = readFeaturesFromFile(whiteFeaturesPath);
 
-    players[game.whitePlayer].lastOccurrence = gameIndex;
-    players[game.blackPlayer].lastOccurrence = gameIndex;
+    players[game.white.player].lastOccurrence = gameIndex;
+    players[game.black.player].lastOccurrence = gameIndex;
   }
 
   istrm.close();
@@ -115,15 +100,15 @@ void Dataset::store(const string& path) const {
   ostrm << "File,Player White,Player Black,Score,BlackRating,WhiteRating,PredictedScore,PredictedBlackRating,PredictedWhiteRating\n"; // header
 
   for(const Game& game : games) {
-    string blackName = players[game.blackPlayer].name;
-    string whiteName = players[game.whitePlayer].name;
+    string blackName = players[game.black.player].name;
+    string whiteName = players[game.white.player].name;
 
     // file output
     size_t bufsize = game.sgfPath.size() + whiteName.size() + blackName.size() + 100;
     std::unique_ptr<char[]> buffer( new char[ bufsize ] );
     int printed = std::snprintf(buffer.get(), bufsize, "%s,%s,%s,%.2f,%.2f,%.2f,%f,%f,%f\n",
       game.sgfPath.c_str(), whiteName.c_str(), blackName.c_str(),
-      game.score, game.blackRating, game.whiteRating,
+      game.score, game.black.rating, game.white.rating,
       game.prediction.score, game.prediction.blackRating, game.prediction.whiteRating);
     if(printed <= 0)
       throw IOError("Error during formatting.");
@@ -144,10 +129,10 @@ size_t Dataset::getRecentMoves(size_t player, size_t game, MoveFeatures* buffer,
   }
   else {
     Game* gm = &games[game];
-    if(player == gm->blackPlayer)
-      gameIndex = gm->prevBlackGame;
-    else if(player == gm->whitePlayer)
-      gameIndex = gm->prevWhiteGame;
+    if(player == gm->black.player)
+      gameIndex = gm->black.prevGame;
+    else if(player == gm->white.player)
+      gameIndex = gm->white.prevGame;
     else
       gameIndex = static_cast<int>(game) - 1;
   }
@@ -155,16 +140,16 @@ size_t Dataset::getRecentMoves(size_t player, size_t game, MoveFeatures* buffer,
   // go backwards in player's history and fill the buffer in backwards order
   MoveFeatures* outptr = buffer + bufsize;
   while(gameIndex >= 0 && outptr > buffer) {
-    while(gameIndex >= 0 && player != games[gameIndex].blackPlayer && player != games[gameIndex].whitePlayer)
+    while(gameIndex >= 0 && player != games[gameIndex].black.player && player != games[gameIndex].white.player)
       gameIndex--; // this is just defense to ensure that we find a game which the player occurs in
     if(gameIndex < 0)
       break;
     Game* gm = &games[gameIndex];
-    bool isBlack = player == gm->blackPlayer;
-    const auto& features = isBlack ? gm->blackFeatures : gm->whiteFeatures;
+    bool isBlack = player == gm->black.player;
+    const auto& features = isBlack ? gm->black.features : gm->white.features;
     for(int i = features.size(); i > 0 && outptr > buffer;)
       *--outptr = features[--i];
-    gameIndex = isBlack ? gm->prevBlackGame : gm->prevWhiteGame;
+    gameIndex = isBlack ? gm->black.prevGame : gm->white.prevGame;
   }
 
   // if there are not enough features in history to fill the buffer, adjust
@@ -172,6 +157,37 @@ size_t Dataset::getRecentMoves(size_t player, size_t game, MoveFeatures* buffer,
   if(outptr > buffer)
     std::memmove(buffer, outptr, count * sizeof(MoveFeatures));
   return count;
+}
+
+void Dataset::randomSplit(Rand& rand, float trainingPart, float validationPart) {
+  assert(trainingPart >= 0);
+  assert(validationPart >= 0);
+  assert(trainingPart + validationPart <= 1);
+  size_t N = games.size();
+  vector<uint32_t> gameIdxs(N);
+  rand.fillShuffledUIntRange(N, gameIdxs.data());
+  size_t trainingCount = std::llround(trainingPart * N);
+  size_t validationCount = std::llround(validationPart * N);
+  for(size_t i = 0; i < trainingCount; i++)
+    games[gameIdxs[i]].set = Game::training;
+  for(size_t i = trainingCount; i < trainingCount + validationCount && i < N; i++)
+    games[gameIdxs[i]].set = Game::validation;
+  for(size_t i = trainingCount + validationCount; i < N; i++)
+    games[gameIdxs[i]].set = Game::test;
+}
+
+void Dataset::randomBatch(Rand& rand, size_t batchSize) {
+  vector<size_t> trainingIdxs;
+  for(size_t i = 0; i < games.size(); i++)
+    if(~games[i].set & 1)
+      trainingIdxs.push_back(i);
+  batchSize = std::min(batchSize, trainingIdxs.size());
+  vector<uint32_t> batchIdxs(trainingIdxs.size());
+  rand.fillShuffledUIntRange(trainingIdxs.size(), batchIdxs.data());
+  for(size_t i = 0; i < batchSize; i++)
+    games[trainingIdxs[batchIdxs[i]]].set = Game::batch;
+  for(size_t i = batchSize; i < batchIdxs.size(); i++)
+    games[trainingIdxs[batchIdxs[i]]].set = Game::training;
 }
 
 const uint32_t Dataset::FEATURE_HEADER = 0xfea70235;
@@ -284,8 +300,8 @@ StrengthModel::StrengthModel(const string& strengthModelFile_, const string& fea
 FeaturesAndTargets StrengthModel::getFeaturesAndTargets(const Dataset& dataset) const {
   FeaturesAndTargets featuresTargets;
   for(const Dataset::Game& gm : dataset.games) {
-    featuresTargets.emplace_back(gm.blackFeatures, gm.blackRating);
-    featuresTargets.emplace_back(gm.whiteFeatures, gm.whiteRating);
+    featuresTargets.emplace_back(gm.black.features, gm.black.rating);
+    featuresTargets.emplace_back(gm.white.features, gm.white.rating);
   }
   return featuresTargets;
 }
@@ -445,7 +461,7 @@ void StrengthModel::train(FeaturesAndTargets& xy, size_t split, int epochs, size
     mse /= xy.size() - split;
     float theta_var = net.thetaVar();
     // cout << "Epoch " << e << ": mse=" << std::fixed << std::setprecision(3) << mse << "\n";
-    cout << custom_format("Epoch %d: mse_training=%.2f, mse=%.2f, theta^2=%.4f, grad^2=%.4f\n", e, mse_training, mse, theta_var, grads_var);
+    cout << Global::strprintf("Epoch %d: mse_training=%.2f, mse=%.2f, theta^2=%.4f, grad^2=%.4f\n", e, mse_training, mse, theta_var, grads_var);
   }
   net.saveModelFile(strengthModelFile);
 }
@@ -488,14 +504,14 @@ void RatingSystem::calculate(const string& sgfList, const string& outFile) {
 
   for(size_t i = 0; i < dataset.games.size(); i++) {
     Dataset::Game& gm = dataset.games[i];
-    string blackName = dataset.players[gm.blackPlayer].name;
-    string whiteName = dataset.players[gm.whitePlayer].name;
+    string blackName = dataset.players[gm.black.player].name;
+    string whiteName = dataset.players[gm.white.player].name;
     string winner = gm.score > .5 ? "B+":"W+";
     std::cout << blackName << " vs " << whiteName << ": " << winner << "\n";
 
     // determine winner and count
-    size_t blackCount = dataset.getRecentMoves(gm.blackPlayer, i, blackFeatures.data(), windowSize);
-    size_t whiteCount = dataset.getRecentMoves(gm.whitePlayer, i, whiteFeatures.data(), windowSize);
+    size_t blackCount = dataset.getRecentMoves(gm.black.player, i, blackFeatures.data(), windowSize);
+    size_t whiteCount = dataset.getRecentMoves(gm.white.player, i, whiteFeatures.data(), windowSize);
     gm.prediction = predictor.predict(blackFeatures.data(), blackCount, whiteFeatures.data(), whiteCount);
     float winnerPred = 1 - std::abs(gm.score - gm.prediction.score);
     if(winnerPred > .5f)
