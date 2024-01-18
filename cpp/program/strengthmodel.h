@@ -113,8 +113,8 @@ private:
 
 using FeaturesAndTargets = std::vector<std::pair<StrengthNet::Input, StrengthNet::Output> >;
 
-// The strength model uses an additional trained neural network to derive rating from
-// given player history.
+// This class encapsulates the main strength model functions on a dataset.
+// It can extract features (=one-time preprocessing with Kata net), train our model, and evaluate it.
 class StrengthModel
 {
 
@@ -130,38 +130,22 @@ public:
   // training loop, save result to file
   void train(FeaturesAndTargets& xy, size_t split, int epochs, size_t batchSize, float weightPenalty, float learnrate);
 
+  // run predictions using windowSize moves and determine rate/error over the games matching the given set (set=batch games also match set=training)
+  struct Evaluation {
+    float rate;
+    float logp;
+  };
+  Evaluation evaluate(Dataset& dataset, Predictor& predictor, int set, size_t windowSize = 1000);
+
   std::string featureDir;
   StrengthNet net;
 
 private:
 
   std::string strengthModelFile;
+  // Dataset dataset; // TODO: refactor to have the same dataset for feature extraction, training and evaluation
 
   bool maybeWriteMoveFeaturesCached(const std::string& cachePath, const std::vector<MoveFeatures>& features) const;
-
-};
-
-// The RatingSystem can process a set of game records from a common rating pool.
-// For each game, we predicts the likely winner using the StrengthModel on the
-// recent prior game history of both players.
-// We write all predictions to an output file and tally up two quality measurements:
-// the rate of accurate predictions and the accumulated log-likelihood of accurate predictions.
-class RatingSystem
-{
-
-public:
-
-  explicit RatingSystem(StrengthModel& model) noexcept;
-  // process the SGF list file, store extracted features under featureDir, write processed list to outFile
-  void calculate(const std::string& sgfList, const std::string& outFile);
-
-  std::map<std::size_t, float> playerRating;
-  float successRate;
-  float successLogp;
-
-private:
-
-  StrengthModel* strengthModel;
 
 };
 

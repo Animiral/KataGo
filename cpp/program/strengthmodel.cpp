@@ -261,13 +261,14 @@ Dataset::Prediction StochasticPredictor::predict(const MoveFeatures* blackFeatur
   vector<float> buffer(std::max(blackCount, whiteCount));
   for(size_t i = 0; i < whiteCount; i++)
     buffer[i] = whiteFeatures[i].pointsLoss;
-  float wplavg = fAvg(vector<float>(buffer).data(), whiteCount);  // average white points loss
-  float wplvar = fVar(buffer.data(), whiteCount, wplavg);  // variance of white points loss
+  float wplavg = 1 <= whiteCount ? fAvg(vector<float>(buffer).data(), whiteCount) : 1;  // average white points loss; assume 1 if no data
+  float wplvar = 2 <= whiteCount ? fVar(buffer.data(), whiteCount, wplavg) : 0.5f;      // variance of white points loss
   for(size_t i = 0; i < blackCount; i++)
     buffer[i] = blackFeatures[i].pointsLoss;
-  float bplavg = fAvg(vector<float>(buffer).data(), blackCount);  // average black points loss
-  float bplvar = fVar(buffer.data(), blackCount, bplavg);  // variance of black points loss
-  float z = std::sqrt(gamelength) * (wplavg - bplavg) / std::sqrt(bplvar + wplvar); // white pt advantage in standard normal distribution at move# [2*gamelength]
+  float bplavg = 1 <= blackCount ? fAvg(vector<float>(buffer).data(), blackCount) : 1;  // average black points loss; assume 1 if no data
+  float bplvar = 2 <= blackCount ? fVar(buffer.data(), blackCount, bplavg) : 0.5f;      // variance of black points loss
+  const float epsilon = 0.000001f;  // avoid div by 0
+  float z = std::sqrt(gamelength) * (wplavg - bplavg) / std::sqrt(bplvar + wplvar + epsilon); // white pt advantage in standard normal distribution at move# [2*gamelength]
   return {0, 0, normcdf(z)};
 }
 
@@ -466,6 +467,32 @@ void StrengthModel::train(FeaturesAndTargets& xy, size_t split, int epochs, size
   net.saveModelFile(strengthModelFile);
 }
 
+StrengthModel::Evaluation StrengthModel::evaluate(Dataset& dataset, Predictor& predictor, int set, size_t windowSize) {
+  vector<MoveFeatures> blackFeatures(windowSize);
+  vector<MoveFeatures> whiteFeatures(windowSize);
+  int successCount = 0;
+  int sgfCount = 0;
+  float logp = 0;
+
+  for(size_t i = 0; i < dataset.games.size(); i++) {
+    Dataset::Game& gm = dataset.games[i];
+    if(gm.set != set && !(Dataset::Game::training == set && Dataset::Game::batch == gm.set))
+      continue;
+
+    size_t blackCount = dataset.getRecentMoves(gm.black.player, i, blackFeatures.data(), windowSize);
+    size_t whiteCount = dataset.getRecentMoves(gm.white.player, i, whiteFeatures.data(), windowSize);
+    gm.prediction = predictor.predict(blackFeatures.data(), blackCount, whiteFeatures.data(), whiteCount);
+    float winnerPred = 1 - std::abs(gm.score - gm.prediction.score);
+    if(winnerPred > .5f)
+      successCount++;
+    logp += std::log(winnerPred);
+    sgfCount++;
+  }
+
+  float rate = float(successCount) / sgfCount;
+  return { rate, logp };
+}
+
 bool StrengthModel::maybeWriteMoveFeaturesCached(const string& cachePath, const vector<MoveFeatures>& features) const {
   if(featureDir.empty() || features.empty())
     return false;
@@ -484,44 +511,4 @@ bool StrengthModel::maybeWriteMoveFeaturesCached(const string& cachePath, const 
   if(0 != std::fclose(cacheFile.release()))
     return false;
   return true;
-}
-
-
-RatingSystem::RatingSystem(StrengthModel& model) noexcept
-: strengthModel(&model) {
-}
-
-void RatingSystem::calculate(const string& sgfList, const string& outFile) {
-  Dataset dataset;
-  dataset.load(sgfList, strengthModel->featureDir);
-  const size_t windowSize = 1000; // number of most recent moves to take into consideration
-  vector<MoveFeatures> blackFeatures(windowSize);
-  vector<MoveFeatures> whiteFeatures(windowSize);
-  int successCount = 0;
-  int sgfCount = 0;
-  float logp = 0;
-  StochasticPredictor predictor;
-
-  for(size_t i = 0; i < dataset.games.size(); i++) {
-    Dataset::Game& gm = dataset.games[i];
-    string blackName = dataset.players[gm.black.player].name;
-    string whiteName = dataset.players[gm.white.player].name;
-    string winner = gm.score > .5 ? "B+":"W+";
-    std::cout << blackName << " vs " << whiteName << ": " << winner << "\n";
-
-    // determine winner and count
-    size_t blackCount = dataset.getRecentMoves(gm.black.player, i, blackFeatures.data(), windowSize);
-    size_t whiteCount = dataset.getRecentMoves(gm.white.player, i, whiteFeatures.data(), windowSize);
-    gm.prediction = predictor.predict(blackFeatures.data(), blackCount, whiteFeatures.data(), whiteCount);
-    float winnerPred = 1 - std::abs(gm.score - gm.prediction.score);
-    if(winnerPred > .5f)
-      successCount++;
-    logp += std::log(winnerPred);
-    sgfCount++;
-  }
-
-  dataset.store(outFile);
-
-  successRate = float(successCount) / sgfCount;
-  successLogp = logp;
 }

@@ -95,11 +95,29 @@ int MainCmds::rating_system(const vector<string>& args) {
   }
 
   StrengthModel strengthModel(strengthModelFile, featureDir);
-  RatingSystem ratingSystem(strengthModel);
-  ratingSystem.calculate(listFile, outlistFile);
-  cout << std::fixed << std::setprecision(3) << "Rating system successRate=" << ratingSystem.successRate
-                                             << ", successLogp=" << ratingSystem.successLogp << "\n";
+  Dataset dataset;
+  dataset.load(listFile, featureDir);
+  int set = Dataset::Game::training;
 
+  // Print all games for information
+  for(size_t i = 0; i < dataset.games.size(); i++) {
+    Dataset::Game& gm = dataset.games[i];
+    if(gm.set != set && !(Dataset::Game::training == set && Dataset::Game::batch == gm.set))
+      continue;
+
+    string blackName = dataset.players[gm.black.player].name;
+    string whiteName = dataset.players[gm.white.player].name;
+    string winner = gm.score > .5 ? "B+":"W+";
+    std::cout << blackName << " vs " << whiteName << ": " << winner << "\n";
+  }
+  
+  StochasticPredictor predictor;
+  size_t windowSize = 1000;
+  StrengthModel::Evaluation eval = strengthModel.evaluate(dataset, predictor, Dataset::Game::training, windowSize);
+  cout << std::fixed << std::setprecision(3) << "Rating system successRate=" << eval.rate
+                                             << ", successLogp=" << eval.logp << "\n";
+
+  dataset.store(outlistFile);
   logger.write("All cleaned up, quitting");
   return 0;
 }

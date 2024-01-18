@@ -24,7 +24,7 @@ void runStrengthModelTests(const string& modelFile, const string& listFile, cons
   Dataset dataset;
   FeaturesAndTargets featuresTargets;
 
-  StrengthModel StrengthModel(modelFile, featureDir);
+  StrengthModel strengthModel(modelFile, featureDir);
 
   try {
     createFeatureCache(listFile, featureDir);
@@ -114,30 +114,32 @@ void runStrengthModelTests(const string& modelFile, const string& listFile, cons
     dataset2.games.insert(dataset2.games.end(), dataset.games.begin(), dataset.games.end()); // 3 more games
     dataset2.games.insert(dataset2.games.end(), dataset.games.begin(), dataset.games.end()); // 3 more games
     char setmarker[9];
+    auto pickmarker = [](auto& game) { return "TVBE"[game.set]; };
+
     cout << "    " << dataset2.games.size() << " games split 6/2/1: ";
     dataset2.randomSplit(rand, 0.66f, 0.22f);
-    std::transform(dataset2.games.begin(), dataset2.games.end(), setmarker, [](auto& game) { return "TVBE"[game.set]; });
+    std::transform(dataset2.games.begin(), dataset2.games.end(), setmarker, pickmarker);
     for(size_t i = 0; i < 9; i++)
       cout << (i > 0 ? ", " : "") << setmarker[i];
     cout << "\n";
 
     cout << "    random 3-batch: ";
     dataset2.randomBatch(rand, 3);
-    std::transform(dataset2.games.begin(), dataset2.games.end(), setmarker, [](auto& game) { return "TVBE"[game.set]; });
+    std::transform(dataset2.games.begin(), dataset2.games.end(), setmarker, pickmarker);
     for(size_t i = 0; i < 9; i++)
       cout << (i > 0 ? ", " : "") << setmarker[i];
     cout << "\n";
 
     cout << "    random 2-batch: ";
     dataset2.randomBatch(rand, 2);
-    std::transform(dataset2.games.begin(), dataset2.games.end(), setmarker, [](auto& game) { return "TVBE"[game.set]; });
+    std::transform(dataset2.games.begin(), dataset2.games.end(), setmarker, pickmarker);
     for(size_t i = 0; i < 9; i++)
       cout << (i > 0 ? ", " : "") << setmarker[i];
     cout << "\n";
 
     cout << "    random 10-batch: ";
     dataset2.randomBatch(rand, 10);
-    std::transform(dataset2.games.begin(), dataset2.games.end(), setmarker, [](auto& game) { return "TVBE"[game.set]; });
+    std::transform(dataset2.games.begin(), dataset2.games.end(), setmarker, pickmarker);
     for(size_t i = 0; i < 9; i++)
       cout << (i > 0 ? ", " : "") << setmarker[i];
     cout << "\n";
@@ -220,6 +222,22 @@ void runStrengthModelTests(const string& modelFile, const string& listFile, cons
     }
 
     cout << (pass ? "pass" : "fail") << "\n";
+  }
+
+  {
+    cout << "- evaluate:\n";
+
+    Rand rand(123ull); // reproducible seed
+    dataset.randomSplit(rand, 0.33f, 0.33f);
+    StochasticPredictor predictor;
+    StrengthModel::Evaluation eval = strengthModel.evaluate(dataset, predictor, Dataset::Game::training, 10);
+    cout << "  Training: rate = " << std::setprecision(3) << eval.rate << ", logp = " << eval.logp << "\n";
+
+    eval = strengthModel.evaluate(dataset, predictor, Dataset::Game::validation, 10);
+    cout << "  Validation: rate = " << std::setprecision(3) << eval.rate << ", logp = " << eval.logp << "\n";
+
+    eval = strengthModel.evaluate(dataset, predictor, Dataset::Game::test, 10);
+    cout << "  Test: rate = " << std::setprecision(3) << eval.rate << ", logp = " << eval.logp << "\n";
   }
 }
 }
