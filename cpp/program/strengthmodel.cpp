@@ -472,6 +472,7 @@ StrengthModel::Evaluation StrengthModel::evaluate(Dataset& dataset, Predictor& p
   vector<MoveFeatures> whiteFeatures(windowSize);
   int successCount = 0;
   int sgfCount = 0;
+  float sqerr = 0;
   float logp = 0;
 
   for(size_t i = 0; i < dataset.games.size(); i++) {
@@ -482,6 +483,9 @@ StrengthModel::Evaluation StrengthModel::evaluate(Dataset& dataset, Predictor& p
     size_t blackCount = dataset.getRecentMoves(gm.black.player, i, blackFeatures.data(), windowSize);
     size_t whiteCount = dataset.getRecentMoves(gm.white.player, i, whiteFeatures.data(), windowSize);
     gm.prediction = predictor.predict(blackFeatures.data(), blackCount, whiteFeatures.data(), whiteCount);
+    float diffBlack = gm.black.rating - gm.prediction.blackRating;
+    float diffWhite = gm.white.rating - gm.prediction.whiteRating;
+    sqerr += diffBlack * diffBlack + diffWhite * diffWhite;
     float winnerPred = 1 - std::abs(gm.score - gm.prediction.score);
     if(winnerPred > .5f)
       successCount++;
@@ -490,7 +494,7 @@ StrengthModel::Evaluation StrengthModel::evaluate(Dataset& dataset, Predictor& p
   }
 
   float rate = float(successCount) / sgfCount;
-  return { rate, logp };
+  return { sqerr, rate, logp };
 }
 
 bool StrengthModel::maybeWriteMoveFeaturesCached(const string& cachePath, const vector<MoveFeatures>& features) const {

@@ -231,13 +231,13 @@ void runStrengthModelTests(const string& modelFile, const string& listFile, cons
     dataset.randomSplit(rand, 0.33f, 0.33f);
     StochasticPredictor predictor;
     StrengthModel::Evaluation eval = strengthModel.evaluate(dataset, predictor, Dataset::Game::training, 10);
-    cout << "  Training: rate = " << std::setprecision(3) << eval.rate << ", logp = " << eval.logp << "\n";
+    cout << Global::strprintf("  Training: sqerr = %f, rate = %.3f, logp = %f\n", eval.sqerr, eval.rate, eval.logp);
 
     eval = strengthModel.evaluate(dataset, predictor, Dataset::Game::validation, 10);
-    cout << "  Validation: rate = " << std::setprecision(3) << eval.rate << ", logp = " << eval.logp << "\n";
+    cout << Global::strprintf("  Validation: sqerr = %f, rate = %.3f, logp = %f\n", eval.sqerr, eval.rate, eval.logp);
 
     eval = strengthModel.evaluate(dataset, predictor, Dataset::Game::test, 10);
-    cout << "  Test: rate = " << std::setprecision(3) << eval.rate << ", logp = " << eval.logp << "\n";
+    cout << Global::strprintf("  Test: sqerr = %f, rate = %.3f, logp = %f\n", eval.sqerr, eval.rate, eval.logp);
   }
 }
 }

@@ -114,8 +114,7 @@ int MainCmds::rating_system(const vector<string>& args) {
   StochasticPredictor predictor;
   size_t windowSize = 1000;
   StrengthModel::Evaluation eval = strengthModel.evaluate(dataset, predictor, Dataset::Game::training, windowSize);
-  cout << std::fixed << std::setprecision(3) << "Rating system successRate=" << eval.rate
-                                             << ", successLogp=" << eval.logp << "\n";
+  cout << Global::strprintf("Rating system sq.err=%f, successRate=%.3f, successLogp=%f\n", eval.sqerr, eval.rate, eval.logp);
 
   dataset.store(outlistFile);
   logger.write("All cleaned up, quitting");

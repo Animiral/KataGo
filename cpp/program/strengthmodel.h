@@ -132,8 +132,9 @@ public:
 
   // run predictions using windowSize moves and determine rate/error over the games matching the given set (set=batch games also match set=training)
   struct Evaluation {
-    float rate;
-    float logp;
+    float sqerr;  // sum of squares of predicted ratings vs player ratings
+    float rate;   // relative amount of matches in which the predicted winner matched the actual winner
+    float logp;   // cumulative log-likelihood of all match outcomes in the eyes of the predictor
   };
   Evaluation evaluate(Dataset& dataset, Predictor& predictor, int set, size_t windowSize = 1000);
 
