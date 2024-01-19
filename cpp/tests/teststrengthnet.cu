@@ -30,9 +30,9 @@ using namespace StrengthNetImpl;
 
 namespace {
 
-Tensor toTensor(const vector<float>& data, uint xdim, uint ydim = 1, uint zdim = 1) {
-  Tensor t(xdim, ydim, zdim);
-  cudaMemcpy(t.data, data.data(), xdim * ydim * zdim * sizeof(float), cudaMemcpyHostToDevice);
+Tensor toTensor(const vector<float>& data, uint xdim, uint ydim = 1, uint batchSize = 1, uint zoffset[Tensor::MAX_BATCHSIZE] = {}) {
+  Tensor t(xdim, ydim, batchSize, zoffset);
+  cudaMemcpy(t.data, data.data(), xdim * ydim * sizeof(float), cudaMemcpyHostToDevice);
   return t;
 }
 
@@ -62,6 +62,15 @@ void expectApprox(const Tensor& expected, const Tensor& result, const string& na
 namespace Tests {
 void runStrengthNetTests() {
   cout << "Running strength model tests" << endl;
+
+  {
+    cout << "- access with batching: ";
+    Tensor A = toTensor({11, 12, 21, 22, 101, 102}, 2, 3);
+    // Tensor B = toTensor({2, 1, 2}, 1, 3);
+    // B.broadcast(2, 3);
+    // hadamard(A, B);
+    // expectApprox(toTensor({2, -3, 6,  4, -2, -2}, 2, 3), A, "hadamard, broadcast");
+  }
 
   {
     Tensor A = toTensor({1, -3, 3,  2, -2, -1}, 2, 3);
@@ -147,7 +156,6 @@ void runStrengthNetTests() {
     Rand rand(123ull); // reproducible seed
     net.randomInit(rand);
     net.setInput(threemoves);
-    net.setBatchSize(1);
     // net.printWeights(cout, "before update");
     // net.forward();
     // net.printState(cout, "before update");

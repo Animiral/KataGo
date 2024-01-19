@@ -42,93 +42,95 @@ void sum(Tensor& y, const Tensor& x);
 using namespace StrengthNetImpl;
 
 void StrengthNet::forward() {
+  assert(x); // tensors must be allocated by previous setInput()
+
   // // layer 1
-  matmul(h, W, x);
+  matmul(*h, W, *x);
   b.broadcast(N, hidden_ch);
-  add(h, b);
+  add(*h, b);
   b.broadcast(1, hidden_ch); // reset
-  // matmul<<<numBlocks, blockDim2d>>>(h, W1, x);
-  // numBlocks = dim3((N * h.dims.y + blockDim1d.x - 1) / blockDim1d.x);
-  // relu<<<numBlocks, blockDim1d>>>(h);
+  // matmul<<<numBlocks, blockDim2d>>>(*h, W1, *x);
+  // numBlocks = dim3((N * h->dims.y + blockDim1d.x - 1) / blockDim1d.x);
+  // relu<<<numBlocks, blockDim1d>>>(*h);
 
   // // layer 2
-  // numBlocks = numBlocksForTensor(r, blockDim2d);
-  // matmul<<<numBlocks, blockDim2d>>>(r, W2r, h);
-  // numBlocks = numBlocksForTensor(a, blockDim2d);
-  // matmul<<<numBlocks, blockDim2d>>>(a, W2z, h);
+  // numBlocks = numBlocksForTensor(*r, blockDim2d);
+  // matmul<<<numBlocks, blockDim2d>>>(*r, W2r, *h);
+  // numBlocks = numBlocksForTensor(*a, blockDim2d);
+  // matmul<<<numBlocks, blockDim2d>>>(*a, W2z, *h);
 
   // // aggregate by attention
-  min(y, h);
-  // numBlocks = numBlocksForTensor(a, blockDim1d);
-  // softmax<<<numBlocks, blockDim1d, N*sizeof(float)>>>(a);
-  // dotproduct<<<1, 1>>>(y, r, a);
+  min(*y, *h);
+  // numBlocks = numBlocksForTensor(*a, blockDim1d);
+  // softmax<<<numBlocks, blockDim1d, N*sizeof(float)>>>(*a);
+  // dotproduct<<<1, 1>>>(*y, *r, *a);
 }
 
 void StrengthNet::backward(float target/*, size_t index*/) {
-  // assert(index < batchSize);
+  assert(tgt); // tensors must be allocated by previous setInput()
 
   target = (target - 1500.f) / 500.f;
-  cudaMemcpy(tgt.data, &target, sizeof(float), cudaMemcpyHostToDevice);
+  cudaMemcpy(tgt->data, &target, sizeof(float), cudaMemcpyHostToDevice);
 
   // dL/dy = 2(y - tgt)
-  y_grad.assignFrom(y);
-  scale(y_grad, 2.f);
-  scale(tgt, -2.f);
-  add(y_grad, tgt);
-  // lossDerived<<<1,1>>>(y_grad, target, y); // dL/dy
+  y_grad->assignFrom(*y);
+  scale(*y_grad, 2.f);
+  scale(*tgt, -2.f);
+  add(*y_grad, *tgt);
+  // lossDerived<<<1,1>>>(*y_grad, *target, *y); // dL/dy
 
   // dL/dh = dL/dy * I_min(h)
-  minDerived(h_grad, y_grad, h, y);
+  minDerived(*h_grad, *y_grad, *h, *y);
 
   // dL/dW = dL/dh * x^T; dL/db = sum(dL/dh)
-  x.transpose();
-  matmul(W_grad, h_grad, x);
-  x.transpose(); // reset
-  sum(b_grad, h_grad);
+  x->transpose();
+  matmul(*W_grad, *h_grad, *x);
+  x->transpose(); // reset
+  sum(*b_grad, *h_grad);
 
   // // aggregate by attention
-  // r_grad.assignFrom(a); // dy/dr
-  // y_grad.broadcast(N);
-  // hadamard(r_grad, y_grad); // dL/dr = dL/dy * dy/da
+  // r_grad->assignFrom(*a); // dy/dr
+  // y_grad->broadcast(N);
+  // hadamard(*r_grad, *y_grad); // dL/dr = dL/dy * dy/da
 
-  // z_grad.assignFrom(r); // dy/da
-  // hadamard(z_grad, y_grad); // dL/da = dL/dy * dy/da
-  // softmaxDerived<<<numBlocks, blockDim1d>>>(z_grad, a); // dL/dz2 = da/dz2 * dL/da
+  // z_grad->assignFrom(*r); // dy/da
+  // hadamard(*z_grad, *y_grad); // dL/da = dL/dy * dy/da
+  // softmaxDerived<<<numBlocks, blockDim1d>>>(*z_grad, *a); // dL/dz2 = da/dz2 * dL/da
 
   // // layer 2
-  // numBlocks = numBlocksForTensor(W2r_grad, blockDim2d);
-  // transposeMatmul<<<numBlocks, blockDim2d>>>(W2r_grad, r_grad, h, index); // dL/dW2r = dL/dr * h^T
-  // transposeMatmul<<<numBlocks, blockDim2d>>>(W2z_grad, z_grad, h, index); // dL/dW2z = dL/dz * h^T
+  // numBlocks = numBlocksForTensor(*W2r_grad, blockDim2d);
+  // transposeMatmul<<<numBlocks, blockDim2d>>>(*W2r_grad, *r_grad, *h, index); // dL/dW2r = dL/dr * h^T
+  // transposeMatmul<<<numBlocks, blockDim2d>>>(*W2z_grad, *z_grad, *h, index); // dL/dW2z = dL/dz * h^T
 
-  // numBlocks = numBlocksForTensor(hr_grad, blockDim2d);
-  // matmulDerived<<<numBlocks, blockDim2d>>>(hr_grad, r_grad, W2r);
-  // matmulDerived<<<numBlocks, blockDim2d>>>(hz_grad, z_grad, W2z);
+  // numBlocks = numBlocksForTensor(*hr_grad, blockDim2d);
+  // matmulDerived<<<numBlocks, blockDim2d>>>(*hr_grad, *r_grad, W2r);
+  // matmulDerived<<<numBlocks, blockDim2d>>>(*hz_grad, *z_grad, W2z);
   // numBlocks = dim3((N * h_grad.dims.y + blockDim1d.x - 1) / blockDim1d.x);
-  // add<<<numBlocks, blockDim1d>>>(h_grad, hr_grad, hz_grad); // dL/dh = dr/dh * dL/dr + dz/dh * dL/dz
+  // add<<<numBlocks, blockDim1d>>>(*h_grad, *hr_grad, *hz_grad); // dL/dh = dr/dh * dL/dr + dz/dh * dL/dz
 
   // // layer 1
-  // relu<<<numBlocks, blockDim1d>>>(h_grad); // dL/dz1 = dL/dh * dh/dz1
+  // relu<<<numBlocks, blockDim1d>>>(*h_grad); // dL/dz1 = dL/dh * dh/dz1
  
-  // numBlocks = numBlocksForTensor(W1_grad, blockDim2d);
-  // transposeMatmul<<<numBlocks, blockDim2d>>>(W1_grad, h_grad, x, index); // dL/dW1 = dL/dz1 * x^T
+  // numBlocks = numBlocksForTensor(*W1_grad, blockDim2d);
+  // transposeMatmul<<<numBlocks, blockDim2d>>>(*W1_grad, *h_grad, *x, index); // dL/dW1 = dL/dz1 * x^T
 }
 
 void StrengthNet::mergeGrads() {
-  accumulateTensorZ<<<1, {W_grad.dims.x, W_grad.dims.y}>>>(W_grad);
-  accumulateTensorZ<<<1, {b_grad.dims.x, b_grad.dims.y}>>>(b_grad);
-  W_grad.dims.z = b_grad.dims.z = 1;
-  // accumulateTensorZ<<<1, {W1_grad.dims.x, W1_grad.dims.y}>>>(W1_grad);
-  // accumulateTensorZ<<<1, {W2r_grad.dims.x, W2r_grad.dims.y}>>>(W2r_grad);
-  // accumulateTensorZ<<<1, {W2z_grad.dims.x, W2z_grad.dims.y}>>>(W2z_grad);
-  // W1_grad.dims.z = W2r_grad.dims.z = W2z_grad.dims.z = 1;
+  accumulateTensorZ<<<1, {W_grad->dims.x, W_grad->dims.y}>>>(*W_grad);
+  accumulateTensorZ<<<1, {b_grad->dims.x, b_grad->dims.y}>>>(*b_grad);
+  W_grad->dims.z = b_grad->dims.z = 1;
+  // accumulateTensorZ<<<1, {W1_grad->dims.x, W1_grad->dims.y}>>>(*W1_grad);
+  // accumulateTensorZ<<<1, {W2r_grad->dims.x, W2r_grad->dims.y}>>>(*W2r_grad);
+  // accumulateTensorZ<<<1, {W2z_grad->dims.x, W2z_grad->dims.y}>>>(*W2z_grad);
+  // W1_grad->dims.z = W2r_grad->dims.z = W2z_grad->dims.z = 1;
 }
 
 void StrengthNet::update(float weightPenalty, float learnrate) {
-  updateTensor<<<1, {W.dims.x, W.dims.y}>>>(W, W_grad, weightPenalty, learnrate);
-  updateTensor<<<1, {b.dims.x, b.dims.y}>>>(b, b_grad, weightPenalty, learnrate);
-  // updateTensor<<<1, {W1.dims.x, W1.dims.y}>>>(W1, W1_grad, weightPenalty, learnrate);
-  // updateTensor<<<1, {W2r.dims.x, W2r.dims.y}>>>(W2r, W2r_grad, weightPenalty, learnrate);
-  // updateTensor<<<1, {W2z.dims.x, W2z.dims.y}>>>(W2z, W2z_grad, weightPenalty, learnrate);
+  updateTensor<<<1, {W.dims.x, W.dims.y}>>>(W, *W_grad, weightPenalty, learnrate);
+  updateTensor<<<1, {b.dims.x, b.dims.y}>>>(b, *b_grad, weightPenalty, learnrate);
+  // updateTensor<<<1, {W1.dims.x, W1.dims.y}>>>(W1, *W1_grad, weightPenalty, learnrate);
+  // updateTensor<<<1, {W2r.dims.x, W2r.dims.y}>>>(W2r, *W2r_grad, weightPenalty, learnrate);
+  // updateTensor<<<1, {W2z.dims.x, W2z.dims.y}>>>(W2z, *W2z_grad, weightPenalty, learnrate);
 }
 
 namespace {
@@ -137,7 +139,6 @@ constexpr dim3 numBlocksForTensor(const Tensor& t, dim3 blockDim) {
   dim3 numBlocks(1, 1, 1);
   numBlocks.x = (t.dims.x + blockDim.x - 1) / blockDim.x;
   numBlocks.y = (t.dims.y + blockDim.y - 1) / blockDim.y;
-  numBlocks.z = (t.dims.z + blockDim.z - 1) / blockDim.z;
   return numBlocks;
 }
 

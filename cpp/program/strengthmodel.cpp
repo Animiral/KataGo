@@ -418,7 +418,6 @@ void StrengthModel::train(FeaturesAndTargets& xy, size_t split, int epochs, size
     std::shuffle(&xy[0], &xy[split], rand);
     // train weights
     for(int i = 0; i < split; i += batchSize) {
-      net.setBatchSize(std::min(batchSize, split-i));
       for(size_t b = 0; i+b < split && b < batchSize; b++) {
         net.setInput(xy[i+b].first);
         net.forward();

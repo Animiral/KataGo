@@ -4,12 +4,21 @@
 #include "core/using.h"
 #include "cudaerrorcheck.h"
 #include <cstdio>
+#include <cstring>
 #include <iomanip>
 
-Tensor::Tensor(uint xdim, uint ydim, uint zdim)
-: data(nullptr), dims{xdim, ydim, zdim}, viewDims(dims), transposed(false), isOwner(true) {
-  size_t n = dims.x * dims.y * dims.z;
-  CUDA_ERR("Tensor(dims)", cudaMalloc(&data, n * sizeof(float)));
+Tensor::Tensor(uint xdim, uint ydim)
+: data(nullptr), dims{xdim, ydim, 1}, viewDims(dims), transposed(false), isOwner(true) {
+  size_t n = dims.x * dims.y;
+  CUDA_ERR("Tensor(xdim, ydim)", cudaMalloc(&data, n * sizeof(float)));
+}
+
+Tensor::Tensor(uint xdim, uint ydim, uint batchSize, const uint zs[MAX_BATCHSIZE])
+: data(nullptr), dims{xdim, ydim, batchSize}, viewDims(dims), transposed(false), isOwner(true) {
+  assert(batchSize <= MAX_BATCHSIZE);
+  std::memcpy(zoffset, zs, MAX_BATCHSIZE * sizeof(uint));
+  size_t n = dims.x * dims.y;
+  CUDA_ERR("Tensor(xdim, ydim, batchSize, zs)", cudaMalloc(&data, n * sizeof(float)));
 }
 
 Tensor::Tensor(const Tensor& rhs)
@@ -28,7 +37,7 @@ Tensor::~Tensor() noexcept {
 }
 
 Tensor::operator std::vector<float>() const {
-  size_t n = dims.x * dims.y * dims.z;
+  size_t n = dims.x * dims.y;
   std::vector<float> result(n);
   CUDA_ERR("Tensor::operator std::vector<float>()", cudaMemcpy(result.data(), data, n * sizeof(float), cudaMemcpyDeviceToHost));
   return result;
@@ -37,22 +46,20 @@ Tensor::operator std::vector<float>() const {
 void Tensor::randomInit(Rand& rand) {
   size_t n = dims.x;
   size_t m = dims.y;
-  size_t o = dims.z;
 
   // init all parameters uniformly in (-n^(-2), +n^(-2))
-  vector<float> buffer(n*m*o);
+  vector<float> buffer(n*m);
   double d = 1. / std::sqrt(n);
   for(size_t i = 0; i < m; i++)
     for(size_t j = 0; j < n; j++)
-      for(size_t k = 0; k < o; k++)
-        buffer[i * n * o + j * o + k] = static_cast<float>(rand.nextDouble(-d, d));
-  CUDA_ERR("Tensor.randomInit", cudaMemcpy(data, buffer.data(), n * m * o * sizeof(float), cudaMemcpyHostToDevice));
+      buffer[i + j * m] = static_cast<float>(rand.nextDouble(-d, d));
+  CUDA_ERR("Tensor.randomInit", cudaMemcpy(data, buffer.data(), n * m * sizeof(float), cudaMemcpyHostToDevice));
 }
 
 Tensor Tensor::clone() const {
-  Tensor copy(dims.x, dims.y, dims.z);
+  Tensor copy(dims.x, dims.y, dims.z, zoffset);
   copy.viewDims = viewDims;
-  size_t n = dims.x * dims.y * dims.z;
+  size_t n = dims.x * dims.y;
   CUDA_ERR("Tensor::clone()", cudaMemcpy(copy.data, data, n * sizeof(float), cudaMemcpyDeviceToDevice));
   return copy;
 }
@@ -64,18 +71,18 @@ void Tensor::assignFrom(const Tensor& rhs) {
   CUDA_ERR("Tensor::assignFrom()", cudaMemcpy(data, rhs.data, dims.x * dims.y * sizeof(float), cudaMemcpyDeviceToDevice));
 }
 
-void Tensor::reshape(uint xdim, uint ydim, uint zdim) {
-  assert(xdim * ydim * zdim == dims.x * dims.y * dims.z);
-  dims.x = xdim;
-  dims.y = ydim;
-  dims.z = zdim;
-}
+// void Tensor::reshape(uint xdim, uint ydim, uint batchSize) {
+//   assert(xdim * ydim * batchSize == dims.x * dims.y * dims.z);
+//   dims.x = xdim;
+//   dims.y = ydim;
+//   dims.z = batchSize;
+// }
 
-void Tensor::broadcast(uint xdim, uint ydim, uint zdim) {
+void Tensor::broadcast(uint xdim, uint ydim, uint batchSize) {
   assert(1 == dims.x || xdim == dims.x);
   assert(1 == dims.y || ydim == dims.y);
-  assert(1 == dims.z || zdim == dims.z);
-  viewDims = {xdim, ydim, zdim};
+  assert(1 == dims.z || batchSize == dims.z);
+  viewDims = {xdim, ydim, batchSize};
 }
 
 void Tensor::transpose() {
@@ -128,13 +135,20 @@ float Tensor::variance(std::initializer_list<Tensor> ts) {
 }
 
 StrengthNet::StrengthNet()
-: batchSize(maxBatchSize),
-  x(maxN, in_ch), h(maxN, hidden_ch), /* r(maxN, 1), a(maxN, 1),*/ y(1, 1),
-  h_grad(maxN, hidden_ch), // hr_grad(maxN, hidden_ch), hz_grad(maxN, hidden_ch),
-  /* r_grad(maxN, 1), z_grad(maxN, 1), */ y_grad(1, 1), tgt(1, 1),
-  W(in_ch, hidden_ch), b(1, hidden_ch), // W1(in_ch, hidden_ch), W2r(hidden_ch+1, 1), W2z(hidden_ch+1, 1),
-  W_grad(in_ch, hidden_ch, maxBatchSize), b_grad(1, hidden_ch, maxBatchSize) // W1_grad(in_ch, hidden_ch, maxBatchSize), W2r_grad(hidden_ch+1, 1, maxBatchSize), W2z_grad(hidden_ch+1, 1, maxBatchSize)
+: N(0), batchSize(1), zoffset{0},
+x(nullptr), h(nullptr), y(nullptr),
+// r(nullptr), // a(nullptr),
+h_grad(nullptr), y_grad(nullptr), tgt(nullptr),
+// hr_grad(nullptr), // hz_grad(nullptr), // r_grad(nullptr), // z_grad(nullptr),
+W(in_ch, hidden_ch), b(1, hidden_ch),
+W_grad(nullptr), b_grad(nullptr)
+// W1_grad(nullptr), // W2r_grad(nullptr), // W2z_grad(nullptr),
 {
+}
+
+StrengthNet::~StrengthNet()
+{
+  freeTensors();
 }
 
 void StrengthNet::randomInit(Rand& rand) {
@@ -197,9 +211,12 @@ void StrengthNet::saveModelFile(const std::string& path) {
 }
 
 void StrengthNet::setInput(const std::vector<MoveFeatures>& features) {
+  static_assert(6 == in_ch, "this function must be adapted if in_ch changes");
+  freeTensors();
+
   N = features.size();
-  assert(N <= maxN);
-  assert(6 == in_ch); // this function must be adapted if in_ch changes
+  batchSize = 1;
+  allocateTensors();
 
   vector<float> rawfeatures(in_ch*N);
   for(size_t i = 0; i < N; i++) {
@@ -211,59 +228,43 @@ void StrengthNet::setInput(const std::vector<MoveFeatures>& features) {
     rawfeatures[in_ch*i+5] = features[i].pointsLoss * .1f;
   }
 
-  CUDA_ERR("StrengthNet::setInput", cudaMemcpy(x.data, rawfeatures.data(), in_ch * N * sizeof(float), cudaMemcpyHostToDevice));
-  x.dims.x = x.viewDims.x = N;
-  h.dims.x = h.viewDims.x = N;
-  // r.dims.x = r.viewDims.x = N;
-  // a.dims.x = a.viewDims.x = N;
-  h_grad.dims.x = h_grad.viewDims.x = N;
-  // hr_grad.dims.x = hr_grad.viewDims.x = N;
-  // hz_grad.dims.x = hz_grad.viewDims.x = N;
-  // r_grad.dims.x = r_grad.viewDims.x = N;
-  // z_grad.dims.x = z_grad.viewDims.x = N;
-}
-
-void StrengthNet::setBatchSize(size_t batchSize_) noexcept {
-  assert(batchSize_ <= maxBatchSize);
-  batchSize = batchSize_;
-  W_grad.dims.z = b_grad.dims.z = batchSize_;  // parameter update gradients
-  // W1_grad.dims.z = W2r_grad.dims.z = W2z_grad.dims.z = batchSize_;  // parameter update gradients
+  CUDA_ERR("StrengthNet::setInput", cudaMemcpy(x->data, rawfeatures.data(), in_ch * N * sizeof(float), cudaMemcpyHostToDevice));
 }
 
 float StrengthNet::getOutput() const {
   float output;
-  CUDA_ERR("StrengthNet::getOutput", cudaMemcpy(&output, y.data, sizeof(float), cudaMemcpyDeviceToHost));
+  CUDA_ERR("StrengthNet::getOutput", cudaMemcpy(&output, y->data, sizeof(float), cudaMemcpyDeviceToHost));
   return output * 500.f + 1500.f;
 }
 
 void StrengthNet::printWeights(std::ostream& stream, const std::string& name, bool humanReadable) const {
   stream << "* W *\n";   W.print(stream, name, humanReadable);
   stream << "* b *\n";   b.print(stream, name, humanReadable);
-  // stream << "* W1 *\n";   W1.print(stream, name, humanReadable);
-  // stream << "* W2r *\n";  W2r.print(stream, name, humanReadable);
-  // stream << "* W2z *\n";  W2z.print(stream, name, humanReadable);
+  // stream << "* W1 *\n";   W1->print(stream, name, humanReadable);
+  // stream << "* W2r *\n";  W2r->print(stream, name, humanReadable);
+  // stream << "* W2z *\n";  W2z->print(stream, name, humanReadable);
 }
 
 void StrengthNet::printState(std::ostream& stream, const std::string& name, bool humanReadable) const {
-  stream << "* x *\n";  x.print(stream, name, humanReadable);
-  stream << "* h *\n";  h.print(stream, name, humanReadable);
-  // stream << "* r *\n";  r.print(stream, name, humanReadable);
-  // stream << "* a *\n";  a.print(stream, name, humanReadable);
-  stream << "* y *\n";  y.print(stream, name, humanReadable);
+  stream << "* x *\n";  x->print(stream, name, humanReadable);
+  stream << "* h *\n";  h->print(stream, name, humanReadable);
+  // stream << "* r *\n";  r->print(stream, name, humanReadable);
+  // stream << "* a *\n";  a->print(stream, name, humanReadable);
+  stream << "* y *\n";  y->print(stream, name, humanReadable);
 }
 
 void StrengthNet::printGrads(std::ostream& stream, const std::string& name, bool humanReadable) const {
-  stream << "* h_grad *\n";  h_grad.print(stream, name, humanReadable);
-  // stream << "* hr_grad *\n";  hr_grad.print(stream, name, humanReadable);
-  // stream << "* hz_grad *\n";  hz_grad.print(stream, name, humanReadable);
-  // stream << "* r_grad *\n";  r_grad.print(stream, name, humanReadable);
-  // stream << "* z_grad *\n";  z_grad.print(stream, name, humanReadable);
-  stream << "* y_grad *\n";  y_grad.print(stream, name, humanReadable);
-  stream << "* W_grad *\n";  W_grad.print(stream, name, humanReadable);
-  stream << "* b_grad *\n";  b_grad.print(stream, name, humanReadable);
-  // stream << "* W1_grad *\n";  W1_grad.print(stream, name, humanReadable);   // only prints first grad (z==0)!
-  // stream << "* W2r_grad *\n";  W2r_grad.print(stream, name, humanReadable); // only prints first grad (z==0)!
-  // stream << "* W2z_grad *\n";  W2z_grad.print(stream, name, humanReadable); // only prints first grad (z==0)!
+  stream << "* h_grad *\n";  h_grad->print(stream, name, humanReadable);
+  // stream << "* hr_grad *\n";  hr_grad->print(stream, name, humanReadable);
+  // stream << "* hz_grad *\n";  hz_grad->print(stream, name, humanReadable);
+  // stream << "* r_grad *\n";  r_grad->print(stream, name, humanReadable);
+  // stream << "* z_grad *\n";  z_grad->print(stream, name, humanReadable);
+  stream << "* y_grad *\n";  y_grad->print(stream, name, humanReadable);
+  stream << "* W_grad *\n";  W_grad->print(stream, name, humanReadable);
+  stream << "* b_grad *\n";  b_grad->print(stream, name, humanReadable);
+  // stream << "* W1_grad *\n";  W1_grad->print(stream, name, humanReadable);   // only prints first grad (z==0)!
+  // stream << "* W2r_grad *\n";  W2r_grad->print(stream, name, humanReadable); // only prints first grad (z==0)!
+  // stream << "* W2z_grad *\n";  W2z_grad->print(stream, name, humanReadable); // only prints first grad (z==0)!
 }
 
 float StrengthNet::thetaVar() const {
@@ -271,5 +272,65 @@ float StrengthNet::thetaVar() const {
 }
 
 float StrengthNet::gradsVar() const {
-  return Tensor::variance({W_grad, b_grad});
+  return Tensor::variance({*W_grad, *b_grad});
+}
+
+namespace {
+  // generate zoffsets for a batch where every input has exactly `step` elements
+  vector<uint> iota(size_t batchSize, uint step = 1) {
+    vector<uint> buffer(Tensor::MAX_BATCHSIZE);
+    for(size_t i = 0; i < batchSize; i++)
+      buffer[i] = step * (i+1);
+    for(size_t i = batchSize; i < buffer.size(); i++)
+      buffer[i] = step * batchSize;
+    return buffer;
+  }
+}
+
+void StrengthNet::allocateTensors() {
+  x = new Tensor(N, in_ch, batchSize, zoffset);
+  h = new Tensor(N, hidden_ch, batchSize, zoffset);
+  // r = new Tensor(N, 1, batchSize, zoffset);
+  // a = new Tensor(N, 1, batchSize, zoffset);
+  vector<uint> yoffsets = iota(batchSize);
+  y = new Tensor(batchSize, 1, batchSize, yoffsets.data());
+
+  h_grad = new Tensor(N, hidden_ch, batchSize, zoffset);
+  // hr_grad = new Tensor(N, hidden_ch, batchSize, zoffset);
+  // hz_grad = new Tensor(N, hidden_ch, batchSize, zoffset);
+  // r_grad = new Tensor(N, 1, batchSize, zoffset);
+  // z_grad = new Tensor(N, 1, batchSize, zoffset);
+  y_grad = new Tensor(batchSize, 1, batchSize, yoffsets.data());
+  tgt = new Tensor(batchSize, 1, batchSize, yoffsets.data());
+
+  vector<uint> Woffsets = iota(batchSize, in_ch*hidden_ch);
+  W_grad = new Tensor(in_ch*batchSize, hidden_ch, batchSize, Woffsets.data());
+  // W1_grad = new Tensor(in_ch*batchSize, hidden_ch, batchSize, Woffsets.data())
+  vector<uint> boffsets = iota(batchSize, hidden_ch);
+  b_grad = new Tensor(batchSize, hidden_ch, batchSize, Woffsets.data());
+  // vector<uint> W2offsets = iota(batchSize, hidden_ch);
+  // W2r_grad = new Tensor(hidden_ch*batch_size, 1, batchSize, W2offsets);
+  // W2z_grad = new Tensor(hidden_ch*batch_size, 1, batchSize, W2offsets);
+}
+
+void StrengthNet::freeTensors() noexcept {
+  delete x; x = nullptr;
+  delete h; h = nullptr;
+  // delete r; r = nullptr;
+  // delete a; a = nullptr;
+  delete y; y = nullptr;
+
+  delete h_grad; h_grad = nullptr;
+  // delete hr_grad; hr_grad = nullptr;
+  // delete hz_grad; hz_grad = nullptr;
+  // delete r_grad; r_grad = nullptr;
+  // delete z_grad; z_grad = nullptr;
+  delete y_grad; y_grad = nullptr;
+  delete tgt; tgt = nullptr;
+
+  delete W_grad; W_grad = nullptr;
+  delete b_grad; b_grad = nullptr;
+  // delete W1_grad; W1_grad = nullptr;
+  // delete W2r_grad; W2r_grad = nullptr;
+  // delete W2z_grad; W2z_grad = nullptr;
 }

@@ -10,13 +10,17 @@
 // C++ wrapper over CUDA
 struct Tensor {
 
-  float* data; // GPU device pointer; column-major order
-  uint3 dims;
-  uint3 viewDims; // for broadcasting data along some dimensions
+  constexpr static size_t MAX_BATCHSIZE = 100;
+
+  float* data;     // GPU device pointer; column-major order
+  uint3 dims;      // x: #elements in all batches, y: #features, z: #batch
+  uint zoffset[MAX_BATCHSIZE]; // monotone increasing offsets in data array, all must be multiples of dims.y
+  uint3 viewDims;  // for broadcasting data along some dimensions
   bool transposed; // if true, data is considered in row-major order instead of column-major
 
   Tensor() = default;
-  explicit Tensor(uint xdim, uint ydim, uint zdim = 1);
+  explicit Tensor(uint xdim, uint ydim);
+  explicit Tensor(uint xdim, uint ydim, uint batchSize, const uint zs[MAX_BATCHSIZE]);
   Tensor(const Tensor& rhs);                    // copy without ownership (for passing as arg to kernel)
   Tensor(Tensor&& rhs) noexcept;
   Tensor& operator=(const Tensor& rhs) = delete;
@@ -27,8 +31,8 @@ struct Tensor {
   void randomInit(Rand& rand);                  // new weights
   Tensor clone() const;                         // copy with ownership
   void assignFrom(const Tensor& rhs);           // same-size assign
-  void reshape(uint xdim, uint ydim = 1, uint zdim = 1);
-  void broadcast(uint xdim, uint ydim = 1, uint zdim = 1);
+  // void reshape(uint xdim, uint ydim = 1, uint batchSize = 1);
+  void broadcast(uint xdim, uint ydim = 1, uint batchSize = 1);
   void transpose();                             // swap dims.x & dims.y, flip transposed
   void print(std::ostream& stream, const std::string& name, bool humanReadable = true) const;
 
@@ -66,13 +70,13 @@ public:
   using Output = float;
 
   StrengthNet(); // weights are not initialized by default
+  ~StrengthNet();
 
   void randomInit(Rand& rand);                 // new weights
   bool loadModelFile(const std::string& path); // load weights
   void saveModelFile(const std::string& path); // store weights
 
   void setInput(const std::vector<MoveFeatures>& features); // host to GPU, with scaling
-  void setBatchSize(size_t batchSize_) noexcept; // followed by forward&backward, then update()
   float getOutput() const;                     // GPU to host, with scaling
   void forward();
   void backward(float target);   // buffers must be filled by forward pass
@@ -87,19 +91,22 @@ public:
 private:
 
   static const uint32_t STRNET_HEADER;
-  static constexpr std::size_t maxN = 1000; // max number of input moves (for workspace buffer)
-  static constexpr std::size_t maxBatchSize = 100; // allocated 3rd dim of weight gradient tensors
   static constexpr std::size_t in_ch = 6;
   static constexpr std::size_t hidden_ch = 1; // 32;
   static constexpr std::size_t out_ch = 2;
 
-  std::size_t N; // last seen N in forward(), remember for backward()
-  std::size_t batchSize = 100; // allocated 3rd dim of weight gradient tensors
+  std::size_t N; // total number of currently processed moves (across all batches)
+  std::size_t batchSize; // allocated 3rd dim of weight gradient tensors
+  uint zoffset[Tensor::MAX_BATCHSIZE]; // batching data common to all data tensors
 
-  Tensor x, h, /*r, a,*/ y;  // (intermediate) calculation values
-  Tensor h_grad, /*hr_grad, hz_grad, r_grad, z_grad,*/ y_grad, tgt;  // intermediate gradients for backpropagation
+  // all non-parameter tensors are allocated to appropriate size with setInput()
+  Tensor *x, *h, /* *r, *a,*/ *y;  // (intermediate) calculation values
+  Tensor *h_grad, /* *hr_grad, *hz_grad, *r_grad, *z_grad,*/ *y_grad, *tgt;  // intermediate gradients for backpropagation
   Tensor W, b; // W1, W2r, W2z;  // parameters: weights with included biases
-  Tensor W_grad, b_grad; // W1_grad, W2r_grad, W2z_grad;  // parameter update gradients
+  Tensor *W_grad, *b_grad; // *W1_grad, *W2r_grad, *W2z_grad;  // parameter update gradients
+
+  void allocateTensors(); // build tensors according to N, batchSize and zoffset
+  void freeTensors() noexcept;
 
   friend void Tests::runStrengthModelTests();
 

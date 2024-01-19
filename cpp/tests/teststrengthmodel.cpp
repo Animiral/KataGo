@@ -160,7 +160,6 @@ void runStrengthModelTests(const string& modelFile, const string& listFile, cons
     Rand rand(123ull); // reproducible seed
     net.randomInit(rand);
     net.setInput(game.black.features);
-    net.setBatchSize(1);
     cout << game.black.features.size() << " input features\n";
     // net.printWeights(cout, "initial values");
     // std::ofstream hfile("h_values.csv"); // debug csv
@@ -300,7 +299,6 @@ bool fitsOneSample(vector<MoveFeatures> features, float target, int epochs, floa
     Rand rand(123ull); // reproducible seed
     net.randomInit(rand);
     net.setInput(features);
-    net.setBatchSize(1);
 
     for(int i = 0; i < epochs; i++) {
       net.forward();
