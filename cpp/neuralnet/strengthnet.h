@@ -20,7 +20,7 @@ struct Tensor {
 
   Tensor() = default;
   explicit Tensor(uint xdim, uint ydim);
-  explicit Tensor(uint xdim, uint ydim, uint batchSize, const uint zs[MAX_BATCHSIZE]);
+  explicit Tensor(uint xdim, uint ydim, uint batchSize, const uint zs[]);
   Tensor(const Tensor& rhs);                    // copy without ownership (for passing as arg to kernel)
   Tensor(Tensor&& rhs) noexcept;
   Tensor& operator=(const Tensor& rhs) = delete;

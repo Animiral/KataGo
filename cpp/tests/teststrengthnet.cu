@@ -30,32 +30,10 @@ using namespace StrengthNetImpl;
 
 namespace {
 
-Tensor toTensor(const vector<float>& data, uint xdim, uint ydim = 1, uint batchSize = 1, uint zoffset[Tensor::MAX_BATCHSIZE] = {}) {
-  Tensor t(xdim, ydim, batchSize, zoffset);
-  cudaMemcpy(t.data, data.data(), xdim * ydim * sizeof(float), cudaMemcpyHostToDevice);
-  return t;
-}
-
-void expectApprox(const Tensor& expected, const Tensor& result, const string& name = "(unnamed)", float epsilon = 0.0001f) {
-  assert(expected.dims.x == result.dims.x);
-  assert(expected.dims.y == result.dims.y);
-  assert(expected.dims.z == result.dims.z);
-
-  auto exp = vector<float>(expected);
-  auto res = vector<float>(result);
-
-  bool pass = true;
-  for(size_t i = 0; i < exp.size(); i++)
-    if(fabs(exp[i] - res[i]) > epsilon)
-      pass = false;
-
-  cout << "- " << name << ": " << (pass ? "pass" : "fail") << "\n";
-
-  if(!pass) {
-    expected.print(cout, "expected");
-    result.print(cout, "result");
-  }
-}
+// build a tensor from the data with the specified dimensions
+Tensor toTensor(const vector<float>& data, uint xdim, uint ydim = 1, uint batchSize = 1, uint zoffset[] = {});
+// print the test name and "pass" if the result matches expected everywhere within epsilon, "fail" otherwise
+void expectApprox(const Tensor& expected, const Tensor& result, const string& name = "(unnamed)", float epsilon = 0.0001f);
 
 }
 
@@ -185,4 +163,36 @@ void runStrengthNetTests() {
     }
   }
 }
+}
+
+namespace { // helper functions
+
+Tensor toTensor(const vector<float>& data, uint xdim, uint ydim, uint batchSize, uint zoffset[]) {
+  assert(zoffset || 1 == batchSize); // if batchsize is specified, zoffset must also be specified
+  Tensor t(xdim, ydim, batchSize, zoffset ?: &xdim);
+  cudaMemcpy(t.data, data.data(), xdim * ydim * sizeof(float), cudaMemcpyHostToDevice);
+  return t;
+}
+
+void expectApprox(const Tensor& expected, const Tensor& result, const string& name, float epsilon) {
+  assert(expected.dims.x == result.dims.x);
+  assert(expected.dims.y == result.dims.y);
+  assert(expected.dims.z == result.dims.z);
+
+  auto exp = vector<float>(expected);
+  auto res = vector<float>(result);
+
+  bool pass = true;
+  for(size_t i = 0; i < exp.size(); i++)
+    if(fabs(exp[i] - res[i]) > epsilon)
+      pass = false;
+
+  cout << "- " << name << ": " << (pass ? "pass" : "fail") << "\n";
+
+  if(!pass) {
+    expected.print(cout, "expected");
+    result.print(cout, "result");
+  }
+}
+
 }

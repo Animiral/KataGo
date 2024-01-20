@@ -4,7 +4,6 @@
 #include "core/using.h"
 #include "cudaerrorcheck.h"
 #include <cstdio>
-#include <cstring>
 #include <iomanip>
 
 Tensor::Tensor(uint xdim, uint ydim)
@@ -13,10 +12,11 @@ Tensor::Tensor(uint xdim, uint ydim)
   CUDA_ERR("Tensor(xdim, ydim)", cudaMalloc(&data, n * sizeof(float)));
 }
 
-Tensor::Tensor(uint xdim, uint ydim, uint batchSize, const uint zs[MAX_BATCHSIZE])
+Tensor::Tensor(uint xdim, uint ydim, uint batchSize, const uint zs[])
 : data(nullptr), dims{xdim, ydim, batchSize}, viewDims(dims), transposed(false), isOwner(true) {
   assert(batchSize <= MAX_BATCHSIZE);
-  std::memcpy(zoffset, zs, MAX_BATCHSIZE * sizeof(uint));
+  std::copy(zs, zs + batchSize, &zoffset[0]);
+  std::fill(&zoffset[batchSize], &zoffset[MAX_BATCHSIZE], xdim);
   size_t n = dims.x * dims.y;
   CUDA_ERR("Tensor(xdim, ydim, batchSize, zs)", cudaMalloc(&data, n * sizeof(float)));
 }
