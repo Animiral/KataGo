@@ -15,6 +15,7 @@ namespace StrengthNetImpl
 __device__ float& at(const Tensor& t, uint x, uint y = 0, uint z = 0); // tensor element access
 __device__ float accumulate(float* data, uint n, float (*func)(float, float)); // Accumulate data with func
 
+__global__ void atK(Tensor t, float* out, uint x, uint y, uint z);
 __global__ void scaleK(Tensor y, float w); // y = y * w
 __global__ void hadamardK(Tensor y, const Tensor w); // y = y ⊙ w
 __global__ void matmulK(Tensor y, const Tensor W, const Tensor x); // y = W * x
@@ -29,6 +30,7 @@ __global__ void softmaxDerived(Tensor z_grad, const Tensor a); // z_grad = d_sof
 __global__ void accumulateTensorZ(Tensor W); // reduce z dimension by sum
 __global__ void updateTensor(Tensor W, const Tensor W_grad, float weightPenalty, float learnrate); // W = W - W_grad * learnrate - d_(W ⊙ W) / d_W * weightPenalty
 
+float getelem(const Tensor &t, uint x, uint y, uint z); // tensor element access (slow/wasteful)
 void scale(Tensor& y, float w);
 void hadamard(Tensor& y, const Tensor& w);
 void matmul(Tensor& y, const Tensor& W, const Tensor& x);
@@ -148,27 +150,35 @@ namespace StrengthNetImpl
 {
 
 __device__ float& at(const Tensor& t, uint x, uint y, uint z) {
-  assert(x < t.viewDims.x);
-  assert(y < t.viewDims.y);
+  // un-transpose
+  uint dimx = t.transposed ? t.dims.y : t.dims.x;
+  uint dimy = t.transposed ? t.dims.x : t.dims.y;
+  uint vdimx = t.transposed ? t.viewDims.y : t.viewDims.x;
+  uint vdimy = t.transposed ? t.viewDims.x : t.viewDims.y;
+  if(t.transposed) {
+    float tmp = x;
+    x = y;
+    y = tmp;
+  }
+
+  assert(y < vdimy);
   assert(z < t.viewDims.z);
 
   // implement broadcast
-  if(1 == t.dims.x)
+  if(1 == dimx)
     x = 0;
-  if(1 == t.dims.y)
+  if(1 == dimy)
     y = 0;
   if(1 == t.dims.z)
     z = 0;
 
-  uint xy;
+  uint offset = t.zoffset[z];
+  uint upper = t.zoffset[z+1];
+  if(1 == t.viewDims.z) // cat/unbatching
+    upper = vdimx;
+  assert(x < upper - offset);
 
-  // implement transposition
-  if(t.transposed)
-    xy = y * t.dims.x + x;
-  else
-    xy = x * t.dims.y + y;
-  
-  return t.data[z * t.dims.x * t.dims.y + xy];
+  return t.data[(offset + x) * dimy + y];
 }
 
 __device__ float accumulate(float* data, uint n, float (*func)(float, float)) {
@@ -199,6 +209,10 @@ __device__ float accumulate(float* data, uint n, float (*func)(float, float)) {
     return NAN; // some default
 }
 
+__global__ void atK(Tensor t, float* out, uint x, uint y = 0, uint z = 0) {
+  *out = at(t, x, y, z);
+}
+
 __global__ void scaleK(Tensor y, float w) {
   uint xx = blockIdx.x * blockDim.x + threadIdx.x;
   uint yy = blockIdx.y * blockDim.y + threadIdx.y;
@@ -207,15 +221,15 @@ __global__ void scaleK(Tensor y, float w) {
     at(y, xx, yy, zz) *= w;
 }
 
-__global__ void hadamardK(Tensor y, const Tensor w) {
+__global__ void hadamardK(Tensor y, Tensor w) {
   assert(y.dims.x == w.viewDims.x);
   assert(y.dims.y == w.viewDims.y);
-  assert(y.dims.z == w.viewDims.z);
+  assert(1 == y.viewDims.z); // Tensor must be cat before elementwise ops
+  assert(1 == w.viewDims.z);
   uint xx = blockIdx.x * blockDim.x + threadIdx.x;
   uint yy = blockIdx.y * blockDim.y + threadIdx.y;
-  uint zz = blockIdx.z * blockDim.z + threadIdx.z;
-  if(xx < y.dims.x && yy < y.dims.y && zz < y.dims.z)
-    at(y, xx, yy, zz) *= at(w, xx, yy, zz);
+  if(xx < y.dims.x && yy < y.dims.y)
+    at(y, xx, yy, 0) *= at(w, xx, yy, 0);
 }
 
 // y = W*x
@@ -380,6 +394,16 @@ __global__ void updateTensor(Tensor W, const Tensor W_grad, float weightPenalty,
 //   outgrads[threadIdx.x*2 + 1] = ingrads[threadIdx.x*2 + 1] * 10.f / (cosa*cosa);
 // }
 
+float getelem(const Tensor &t, uint x, uint y, uint z) {
+  float* elem;
+  cudaMalloc(&elem, sizeof(float));
+  atK<<<1, 1>>>(t, elem, x, y, z);
+  float out;
+  cudaMemcpy(&out, elem, sizeof(float), cudaMemcpyDeviceToHost);
+  cudaFree(elem);
+  return out;
+}
+
 void scale(Tensor& y, float w) {
   dim3 blockDim(16, 16, 4);
   dim3 numBlocks = numBlocksForTensor(y, blockDim);
@@ -387,7 +411,7 @@ void scale(Tensor& y, float w) {
 }
 
 void hadamard(Tensor& y, const Tensor& w) {
-  dim3 blockDim(16, 16, 4);
+  dim3 blockDim(32, 32, 1);
   dim3 numBlocks = numBlocksForTensor(y, blockDim);
   hadamardK<<<numBlocks, blockDim>>>(y, w);
 }

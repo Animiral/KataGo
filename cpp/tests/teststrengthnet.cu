@@ -16,6 +16,7 @@ __global__ void lossDerived(Tensor y_grad, float target, const Tensor y);
 __global__ void softmaxDerived(Tensor z_grad, const Tensor a);
 __global__ void updateTensor(Tensor W, const Tensor W_grad, float weightPenalty, float learnrate);
 
+float getelem(const Tensor &t, uint x, uint y = 0, uint z = 0); // tensor element access (slow/wasteful)
 void scale(Tensor& y, float w);
 void hadamard(Tensor& y, const Tensor& w) noexcept;
 void matmul(Tensor& y, const Tensor& W, const Tensor& x) noexcept;
@@ -30,8 +31,10 @@ using namespace StrengthNetImpl;
 
 namespace {
 
+ // tensor element access (slow/wasteful) with CUDA error check
+float checkgetelem(const Tensor &t, uint x, uint y = 0, uint z = 0);
 // build a tensor from the data with the specified dimensions
-Tensor toTensor(const vector<float>& data, uint xdim, uint ydim = 1, uint batchSize = 1, uint zoffset[] = {});
+Tensor toTensor(const vector<float>& data, uint xdim, uint ydim = 1, vector<uint> zoffset = {0, 0});
 // print the test name and "pass" if the result matches expected everywhere within epsilon, "fail" otherwise
 void expectApprox(const Tensor& expected, const Tensor& result, const string& name = "(unnamed)", float epsilon = 0.0001f);
 
@@ -43,11 +46,32 @@ void runStrengthNetTests() {
 
   {
     cout << "- access with batching: ";
-    Tensor A = toTensor({11, 12, 21, 22, 101, 102}, 2, 3);
-    // Tensor B = toTensor({2, 1, 2}, 1, 3);
-    // B.broadcast(2, 3);
-    // hadamard(A, B);
-    // expectApprox(toTensor({2, -3, 6,  4, -2, -2}, 2, 3), A, "hadamard, broadcast");
+    Tensor A = toTensor({11, 12, 21, 22, 101, 102}, 3, 2, vector<uint>{0, 2, 3});
+    bool pass = true;
+
+    pass &= 11 == checkgetelem(A, 0, 0, 0);
+    pass &= 12 == checkgetelem(A, 0, 1, 0);
+    pass &= 21 == checkgetelem(A, 1, 0, 0);
+    pass &= 22 == checkgetelem(A, 1, 1, 0);
+    pass &= 101 == checkgetelem(A, 0, 0, 1);
+    pass &= 102 == checkgetelem(A, 0, 1, 1);
+
+    // now with broadcast and transpose
+    Tensor B = toTensor({3, 4}, 1, 2);
+    B.transpose();
+    B.broadcast(2, 2, 2);
+    pass &= 3  == checkgetelem(B, 0, 0, 0);
+    pass &= 3 == checkgetelem(B, 0, 1, 0);
+    pass &= 4 == checkgetelem(B, 1, 0, 0);
+    pass &= 4 == checkgetelem(B, 1, 1, 0);
+    pass &= 3  == checkgetelem(B, 0, 0, 0);
+    pass &= 3 == checkgetelem(B, 0, 1, 0);
+    pass &= 4 == checkgetelem(B, 1, 0, 0);
+    pass &= 4 == checkgetelem(B, 1, 1, 0);
+    pass &= 3 == checkgetelem(B, 0, 0, 1);
+    pass &= 3 == checkgetelem(B, 0, 1, 1);
+
+    cout << (pass ? "pass" : "fail") << "\n";
   }
 
   {
@@ -167,9 +191,21 @@ void runStrengthNetTests() {
 
 namespace { // helper functions
 
-Tensor toTensor(const vector<float>& data, uint xdim, uint ydim, uint batchSize, uint zoffset[]) {
-  assert(zoffset || 1 == batchSize); // if batchsize is specified, zoffset must also be specified
-  Tensor t(xdim, ydim, batchSize, zoffset ?: &xdim);
+float checkgetelem(const Tensor &t, uint x, uint y, uint z) {
+  float out = getelem(t, x, y, z);
+  cudaError_t status = cudaGetLastError();
+  if(status != cudaSuccess) {
+    cerr << "CUDA Error: " << cudaGetErrorString(status) << "\n";
+    std::terminate();
+  }
+  return out;
+}
+
+Tensor toTensor(const vector<float>& data, uint xdim, uint ydim, vector<uint> zoffset) {
+  assert(zoffset.size() >= 2);
+  if(2 == zoffset.size())
+    zoffset[1] = xdim;
+  Tensor t(xdim, ydim, zoffset);
   cudaMemcpy(t.data, data.data(), xdim * ydim * sizeof(float), cudaMemcpyHostToDevice);
   return t;
 }

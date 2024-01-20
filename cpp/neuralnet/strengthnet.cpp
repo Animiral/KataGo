@@ -7,36 +7,47 @@
 #include <iomanip>
 
 Tensor::Tensor(uint xdim, uint ydim)
-: data(nullptr), dims{xdim, ydim, 1}, viewDims(dims), transposed(false), isOwner(true) {
+: data(nullptr), zoffset(nullptr), dims{xdim, ydim, 1}, viewDims(dims), transposed(false), isOwner(true) {
   size_t n = dims.x * dims.y;
   CUDA_ERR("Tensor(xdim, ydim)", cudaMalloc(&data, n * sizeof(float)));
+  CUDA_ERR("Tensor(xdim, ydim)", cudaMalloc(&zoffset, 2 * sizeof(uint)));
+  uint zs[] = {0, xdim};
+  CUDA_ERR("Tensor(xdim, ydim)", cudaMemcpy(zoffset, zs, 2 * sizeof(uint), cudaMemcpyHostToDevice));
 }
 
-Tensor::Tensor(uint xdim, uint ydim, uint batchSize, const uint zs[])
-: data(nullptr), dims{xdim, ydim, batchSize}, viewDims(dims), transposed(false), isOwner(true) {
-  assert(batchSize <= MAX_BATCHSIZE);
-  std::copy(zs, zs + batchSize, &zoffset[0]);
-  std::fill(&zoffset[batchSize], &zoffset[MAX_BATCHSIZE], xdim);
-  size_t n = dims.x * dims.y;
-  CUDA_ERR("Tensor(xdim, ydim, batchSize, zs)", cudaMalloc(&data, n * sizeof(float)));
+Tensor::Tensor(uint xdim, uint ydim, const vector<uint>& zs)
+: data(nullptr), zoffset(nullptr), dims{xdim, ydim, static_cast<uint>(zs.size()-1)}, viewDims(dims),
+transposed(false), isOwner(true) {
+  assert(zs.size() >= 2);
+  assert(0 == zs.front());
+  assert(xdim == zs.back());
+  CUDA_ERR("Tensor(xdim, ydim, zs)", cudaMalloc(&data, xdim * ydim * sizeof(float)));
+  CUDA_ERR("Tensor(xdim, ydim, zs)", cudaMalloc(&zoffset, zs.size() * sizeof(uint)));
+  CUDA_ERR("Tensor(xdim, ydim, zs)", cudaMemcpy(zoffset, zs.data(), zs.size() * sizeof(uint), cudaMemcpyHostToDevice));
 }
 
 Tensor::Tensor(const Tensor& rhs)
-: data(rhs.data), dims(rhs.dims), viewDims(rhs.viewDims), transposed(rhs.transposed), isOwner(false)
+: data(rhs.data), zoffset(rhs.zoffset), dims(rhs.dims), viewDims(rhs.viewDims),
+transposed(rhs.transposed), isOwner(false)
 {}
 
 Tensor::Tensor(Tensor&& rhs) noexcept
-: data(rhs.data), dims(rhs.dims), viewDims(rhs.viewDims), transposed(rhs.transposed), isOwner(true) {
+: data(rhs.data), zoffset(rhs.zoffset), dims(rhs.dims), viewDims(rhs.viewDims),
+transposed(rhs.transposed), isOwner(true) {
   rhs.data = nullptr;
+  rhs.zoffset = nullptr;
 }
 
 Tensor::~Tensor() noexcept {
-  if(isOwner)
+  if(isOwner) {
     cudaFree(data);
+    cudaFree(zoffset);
+  }
   data = nullptr;
+  zoffset = nullptr;
 }
 
-Tensor::operator std::vector<float>() const {
+Tensor::operator vector<float>() const {
   size_t n = dims.x * dims.y;
   std::vector<float> result(n);
   CUDA_ERR("Tensor::operator std::vector<float>()", cudaMemcpy(result.data(), data, n * sizeof(float), cudaMemcpyDeviceToHost));
@@ -44,6 +55,7 @@ Tensor::operator std::vector<float>() const {
 }
 
 void Tensor::randomInit(Rand& rand) {
+  assert(1 == dims.z); // weights and biases cannot use batch features
   size_t n = dims.x;
   size_t m = dims.y;
 
@@ -57,10 +69,15 @@ void Tensor::randomInit(Rand& rand) {
 }
 
 Tensor Tensor::clone() const {
-  Tensor copy(dims.x, dims.y, dims.z, zoffset);
+  Tensor copy;
+  CUDA_ERR("Tensor::clone()", cudaMalloc(&copy.data, dims.x * dims.y * sizeof(float)));
+  CUDA_ERR("Tensor::clone()", cudaMemcpy(copy.data, data, dims.x * dims.y * sizeof(float), cudaMemcpyDeviceToDevice));
+  CUDA_ERR("Tensor::clone()", cudaMalloc(&copy.zoffset, (dims.z + 1) * sizeof(uint)));
+  CUDA_ERR("Tensor::clone()", cudaMemcpy(copy.zoffset, zoffset, (dims.z + 1) * sizeof(uint), cudaMemcpyDeviceToDevice));
+  copy.dims = dims;
   copy.viewDims = viewDims;
-  size_t n = dims.x * dims.y;
-  CUDA_ERR("Tensor::clone()", cudaMemcpy(copy.data, data, n * sizeof(float), cudaMemcpyDeviceToDevice));
+  copy.transposed = transposed;
+  copy.isOwner = true;
   return copy;
 }
 
@@ -69,6 +86,7 @@ void Tensor::assignFrom(const Tensor& rhs) {
   assert(dims.y == rhs.dims.y);
   assert(dims.z == rhs.dims.z);
   CUDA_ERR("Tensor::assignFrom()", cudaMemcpy(data, rhs.data, dims.x * dims.y * sizeof(float), cudaMemcpyDeviceToDevice));
+  CUDA_ERR("Tensor::assignFrom()", cudaMemcpy(zoffset, rhs.zoffset, (dims.z + 1) * sizeof(uint), cudaMemcpyDeviceToDevice));
 }
 
 // void Tensor::reshape(uint xdim, uint ydim, uint batchSize) {
@@ -89,6 +107,14 @@ void Tensor::transpose() {
   std::swap(dims.x, dims.y);
   std::swap(viewDims.x, viewDims.y);
   transposed = !transposed;
+}
+
+void Tensor::cat() {
+  viewDims.z = 1;
+}
+
+void Tensor::uncat() {
+  viewDims.z = dims.z;
 }
 
 void Tensor::print(std::ostream& stream, const std::string& name, bool humanReadable) const {
@@ -135,7 +161,7 @@ float Tensor::variance(std::initializer_list<Tensor> ts) {
 }
 
 StrengthNet::StrengthNet()
-: N(0), batchSize(1), zoffset{0},
+: N(0), zoffset{0, 0},
 x(nullptr), h(nullptr), y(nullptr),
 // r(nullptr), // a(nullptr),
 h_grad(nullptr), y_grad(nullptr), tgt(nullptr),
@@ -160,7 +186,7 @@ const uint32_t StrengthNet::STRNET_HEADER = 0x57237;
 
 namespace {
 void tensorFromFile(Tensor& tensor, FILE* file) {
-  size_t bufferSize = tensor.dims.x * tensor.dims.y * tensor.dims.z;
+  size_t bufferSize = tensor.dims.x * tensor.dims.y;
   vector<float> buffer(bufferSize);
   size_t readSize = std::fread(buffer.data(), sizeof(float), bufferSize, file);
   if(bufferSize != readSize)
@@ -168,7 +194,7 @@ void tensorFromFile(Tensor& tensor, FILE* file) {
   CUDA_ERR("tensorFromFile", cudaMemcpy(tensor.data, buffer.data(), bufferSize * sizeof(float), cudaMemcpyHostToDevice));
 }
 void tensorToFile(Tensor& tensor, FILE* file) {
-  size_t bufferSize = tensor.dims.x * tensor.dims.y * tensor.dims.z;
+  size_t bufferSize = tensor.dims.x * tensor.dims.y;
   vector<float> buffer(bufferSize);
   CUDA_ERR("tensorToFile", cudaMemcpy(buffer.data(), tensor.data, bufferSize * sizeof(float), cudaMemcpyDeviceToHost));
   size_t wroteSize = std::fwrite(buffer.data(), sizeof(float), bufferSize, file);
@@ -215,7 +241,7 @@ void StrengthNet::setInput(const std::vector<MoveFeatures>& features) {
   freeTensors();
 
   N = features.size();
-  batchSize = 1;
+  zoffset = {0, static_cast<uint>(N)};
   allocateTensors();
 
   vector<float> rawfeatures(in_ch*N);
@@ -278,39 +304,38 @@ float StrengthNet::gradsVar() const {
 namespace {
   // generate zoffsets for a batch where every input has exactly `step` elements
   vector<uint> iota(size_t batchSize, uint step = 1) {
-    vector<uint> buffer(Tensor::MAX_BATCHSIZE);
-    for(size_t i = 0; i < batchSize; i++)
-      buffer[i] = step * (i+1);
-    for(size_t i = batchSize; i < buffer.size(); i++)
-      buffer[i] = step * batchSize;
+    vector<uint> buffer(batchSize+1);
+    for(size_t i = 0; i < batchSize+1; i++)
+      buffer[i] = step * i;
     return buffer;
   }
 }
 
 void StrengthNet::allocateTensors() {
-  x = new Tensor(N, in_ch, batchSize, zoffset);
-  h = new Tensor(N, hidden_ch, batchSize, zoffset);
-  // r = new Tensor(N, 1, batchSize, zoffset);
-  // a = new Tensor(N, 1, batchSize, zoffset);
+  uint batchSize = zoffset.size() - 1;
+  x = new Tensor(N, in_ch, zoffset);
+  h = new Tensor(N, hidden_ch, zoffset);
+  // r = new Tensor(N, 1, zoffset);
+  // a = new Tensor(N, 1, zoffset);
   vector<uint> yoffsets = iota(batchSize);
-  y = new Tensor(batchSize, 1, batchSize, yoffsets.data());
+  y = new Tensor(batchSize, 1, yoffsets);
 
-  h_grad = new Tensor(N, hidden_ch, batchSize, zoffset);
-  // hr_grad = new Tensor(N, hidden_ch, batchSize, zoffset);
-  // hz_grad = new Tensor(N, hidden_ch, batchSize, zoffset);
-  // r_grad = new Tensor(N, 1, batchSize, zoffset);
-  // z_grad = new Tensor(N, 1, batchSize, zoffset);
-  y_grad = new Tensor(batchSize, 1, batchSize, yoffsets.data());
-  tgt = new Tensor(batchSize, 1, batchSize, yoffsets.data());
+  h_grad = new Tensor(N, hidden_ch, zoffset);
+  // hr_grad = new Tensor(N, hidden_ch, zoffset);
+  // hz_grad = new Tensor(N, hidden_ch, zoffset);
+  // r_grad = new Tensor(N, 1, zoffset);
+  // z_grad = new Tensor(N, 1, zoffset);
+  y_grad = new Tensor(batchSize, 1, yoffsets);
+  tgt = new Tensor(batchSize, 1, yoffsets);
 
-  vector<uint> Woffsets = iota(batchSize, in_ch*hidden_ch);
-  W_grad = new Tensor(in_ch*batchSize, hidden_ch, batchSize, Woffsets.data());
-  // W1_grad = new Tensor(in_ch*batchSize, hidden_ch, batchSize, Woffsets.data())
-  vector<uint> boffsets = iota(batchSize, hidden_ch);
-  b_grad = new Tensor(batchSize, hidden_ch, batchSize, Woffsets.data());
+  vector<uint> Woffsets = iota(batchSize, in_ch);
+  W_grad = new Tensor(in_ch*batchSize, hidden_ch, Woffsets);
+  // W1_grad = new Tensor(in_ch*batchSize, hidden_ch, Woffsets);
+  vector<uint> boffsets = iota(batchSize);
+  b_grad = new Tensor(batchSize, hidden_ch, boffsets);
   // vector<uint> W2offsets = iota(batchSize, hidden_ch);
-  // W2r_grad = new Tensor(hidden_ch*batch_size, 1, batchSize, W2offsets);
-  // W2z_grad = new Tensor(hidden_ch*batch_size, 1, batchSize, W2offsets);
+  // W2r_grad = new Tensor(hidden_ch*batchSize, 1, batchSize, W2offsets);
+  // W2z_grad = new Tensor(hidden_ch*batchSize, 1, batchSize, W2offsets);
 }
 
 void StrengthNet::freeTensors() noexcept {

@@ -7,20 +7,23 @@
 #include "core/rand.h"
 #include <vector>
 
-// C++ wrapper over CUDA
+// C++ wrapper over a chunk of CUDA memory.
+// A Tensor with xdim=5, ydim=2, batchSize=3, zoffset={0, 2, 4, 5} looks like this:
+// + ---> xdim
+// | z[0]     z[1]    z[2]  // zoffset
+// |    1  4    -3  0    9
+// v   -5  0    -2 -1    0
+// ydim
 struct Tensor {
 
-  constexpr static size_t MAX_BATCHSIZE = 100;
-
   float* data;     // GPU device pointer; column-major order
+  uint *zoffset;   // dims.z+1 monotone increasing indexes into data array
   uint3 dims;      // x: #elements in all batches, y: #features, z: #batch
-  uint zoffset[MAX_BATCHSIZE]; // monotone increasing offsets in data array, all must be multiples of dims.y
   uint3 viewDims;  // for broadcasting data along some dimensions
   bool transposed; // if true, data is considered in row-major order instead of column-major
 
-  Tensor() = default;
   explicit Tensor(uint xdim, uint ydim);
-  explicit Tensor(uint xdim, uint ydim, uint batchSize, const uint zs[]);
+  explicit Tensor(uint xdim, uint ydim, const std::vector<uint>& zs);
   Tensor(const Tensor& rhs);                    // copy without ownership (for passing as arg to kernel)
   Tensor(Tensor&& rhs) noexcept;
   Tensor& operator=(const Tensor& rhs) = delete;
@@ -31,15 +34,19 @@ struct Tensor {
   void randomInit(Rand& rand);                  // new weights
   Tensor clone() const;                         // copy with ownership
   void assignFrom(const Tensor& rhs);           // same-size assign
-  // void reshape(uint xdim, uint ydim = 1, uint batchSize = 1);
+  // void reshape(uint xdim, uint ydim = 1, uint batchSize = 1);  // TODO: this will be required for accumulating gradients
   void broadcast(uint xdim, uint ydim = 1, uint batchSize = 1);
   void transpose();                             // swap dims.x & dims.y, flip transposed
+  void cat();                                   // treat the whole batch as single 2D tensor; hcat normally, vcat if transposed
+  void uncat();                                 // go back to viewing the tensor as a batch
   void print(std::ostream& stream, const std::string& name, bool humanReadable = true) const;
 
   static float mean(std::initializer_list<Tensor> ts);
   static float variance(std::initializer_list<Tensor> ts);
 
 private:
+
+  Tensor() = default;
 
   bool isOwner; // this Tensor has ownership of data ptr
 
@@ -96,8 +103,7 @@ private:
   static constexpr std::size_t out_ch = 2;
 
   std::size_t N; // total number of currently processed moves (across all batches)
-  std::size_t batchSize; // allocated 3rd dim of weight gradient tensors
-  uint zoffset[Tensor::MAX_BATCHSIZE]; // batching data common to all data tensors
+  std::vector<uint> zoffset; // batching offsets common to all data tensors
 
   // all non-parameter tensors are allocated to appropriate size with setInput()
   Tensor *x, *h, /* *r, *a,*/ *y;  // (intermediate) calculation values
