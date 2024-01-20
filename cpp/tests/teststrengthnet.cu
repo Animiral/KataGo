@@ -91,12 +91,20 @@ void runStrengthNetTests() {
   }
 
   {
-    Tensor A = toTensor({1, -3, 3,  -1, 1, -1}, 2, 3);
-    Tensor B = toTensor({7, 3,  2, 6}, 2, 2);
-    Tensor C(2, 3);
+    Tensor A = toTensor({7, 3,  2, 6}, 2, 2);
+    Tensor B = toTensor({1, -3,  -1, 1,   -4, -1}, 3, 2, {0, 2, 3});
+    Tensor C(3, 2, {0, 2, 3});
+    matmul(C, A, B);
+    expectApprox(toTensor({1, -15,  -5, 3,   -30, -18}, 3, 2, {0, 2, 3}), C, "batch matmul, left-hand singular");
+  }
+
+  {
+    Tensor A = toTensor({7, 3,  2, 6,   -1, -1}, 3, 2, {0, 2, 3});
+    Tensor B = toTensor({1, -3,  -1, 1,   -4, -1}, 3, 2, {0, 2, 3});
+    Tensor C(4, 2, {0, 2, 4});
     B.transpose();
     matmul(C, A, B);
-    expectApprox(toTensor({5, -19, 19,  -3, -3, 3}, 2, 3), C, "matmul2");
+    expectApprox(toTensor({5, -3, -19, -3,  4, 4, 1, 1}, 4, 2, {0, 2, 4}), C, "batch matmul, left-hand multi, right-hand transposed");
   }
 
   {

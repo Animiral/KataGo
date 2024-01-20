@@ -12,6 +12,7 @@ constexpr dim3 numBlocksForTensor(const Tensor& t, dim3 blockDim);
 namespace StrengthNetImpl
 {
 
+__device__ void getxdim(const Tensor& t, uint z, uint& xdim, uint& offset); // get x-size and offset of z'th layer
 __device__ float& at(const Tensor& t, uint x, uint y = 0, uint z = 0); // tensor element access
 __device__ float accumulate(float* data, uint n, float (*func)(float, float)); // Accumulate data with func
 
@@ -149,34 +150,38 @@ constexpr dim3 numBlocksForTensor(const Tensor& t, dim3 blockDim) {
 namespace StrengthNetImpl
 {
 
+__device__ void getxdim(const Tensor& t, uint z, uint& xdim, uint& offset) {
+  assert(z < t.viewDims.z);
+  if(1 == t.dims.z) // broadcast
+    z = 0;
+  offset = t.zoffset[z];
+  uint upper = t.zoffset[z+1];
+  if(1 == t.viewDims.z) // cat/unbatching
+    upper = t.transposed ? t.viewDims.y : t.viewDims.x;
+  xdim = upper - offset;
+}
+
 __device__ float& at(const Tensor& t, uint x, uint y, uint z) {
   // un-transpose
   uint dimx = t.transposed ? t.dims.y : t.dims.x;
   uint dimy = t.transposed ? t.dims.x : t.dims.y;
-  uint vdimx = t.transposed ? t.viewDims.y : t.viewDims.x;
   uint vdimy = t.transposed ? t.viewDims.x : t.viewDims.y;
   if(t.transposed) {
     float tmp = x;
     x = y;
     y = tmp;
   }
-
   assert(y < vdimy);
-  assert(z < t.viewDims.z);
+
+  uint xdim, offset; // dimx covers whole batch, xdim covers z'th layer
+  getxdim(t, z, xdim, offset);
 
   // implement broadcast
   if(1 == dimx)
     x = 0;
   if(1 == dimy)
     y = 0;
-  if(1 == t.dims.z)
-    z = 0;
-
-  uint offset = t.zoffset[z];
-  uint upper = t.zoffset[z+1];
-  if(1 == t.viewDims.z) // cat/unbatching
-    upper = vdimx;
-  assert(x < upper - offset);
+  assert(x < xdim);
 
   return t.data[(offset + x) * dimy + y];
 }
@@ -214,11 +219,11 @@ __global__ void atK(Tensor t, float* out, uint x, uint y = 0, uint z = 0) {
 }
 
 __global__ void scaleK(Tensor y, float w) {
+  assert(1 == y.viewDims.z); // Tensor must be cat before elementwise ops
   uint xx = blockIdx.x * blockDim.x + threadIdx.x;
   uint yy = blockIdx.y * blockDim.y + threadIdx.y;
-  uint zz = blockIdx.z * blockDim.z + threadIdx.z;
-  if(xx < y.dims.x && yy < y.dims.y && zz < y.dims.z)
-    at(y, xx, yy, zz) *= w;
+  if(xx < y.dims.x && yy < y.dims.y)
+    at(y, xx, yy, 0) *= w;
 }
 
 __global__ void hadamardK(Tensor y, Tensor w) {
@@ -375,10 +380,10 @@ __global__ void accumulateTensorZ(Tensor W) {
 __global__ void updateTensor(Tensor W, const Tensor W_grad, float weightPenalty, float learnrate) {
   assert(W.dims.x == W_grad.dims.x);
   assert(W.dims.y == W_grad.dims.y);
-  assert(1 == W_grad.dims.z);
+  assert(1 == W_grad.viewDims.z);
 
   float delta = 0;
-  for(uint z = 0; z < W_grad.dims.z; z++) {
+  for(uint z = 0; z < W_grad.viewDims.z; z++) {
     delta += at(W_grad, threadIdx.x, threadIdx.y, z);
   }
   delta += at(W, threadIdx.x, threadIdx.y) * 2 * weightPenalty;
@@ -405,7 +410,7 @@ float getelem(const Tensor &t, uint x, uint y, uint z) {
 }
 
 void scale(Tensor& y, float w) {
-  dim3 blockDim(16, 16, 4);
+  dim3 blockDim(32, 32, 1);
   dim3 numBlocks = numBlocksForTensor(y, blockDim);
   scaleK<<<numBlocks, blockDim>>>(y, w);
 }
@@ -417,7 +422,7 @@ void hadamard(Tensor& y, const Tensor& w) {
 }
 
 void matmul(Tensor& y, const Tensor& W, const Tensor& x) {
-  dim3 blockDim(16, 16);
+  dim3 blockDim(16, 16, 4);
   dim3 numBlocks = numBlocksForTensor(y, blockDim);
   matmulK<<<numBlocks, blockDim>>>(y, W, x);
 }
