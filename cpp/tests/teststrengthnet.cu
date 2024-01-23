@@ -165,15 +165,32 @@ void runStrengthNetTests() {
   }
 
   {
-    cout << "- fit one sample: ";
+    cout << "- two-batch smoke test: ";
     vector<MoveFeatures> threemoves = {{.7f, 2.f, .7f, .7f, .1f, 1.f}, {.5f, 0.f, .2f, .6f, .2f, 3.f}, {.3f, -2.f, .8f, .8f, 0.f, 0.f}};
-    float y = 1200.f;
+    vector<MoveFeatures> twomoves = {{.4f, 1.f, .3f, .4f, .05f, 1.5f}, {.5f, 0.5f, .25f, .65f, .2f, 3.f}};
+    vector<vector<MoveFeatures>> features = {threemoves, twomoves};
+    StrengthNet net;
+    Rand rand(123ull); // reproducible seed
+    net.randomInit(rand);
+    net.setInput(features);
+    net.forward();
+    vector<float> y = net.getOutput();
+    cout << "Output = {" << y[0] << "," << y[1] << "}\n";
+  }
+
+  {
+    cout << "- fit two batched samples: ";
+    vector<MoveFeatures> threemoves = {{.7f, 2.f, .7f, .7f, .1f, 1.f}, {.5f, 0.f, .2f, .6f, .2f, 3.f}, {.3f, -2.f, .8f, .8f, 0.f, 0.f}};
+    vector<MoveFeatures> twomoves = {{.4f, 1.f, .3f, .4f, .05f, 1.5f}, {.5f, 0.5f, .25f, .65f, .2f, 3.f}};
+    vector<vector<MoveFeatures>> features = {threemoves, twomoves};
+    vector<float> ys = {1200.f, 1300.f};
     float learnrate = 0.01f;
 
     StrengthNet net;
     Rand rand(123ull); // reproducible seed
     net.randomInit(rand);
-    net.setInput({threemoves});
+    net.setInput(features);
+    net.setTarget(ys);
     // net.printWeights(cout, "before update");
     // net.forward();
     // net.printState(cout, "before update");
@@ -188,19 +205,18 @@ void runStrengthNetTests() {
     for(int i = 0; i < 40*int(1.f/learnrate); i++) { // perfectly fit to threemoves input
       net.forward();
       // if(i%100==0)cout << "Training " << i << ": " << net.getOutput() << "\n";
-      net.setTarget({y});
       net.backward();
       net.update(0.f, learnrate);
     }
 
     net.forward();
     // net.printState(cout, "after update");
-    float y_hat2 = net.getOutput()[0];
-    bool pass = fabs(y - y_hat2) <= 0.01f;
+    vector<float> y_hat2 = net.getOutput();
+    bool pass = fabs(ys[0] - y_hat2[0]) + fabs(ys[1] - y_hat2[1]) <= 0.01f;
     cout << (pass ? "pass" : "fail") << "\n";
     
     if(!pass) {
-      cout << "Output after training: " << y_hat2 << "; label: " << y << "\n";
+      cout << "Output after training: {" << y_hat2[0] << "," << y_hat2[1] << "}; label: {" << ys[0] << "," << ys[1] << "}\n";
     }
   }
 }

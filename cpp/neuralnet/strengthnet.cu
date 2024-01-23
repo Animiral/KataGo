@@ -21,7 +21,7 @@ __global__ void scaleK(Tensor y, float w); // y = y * w
 __global__ void hadamardK(Tensor y, const Tensor w); // y = y ⊙ w
 __global__ void matmulK(Tensor y, const Tensor W, const Tensor x); // y = W * x
 __global__ void addK(Tensor y, const Tensor x); // y = y + x
-__global__ void minK(Tensor y, const Tensor x); // y = min(x) across x-dimension
+__global__ void minK(Tensor a, const Tensor t); // y = min(x) across x-dimension
 __global__ void minDerivedK(Tensor x_grad, const Tensor y_grad, const Tensor x, const Tensor y); // x_grad = y_grad * d_min(x) / d_x
 
 __global__ void sumK(Tensor a, const Tensor t); // a = sum(t) across x-dimension
@@ -53,10 +53,12 @@ void StrengthNet::forward() {
   assert(x); // tensors must be allocated by previous setInput()
 
   // // layer 1
+  h->cat(); x->cat();
   matmul(*h, W, *x);
   b.broadcast(N, hidden_ch);
   add(*h, b);
   b.broadcast(1, hidden_ch); // reset
+  h->uncat(); x->uncat();
   // matmul<<<numBlocks, blockDim2d>>>(*h, W1, *x);
   // numBlocks = dim3((N * h->dims.y + blockDim1d.x - 1) / blockDim1d.x);
   // relu<<<numBlocks, blockDim1d>>>(*h);
@@ -88,7 +90,9 @@ void StrengthNet::backward() {
 
   // dL/dW = dL/dh * x^T; dL/db = sum(dL/dh)
   x->transpose();
+  h_grad->cat(); x->cat();
   matmul(*W_grad, *h_grad, *x);
+  h_grad->uncat(); x->uncat();
   x->transpose(); // reset
   sum(*b_grad, *h_grad);
 
@@ -267,32 +271,58 @@ __global__ void matmulK(Tensor y, const Tensor W, const Tensor x) {
 __global__ void addK(Tensor y, const Tensor x) {
   assert(y.dims.x == x.viewDims.x);
   assert(y.dims.y == x.viewDims.y);
-  assert(y.dims.z == x.viewDims.z);
+  assert(y.viewDims.z == x.viewDims.z);
+  assert(y.viewDims.z <= y.dims.z); // do not multiple-assign
 
   uint xx = blockIdx.x * blockDim.x + threadIdx.x;
   uint yy = blockIdx.y * blockDim.y + threadIdx.y;
   uint zz = blockIdx.z * blockDim.z + threadIdx.z;
-  if(xx >= y.dims.x || yy >= y.dims.y || zz >= y.dims.z)
+
+  if(yy >= y.dims.y || zz >= y.viewDims.z)
+    return;
+
+  uint xdim, offset; // dimx covers whole batch, xdim covers z'th layer
+  getxdim(y, zz, xdim, offset);
+
+  if(xx >= xdim)
     return;
 
   at(y, xx, yy, zz) += at(x, xx, yy, zz);
 }
 
-__global__ void minK(Tensor y, const Tensor x) {
-  assert(1 == y.dims.x);
-  assert(y.dims.y == x.viewDims.y);
-  assert(y.dims.z == x.viewDims.z);
-  assert(1 == y.dims.y); // TODO: parallelism support
-  assert(1 == y.dims.z); // TODO: parallelism support
+__global__ void minK(Tensor a, const Tensor t) {
+  assert(a.dims.y == t.viewDims.y);
+  assert(a.dims.z == t.viewDims.z);
+  if(0 == t.viewDims.x) // empty tensor: nothing to do
+    return;
+  assert(0 == blockIdx.x);
+  assert(0 == threadIdx.x); // x-sum is single-threaded
 
-  // uint yy = blockIdx.y * blockDim.y + threadIdx.y;
-  // uint zz = blockIdx.z * blockDim.z + threadIdx.z;
-  // if(yy >= y.dims.y || zz >= y.dims.z)
-  //   return;
+  uint y = blockIdx.y * blockDim.y + threadIdx.y;
+  uint z = blockIdx.z * blockDim.z + threadIdx.z;
 
-  float minValue = accumulate(x.data, x.dims.x, [](float a, float b) { return a < b ? a : b; });
-  if(0 == threadIdx.x)
-    y.data[0] = minValue;
+  if(y >= t.dims.y || z >= t.dims.z)
+    return;
+
+  uint xdim, offset;
+  getxdim(t, z, xdim, offset);
+  
+  uint n = xdim; // remaining elements to sum
+  float* buffer = (float*)malloc(n * sizeof(float));
+  for(uint x = 0; x < n; x++)
+    buffer[x] = at(t, x, y, z);
+
+  for(uint s = n/2; s > 0; s = n/2) {
+    for(uint x = 0; x + n - s < n; x++) { // sum second half of data into first half
+      float v = buffer[x + n - s];
+      if(v < buffer[x])
+        buffer[x] = v;
+    }
+    n -= s; // discard second half
+  }
+
+  at(a, 0, y, z) = buffer[0];
+  free(buffer);
 }
 
 __global__ void minDerivedK(Tensor x_grad, const Tensor y_grad, const Tensor x, const Tensor y) {
@@ -490,8 +520,9 @@ void relu(Tensor& t) {
 }
 
 void min(Tensor& y, const Tensor& x) {
-  uint numBlocks = (x.dims.x + 1023) / 1024;
-  minK<<<numBlocks, 1024, x.dims.x*sizeof(float)>>>(y, x);
+  dim3 blockDim(1, 32, 32);
+  dim3 numBlocks(1, (x.viewDims.y+31)/32, (x.viewDims.z+31)/32);
+  minK<<<numBlocks, blockDim>>>(y, x);
 }
 
 void minDerived(Tensor& x_grad, const Tensor& y_grad, const Tensor& x, const Tensor& y) {

@@ -242,29 +242,41 @@ void StrengthNet::setInput(const vector<vector<MoveFeatures>>& features) {
   freeTensors();
 
   // TODO: complete batch
-  const auto& f0 = features[0];
-  N = f0.size();
-  // zoffset.resize(features.size() + 1);
-  zoffset = {0, static_cast<uint>(N)};
+  N = 0;
+  zoffset.resize(features.size() + 1);
+  zoffset[0] = 0;
+  for(size_t i = 0; i < features.size(); i++) {
+    N += features[i].size();
+    zoffset[i+1] = N;
+  }
   allocateTensors();
 
   vector<float> rawfeatures(in_ch*N);
-  for(size_t i = 0; i < N; i++) {
-    rawfeatures[in_ch*i+0] = f0[i].winProb - .5f;
-    rawfeatures[in_ch*i+1] = f0[i].lead * .1f;
-    rawfeatures[in_ch*i+2] = f0[i].movePolicy - .5f;
-    rawfeatures[in_ch*i+3] = f0[i].maxPolicy - .5f;
-    rawfeatures[in_ch*i+4] = f0[i].winrateLoss;
-    rawfeatures[in_ch*i+5] = f0[i].pointsLoss * .1f;
+  for(size_t j = 0; j < features.size(); j++) {
+  for(size_t i = 0; i < features[j].size(); i++) {
+    uint zoff = zoffset[j];
+    rawfeatures[in_ch*(i+zoff)+0] = features[j][i].winProb - .5f;
+    rawfeatures[in_ch*(i+zoff)+1] = features[j][i].lead * .1f;
+    rawfeatures[in_ch*(i+zoff)+2] = features[j][i].movePolicy - .5f;
+    rawfeatures[in_ch*(i+zoff)+3] = features[j][i].maxPolicy - .5f;
+    rawfeatures[in_ch*(i+zoff)+4] = features[j][i].winrateLoss;
+    rawfeatures[in_ch*(i+zoff)+5] = features[j][i].pointsLoss * .1f;
+  }
   }
 
   CUDA_ERR("StrengthNet::setInput", cudaMemcpy(x->data, rawfeatures.data(), in_ch * N * sizeof(float), cudaMemcpyHostToDevice));
 }
 
 vector<float> StrengthNet::getOutput() const {
-  float output;
-  CUDA_ERR("StrengthNet::getOutput", cudaMemcpy(&output, y->data, sizeof(float), cudaMemcpyDeviceToHost));
-  return { output * 500.f + 1500.f };
+  assert(zoffset.size() > 0);
+  uint batchSize = zoffset.size()-1;
+  vector<float> output(batchSize);
+  CUDA_ERR("StrengthNet::getOutput", cudaMemcpy(output.data(), y->data, output.size() * sizeof(float), cudaMemcpyDeviceToHost));
+
+  for(float& o : output)
+    o = o * 500.f + 1500.f;
+
+  return output;
 }
 
 void StrengthNet::setTarget(const Output& targets) {
