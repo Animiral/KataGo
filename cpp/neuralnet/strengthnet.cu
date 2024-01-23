@@ -74,18 +74,14 @@ void StrengthNet::forward() {
   // dotproduct<<<1, 1>>>(*y, *r, *a);
 }
 
-void StrengthNet::backward(float target/*, size_t index*/) {
+void StrengthNet::backward() {
   assert(tgt); // tensors must be allocated by previous setInput()
-
-  target = (target - 1500.f) / 500.f;
-  cudaMemcpy(tgt->data, &target, sizeof(float), cudaMemcpyHostToDevice);
 
   // dL/dy = 2(y - tgt)
   y_grad->assignFrom(*y);
   scale(*y_grad, 2.f);
   scale(*tgt, -2.f);
   add(*y_grad, *tgt);
-  // lossDerived<<<1,1>>>(*y_grad, *target, *y); // dL/dy
 
   // dL/dh = dL/dy * I_min(h)
   minDerived(*h_grad, *y_grad, *h, *y);

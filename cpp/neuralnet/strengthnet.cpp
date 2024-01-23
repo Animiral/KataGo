@@ -236,31 +236,45 @@ void StrengthNet::saveModelFile(const std::string& path) {
     throw IOError("Failed to save complete strength model to " + path);
 }
 
-void StrengthNet::setInput(const std::vector<MoveFeatures>& features) {
+void StrengthNet::setInput(const vector<vector<MoveFeatures>>& features) {
   static_assert(6 == in_ch, "this function must be adapted if in_ch changes");
+  assert(features.size() > 0); // must have at least one input
   freeTensors();
 
-  N = features.size();
+  // TODO: complete batch
+  const auto& f0 = features[0];
+  N = f0.size();
+  // zoffset.resize(features.size() + 1);
   zoffset = {0, static_cast<uint>(N)};
   allocateTensors();
 
   vector<float> rawfeatures(in_ch*N);
   for(size_t i = 0; i < N; i++) {
-    rawfeatures[in_ch*i+0] = features[i].winProb - .5f;
-    rawfeatures[in_ch*i+1] = features[i].lead * .1f;
-    rawfeatures[in_ch*i+2] = features[i].movePolicy - .5f;
-    rawfeatures[in_ch*i+3] = features[i].maxPolicy - .5f;
-    rawfeatures[in_ch*i+4] = features[i].winrateLoss;
-    rawfeatures[in_ch*i+5] = features[i].pointsLoss * .1f;
+    rawfeatures[in_ch*i+0] = f0[i].winProb - .5f;
+    rawfeatures[in_ch*i+1] = f0[i].lead * .1f;
+    rawfeatures[in_ch*i+2] = f0[i].movePolicy - .5f;
+    rawfeatures[in_ch*i+3] = f0[i].maxPolicy - .5f;
+    rawfeatures[in_ch*i+4] = f0[i].winrateLoss;
+    rawfeatures[in_ch*i+5] = f0[i].pointsLoss * .1f;
   }
 
   CUDA_ERR("StrengthNet::setInput", cudaMemcpy(x->data, rawfeatures.data(), in_ch * N * sizeof(float), cudaMemcpyHostToDevice));
 }
 
-float StrengthNet::getOutput() const {
+vector<float> StrengthNet::getOutput() const {
   float output;
   CUDA_ERR("StrengthNet::getOutput", cudaMemcpy(&output, y->data, sizeof(float), cudaMemcpyDeviceToHost));
-  return output * 500.f + 1500.f;
+  return { output * 500.f + 1500.f };
+}
+
+void StrengthNet::setTarget(const Output& targets) {
+  assert(tgt); // tensors must be allocated by previous setInput()
+  assert(tgt->dims.z == targets.size());
+
+  vector<float> scaledTargets = targets;
+  for(float& f : scaledTargets)
+    f = (f - 1500.f) / 500.f;
+  cudaMemcpy(tgt->data, scaledTargets.data(), scaledTargets.size() * sizeof(float), cudaMemcpyHostToDevice);
 }
 
 void StrengthNet::printWeights(std::ostream& stream, const std::string& name, bool humanReadable) const {

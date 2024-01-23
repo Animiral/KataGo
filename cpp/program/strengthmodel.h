@@ -111,7 +111,7 @@ private:
 
 };
 
-using FeaturesAndTargets = std::vector<std::pair<StrengthNet::Input, StrengthNet::Output> >;
+using FeaturesAndTargets = std::vector<std::pair<std::vector<MoveFeatures>, float> >;
 
 // This class encapsulates the main strength model functions on a dataset.
 // It can extract features (=one-time preprocessing with Kata net), train our model, and evaluate it.

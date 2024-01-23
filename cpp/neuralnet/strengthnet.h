@@ -73,8 +73,8 @@ class StrengthNet {
 
 public:
 
-  using Input = std::vector<MoveFeatures>;
-  using Output = float;
+  using Input = std::vector<std::vector<MoveFeatures>>; // batch of recent move sets
+  using Output = std::vector<float>; // batch of modeled ratings
 
   StrengthNet(); // weights are not initialized by default
   ~StrengthNet();
@@ -83,10 +83,11 @@ public:
   bool loadModelFile(const std::string& path); // load weights
   void saveModelFile(const std::string& path); // store weights
 
-  void setInput(const std::vector<MoveFeatures>& features); // host to GPU, with scaling
-  float getOutput() const;                     // GPU to host, with scaling
+  void setInput(const Input& features); // host to GPU, with scaling
+  Output getOutput() const;             // GPU to host, with scaling
   void forward();
-  void backward(float target);   // buffers must be filled by forward pass
+  void setTarget(const Output& targets); // before backward(), targets size must match last forward batch size
+  void backward();                       // buffers must be filled by forward pass
   void mergeGrads();
   void update(float weightPenalty, float learnrate);
   void printWeights(std::ostream& stream, const std::string& name, bool humanReadable = true) const;

@@ -290,12 +290,12 @@ SmallPredictor::SmallPredictor(StrengthNet& strengthNet) noexcept : net(&strengt
 
 Dataset::Prediction SmallPredictor::predict(const MoveFeatures* blackFeatures, size_t blackCount, const MoveFeatures* whiteFeatures, size_t whiteCount) {
   Dataset::Prediction prediction;
-  net->setInput(vector<MoveFeatures>(blackFeatures, blackFeatures + blackCount));
+  net->setInput({vector<MoveFeatures>(blackFeatures, blackFeatures + blackCount)});
   net->forward();
-  prediction.blackRating = net->getOutput();
-  net->setInput(vector<MoveFeatures>(whiteFeatures, whiteFeatures + whiteCount));
+  prediction.blackRating = net->getOutput()[0];
+  net->setInput({vector<MoveFeatures>(whiteFeatures, whiteFeatures + whiteCount)});
   net->forward();
-  prediction.whiteRating = net->getOutput();
+  prediction.whiteRating = net->getOutput()[0];
   prediction.score = eloScore(prediction.blackRating, prediction.whiteRating);
   return prediction;
 }
@@ -428,14 +428,15 @@ void StrengthModel::train(FeaturesAndTargets& xy, size_t split, int epochs, size
 
   for(int e = 0; e < epochs; e++) {
     float grads_var = 0;
-    std::shuffle(&xy[0], &xy[split], rand);
+    std::shuffle(&xy[0], &xy[split], rand); // TODO: use Dataset.set markers
     // train weights
     for(int i = 0; i < split; i += batchSize) {
       for(size_t b = 0; i+b < split && b < batchSize; b++) {
-        net.setInput(xy[i+b].first);
+        net.setInput({xy[i+b].first});
         net.forward();
         // cout << "Sample #" << i << "(" << xy[i].first.size() << " moves): (" << y_hat << "-" << xy[i].second << ")^2 = " << (y_hat-xy[i].second)*(y_hat-xy[i].second) << "\n";
-        net.backward(xy[i+b].second/*, b*/);
+        net.setTarget({xy[i+b].second});
+        net.backward();
         grads_var += net.gradsVar();
       }
       net.mergeGrads();
@@ -455,9 +456,9 @@ void StrengthModel::train(FeaturesAndTargets& xy, size_t split, int epochs, size
     // test epoch result
     float mse_training = 0; // error on training set
     for(int i = 0; i < split; i++) {
-      net.setInput(xy[i].first);
+      net.setInput({xy[i].first});
       net.forward();
-      float y_hat = net.getOutput();
+      float y_hat = net.getOutput()[0];
       float sqerr = (y_hat - xy[i].second) * (y_hat - xy[i].second);
       mse_training += sqerr;
     }
@@ -465,9 +466,9 @@ void StrengthModel::train(FeaturesAndTargets& xy, size_t split, int epochs, size
 
     float mse = 0;
     for(int i = split; i < xy.size(); i++) {
-      net.setInput(xy[i].first);
+      net.setInput({xy[i].first});
       net.forward();
-      float y_hat = net.getOutput();
+      float y_hat = net.getOutput()[0];
       float sqerr = (y_hat - xy[i].second) * (y_hat - xy[i].second);
       mse += sqerr;
     }

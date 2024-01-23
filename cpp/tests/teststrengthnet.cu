@@ -173,7 +173,7 @@ void runStrengthNetTests() {
     StrengthNet net;
     Rand rand(123ull); // reproducible seed
     net.randomInit(rand);
-    net.setInput(threemoves);
+    net.setInput({threemoves});
     // net.printWeights(cout, "before update");
     // net.forward();
     // net.printState(cout, "before update");
@@ -188,13 +188,14 @@ void runStrengthNetTests() {
     for(int i = 0; i < 40*int(1.f/learnrate); i++) { // perfectly fit to threemoves input
       net.forward();
       // if(i%100==0)cout << "Training " << i << ": " << net.getOutput() << "\n";
-      net.backward(y); // , 0);
+      net.setTarget({y});
+      net.backward();
       net.update(0.f, learnrate);
     }
 
     net.forward();
     // net.printState(cout, "after update");
-    float y_hat2 = net.getOutput();
+    float y_hat2 = net.getOutput()[0];
     bool pass = fabs(y - y_hat2) <= 0.01f;
     cout << (pass ? "pass" : "fail") << "\n";
     

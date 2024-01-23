@@ -149,9 +149,9 @@ int MainCmds::strength_analysis(const vector<string>& args) {
   }
   size_t N = playerFeatures.size();
   cout << "Avg win%% loss: "  << std::fixed << std::setprecision(3) << wloss/N << ", pt loss: " << ploss/N << ".\n";
-  strengthModel.net.setInput(playerFeatures);
+  strengthModel.net.setInput({playerFeatures});
   strengthModel.net.forward();
-  cout << "Rating for " << playerName << ": " << std::fixed << std::setprecision(2) << strengthModel.net.getOutput() << "\n";
+  cout << "Rating for " << playerName << ": " << std::fixed << std::setprecision(2) << strengthModel.net.getOutput()[0] << "\n";
 
   delete nnEval;
   NeuralNet::globalCleanup();

@@ -159,7 +159,7 @@ void runStrengthModelTests(const string& modelFile, const string& listFile, cons
     StrengthNet net;
     Rand rand(123ull); // reproducible seed
     net.randomInit(rand);
-    net.setInput(game.black.features);
+    net.setInput({game.black.features});
     cout << game.black.features.size() << " input features\n";
     // net.printWeights(cout, "initial values");
     // std::ofstream hfile("h_values.csv"); // debug csv
@@ -168,7 +168,8 @@ void runStrengthModelTests(const string& modelFile, const string& listFile, cons
     for(i = 0; i < 100; i++) {
       net.forward();
       // net.h.print(hfile, "h", false);
-      net.backward(game.black.rating); //, 0);
+      net.setTarget({game.black.rating});
+      net.backward();
       net.update(weightPenalty, learnrate);
       cout << "epoch " << i << ": thetavar=" << net.thetaVar() << "\n";
     }
@@ -196,8 +197,8 @@ void runStrengthModelTests(const string& modelFile, const string& listFile, cons
     // net.printWeights(cout, "after " + Global::intToString(i) + " epochs ");
 
     net.forward();
-    estimate = net.getOutput();
-    pass = fabs(net.getOutput() - game.black.rating) <= 0.1f;
+    estimate = net.getOutput()[0];
+    pass = fabs(estimate - game.black.rating) <= 0.1f;
 
     cout << "Estimate: " << estimate << ", target: " << game.black.rating << "\n";
     cout << (pass ? "pass" : "fail") << "\n";
@@ -298,17 +299,18 @@ bool fitsOneSample(vector<MoveFeatures> features, float target, int epochs, floa
     StrengthNet net;
     Rand rand(123ull); // reproducible seed
     net.randomInit(rand);
-    net.setInput(features);
+    net.setInput({features});
 
     for(int i = 0; i < epochs; i++) {
       net.forward();
-      net.backward(target); //, 0);
+      net.setTarget({target});
+      net.backward();
       net.update(weightPenalty, learnrate);
     }
 
     net.forward();
-    estimate = net.getOutput();
-    return fabs(net.getOutput() - target) <= 0.1f;
+    estimate = net.getOutput()[0];
+    return fabs(estimate - target) <= 0.1f;
 }
 
 bool featuresEqual(const MoveFeatures* actual, const MoveFeatures* expected, size_t count) {
