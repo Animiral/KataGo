@@ -228,6 +228,19 @@ float Predictor::eloScore(float blackRating, float whiteRating) {
   return Qblack / (Qblack + Qwhite);
 }
 
+// TODO: adapt code from OGS/goratings into glickoScore
+    // def expected_win_probability(self, white: "Glicko2Entry", handicap_adjustment: float, ignore_g: bool = False) -> float:
+    //     # Implementation extracted from glicko2_update below.
+    //     if not ignore_g:
+    //         def g() -> float:
+    //             return 1
+    //     else:
+    //         def g() -> float:
+    //             return 1 / sqrt(1 + (3 * white.phi ** 2) / (pi ** 2))
+
+    //     E = 1 / (1 + exp(-g() * (self.rating + handicap_adjustment - white.rating) / GLICKO2_SCALE))
+    //     return E
+
 namespace {
 
 float fSum(float a[], size_t N) noexcept {  // sum with slightly better numerical stability

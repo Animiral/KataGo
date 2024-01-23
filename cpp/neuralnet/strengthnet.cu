@@ -23,11 +23,12 @@ __global__ void matmulK(Tensor y, const Tensor W, const Tensor x); // y = W * x
 __global__ void addK(Tensor y, const Tensor x); // y = y + x
 __global__ void minK(Tensor y, const Tensor x); // y = min(x) across x-dimension
 __global__ void minDerivedK(Tensor x_grad, const Tensor y_grad, const Tensor x, const Tensor y); // x_grad = y_grad * d_min(x) / d_x
-__global__ void sumK(Tensor y, const Tensor x); // y = sum(x) across x-dimension
 
-__global__ void relu(Tensor h); // in-place relu
-__global__ void softmax(Tensor a); // in-place softmax
-__global__ void softmaxDerived(Tensor z_grad, const Tensor a); // z_grad = d_softmax(z) / d_z where a = softmax(z)
+__global__ void sumK(Tensor a, const Tensor t); // a = sum(t) across x-dimension
+__global__ void reluK(Tensor h); // in-place relu
+__global__ void softmaxK(Tensor a); // in-place softmax
+__global__ void softmaxDerivedK(Tensor a_grad, const Tensor z_grad, const Tensor a); // a_grad = z_grad * d_softmax(z) / d_z where a = softmax(z)
+
 __global__ void accumulateTensorZ(Tensor W); // reduce z dimension by sum
 __global__ void updateTensor(Tensor W, const Tensor W_grad, float weightPenalty, float learnrate); // W = W - W_grad * learnrate - d_(W ⊙ W) / d_W * weightPenalty
 
@@ -36,9 +37,13 @@ void scale(Tensor& y, float w);
 void hadamard(Tensor& y, const Tensor& w);
 void matmul(Tensor& y, const Tensor& W, const Tensor& x);
 void add(Tensor& y, const Tensor& x);
+void relu(Tensor& t);
 void min(Tensor& y, const Tensor& x);
+void max(Tensor& y, const Tensor& x);
 void minDerived(Tensor& x_grad, const Tensor& y_grad, const Tensor& x, const Tensor& y);
 void sum(Tensor& y, const Tensor& x);
+void softmax(Tensor& a);
+void softmaxDerived(Tensor& a_grad, const Tensor& z_grad, const Tensor& a);
 
 }
 
@@ -240,11 +245,13 @@ __global__ void hadamardK(Tensor y, Tensor w) {
 // y = W*x
 // set blocks to partition y into squares
 __global__ void matmulK(Tensor y, const Tensor W, const Tensor x) {
-  assert(W.dims.x == x.dims.y); // input size must match
-  assert(y.dims.x == x.dims.x); // output size must match
-  assert(y.dims.y == W.dims.y); // output size must match
-  assert(1 == W.dims.z);
-  assert(1 == x.dims.z); // TODO: support parallelism
+  assert(W.viewDims.x == x.viewDims.y); // input size must match
+  assert(y.dims.x == x.viewDims.x); // output size must match
+  assert(y.dims.y == W.viewDims.y); // output size must match
+  assert(1 == W.viewDims.z); // tensors must be cat() for matmul
+  assert(1 == x.viewDims.z);
+  assert(1 == y.viewDims.z);
+  assert(!y.transposed); // view on output must be unchanged to ensure proper bounds
 
   // naive implementation
   uint row = blockIdx.y * blockDim.y + threadIdx.y;
@@ -255,7 +262,7 @@ __global__ void matmulK(Tensor y, const Tensor W, const Tensor x) {
     return;
 
   float h = 0.0f;
-  for (uint i = 0; i < x.dims.y; i++) {
+  for (uint i = 0; i < x.viewDims.y; i++) {
     h += at(W, i, row) * at(x, col, i);
   }
   at(y, col, row) = h;
@@ -313,19 +320,40 @@ __global__ void minDerivedK(Tensor x_grad, const Tensor y_grad, const Tensor x, 
   x_grad.data[threadIdx.x] = y_grad.data[0] * (x.data[threadIdx.x] == minValue);
 }
 
-__global__ void sumK(Tensor y, const Tensor x) {
-  assert(1 == y.dims.x);
-  assert(y.dims.y == x.viewDims.y);
-  assert(y.dims.z == x.viewDims.z);
-  assert(1 == y.dims.y); // TODO: parallelism support
-  assert(1 == y.dims.z); // TODO: parallelism support
+__global__ void sumK(Tensor a, const Tensor t) {
+  assert(a.dims.y == t.viewDims.y);
+  assert(a.dims.z == t.viewDims.z);
+  if(0 == t.viewDims.x) // empty tensor: nothing to do
+    return;
+  assert(0 == blockIdx.x);
+  assert(0 == threadIdx.x); // x-sum is single-threaded
 
-  float sumValue = accumulate(x.data, x.viewDims.x, [](float a, float b) { return a + b; });
-  if(0 == threadIdx.x)
-    y.data[0] = sumValue;
+  uint y = blockIdx.y * blockDim.y + threadIdx.y;
+  uint z = blockIdx.z * blockDim.z + threadIdx.z;
+
+  if(y >= t.dims.y || z >= t.dims.z)
+    return;
+
+  uint xdim, offset;
+  getxdim(t, z, xdim, offset);
+  
+  uint n = xdim; // remaining elements to sum
+  float* buffer = (float*)malloc(n * sizeof(float));
+  for(uint x = 0; x < n; x++)
+    buffer[x] = at(t, x, y, z);
+
+  for(uint s = n/2; s > 0; s = n/2) {
+    for(uint x = 0; x + n - s < n; x++) { // sum second half of data into first half
+      buffer[x] = buffer[x] + buffer[x + n - s];
+    }
+    n -= s; // discard second half
+  }
+
+  at(a, 0, y, z) = buffer[0];
+  free(buffer);
 }
 
-__global__ void relu(Tensor h) {
+__global__ void reluK(Tensor h) {
   int i = blockIdx.x * blockDim.x + threadIdx.x;
   if(i >= h.dims.x * h.dims.y)
     return;
@@ -334,37 +362,64 @@ __global__ void relu(Tensor h) {
     h.data[i] = 0;
 }
 
-// uses a.dims.x shared memory floats
-__global__ void softmax(Tensor a) {
+__global__ void softmaxK(Tensor a) {
   assert(1 == a.dims.y);
-  assert(1 == a.dims.z); // TODO: batch softmax
   assert(a.dims.x == a.viewDims.x);
 
-  int i = threadIdx.x;
-  if(i >= a.dims.x)
+  int i = blockIdx.x * blockDim.x + threadIdx.x;
+  if(i >= a.dims.z)
     return;
 
-  float max_a = accumulate(a.data, a.dims.x, [](float a, float b) { return a > b ? a : b; });
-  at(a, i) = expf(at(a, i) - max_a);  // -max(a) improves numerical stability without changing the result
-  float sum_a = accumulate(a.data, a.dims.x, [](float a, float b) { return a + b; });
-  at(a, i) /= sum_a;
+  uint xdim, offset;
+  getxdim(a, i, xdim, offset);
+
+  float maxValue = at(a, 0, 0, i);
+  for(uint j = 1; j < xdim; j++) {
+    float v = at(a, j, 0, i);
+    if(v > maxValue)
+      maxValue = v;
+  }
+
+  float sum = 0;
+  for(uint j = 0; j < xdim; j++) {
+    float v = exp(at(a, j, 0, i));
+    at(a, j, 0, i) = v;
+    sum += v;
+  }
+
+  for(uint j = 0; j < xdim; j++) {
+    at(a, j, 0, i) = at(a, j, 0, i) / sum;
+  }
 }
 
-__global__ void softmaxDerived(Tensor z_grad, const Tensor a) {
+__global__ void softmaxDerivedK(Tensor a_grad, const Tensor z_grad, const Tensor a) {
+  assert(a_grad.dims.x == a.dims.x);
+  assert(a_grad.dims.y == a.dims.y);
   assert(z_grad.dims.x == a.dims.x);
+  assert(1 == z_grad.dims.y);
+  assert(1 == a.dims.y);
+  assert(z_grad.dims.y == a.dims.y);
 
   int j = blockIdx.x * blockDim.x + threadIdx.x;
   if(j >= z_grad.dims.x)
     return;
 
-  float a_j = at(a, j);
+  // find my batch layer according to my index j
+  uint zj = j * a.dims.z / a.dims.x; // should be pretty close, now adjust step by step
+  while(a.zoffset[zj] > j)
+    zj--;
+  while(a.zoffset[zj+1] <= j)
+    zj++;
+  uint lower = a.zoffset[zj];
+  uint upper = a.zoffset[zj+1];
+
+  float a_j = a.data[j];
   float b = 0;
-  for(uint i = 0; i < a.dims.x; i++) {
-    float delta = i == threadIdx.x ? 1.f : 0.f;
-    b += at(z_grad, i) * at(a, i) * (delta - a_j);
+  for(uint i = lower; i < upper; i++) {
+    float delta = i == j ? 1.f : 0.f;
+    b += z_grad.data[i] * a.data[i] * (delta - a_j);
   }
-  __syncthreads();
-  at(z_grad, j) = b;
+  a_grad.data[j] = b;
 }
 
 // 1 block with W.dims threads
@@ -422,7 +477,7 @@ void hadamard(Tensor& y, const Tensor& w) {
 }
 
 void matmul(Tensor& y, const Tensor& W, const Tensor& x) {
-  dim3 blockDim(16, 16, 4);
+  dim3 blockDim(16, 16, 1);
   dim3 numBlocks = numBlocksForTensor(y, blockDim);
   matmulK<<<numBlocks, blockDim>>>(y, W, x);
 }
@@ -431,6 +486,11 @@ void add(Tensor& y, const Tensor& x) {
   dim3 blockDim(16, 16, 4);
   dim3 numBlocks = numBlocksForTensor(y, blockDim);
   addK<<<numBlocks, blockDim>>>(y, x);
+}
+
+void relu(Tensor& t) {
+  uint numBlocks = (t.dims.x * t.dims.y + 1023) / 1024;
+  reluK<<<numBlocks, 1024>>>(t);
 }
 
 void min(Tensor& y, const Tensor& x) {
@@ -444,8 +504,19 @@ void minDerived(Tensor& x_grad, const Tensor& y_grad, const Tensor& x, const Ten
 }
 
 void sum(Tensor& y, const Tensor& x) {
-  uint numBlocks = (x.dims.x + 1023) / 1024;
-  sumK<<<numBlocks, 1024, x.dims.x*sizeof(float)>>>(y, x);
+  dim3 blockDim(1, 32, 32);
+  dim3 numBlocks(1, (x.viewDims.y+31)/32, (x.viewDims.z+31)/32);
+  sumK<<<numBlocks, blockDim>>>(y, x);
+}
+
+void softmax(Tensor& a) {
+  uint numBlocks = (a.dims.z + 1023) / 1024;
+  softmaxK<<<numBlocks, 1024>>>(a);
+}
+
+void softmaxDerived(Tensor& a_grad, const Tensor& z_grad, const Tensor& a) {
+  uint numBlocks = (a.dims.x + 1023) / 1024;
+  softmaxDerivedK<<<numBlocks, 1024>>>(a_grad, z_grad, a);
 }
 
 } // end namespace StrengthNetImpl

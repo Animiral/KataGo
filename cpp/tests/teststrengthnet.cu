@@ -8,22 +8,17 @@ using namespace std;
 
 namespace StrengthNetImpl {
 
-// definitions in strengthnet.cu
-__global__ void dotproduct(Tensor y, const Tensor a, const Tensor b);
-__global__ void relu(Tensor h);
-__global__ void softmax(Tensor a);
-__global__ void lossDerived(Tensor y_grad, float target, const Tensor y);
-__global__ void softmaxDerived(Tensor z_grad, const Tensor a);
-__global__ void updateTensor(Tensor W, const Tensor W_grad, float weightPenalty, float learnrate);
-
 float getelem(const Tensor &t, uint x, uint y = 0, uint z = 0); // tensor element access (slow/wasteful)
 void scale(Tensor& y, float w);
-void hadamard(Tensor& y, const Tensor& w) noexcept;
-void matmul(Tensor& y, const Tensor& W, const Tensor& x) noexcept;
-void add(Tensor& y, const Tensor& x) noexcept;
+void hadamard(Tensor& y, const Tensor& w);
+void matmul(Tensor& y, const Tensor& W, const Tensor& x);
+void add(Tensor& y, const Tensor& x);
+void relu(Tensor& t);
 void min(Tensor& y, const Tensor& x);
 void minDerived(Tensor& x_grad, const Tensor& y_grad, const Tensor& x, const Tensor& y);
 void sum(Tensor& y, const Tensor& x);
+void softmax(Tensor& a);
+void softmaxDerived(Tensor& a_grad, const Tensor& z_grad, const Tensor& a);
 
 }
 
@@ -94,17 +89,21 @@ void runStrengthNetTests() {
     Tensor A = toTensor({7, 3,  2, 6}, 2, 2);
     Tensor B = toTensor({1, -3,  -1, 1,   -4, -1}, 3, 2, {0, 2, 3});
     Tensor C(3, 2, {0, 2, 3});
+    B.cat(); C.cat();
     matmul(C, A, B);
+    C.uncat();
     expectApprox(toTensor({1, -15,  -5, 3,   -30, -18}, 3, 2, {0, 2, 3}), C, "batch matmul, left-hand singular");
   }
 
   {
     Tensor A = toTensor({7, 3,  2, 6,   -1, -1}, 3, 2, {0, 2, 3});
     Tensor B = toTensor({1, -3,  -1, 1,   -4, -1}, 3, 2, {0, 2, 3});
-    Tensor C(4, 2, {0, 2, 4});
+    Tensor C(2, 2, {0, 2});
     B.transpose();
+    A.cat(); B.cat(); C.cat();
     matmul(C, A, B);
-    expectApprox(toTensor({5, -3, -19, -3,  4, 4, 1, 1}, 4, 2, {0, 2, 4}), C, "batch matmul, left-hand multi, right-hand transposed");
+    C.uncat();
+    expectApprox(toTensor({9, 1, -18, -2}, 2, 2, {0, 2}), C, "batch matmul, left-hand multi, right-hand transposed");
   }
 
   {
@@ -117,16 +116,18 @@ void runStrengthNetTests() {
   }
 
   {
-    Tensor A = toTensor({2.796027196f, 3.306852819f, 2.390562088f}, 3, 1);
-    softmax<<<1, 3, 3*sizeof(float)>>>(A);
-    expectApprox(toTensor({.3f, .5f, .2f}, 3, 1), A, "softmax");
+    Tensor A = toTensor({2.796027196f, 3.306852819f, 2.390562088f, 1.796027196f, 1.390562088f, 2.083709268f, 0.697414907f}, 7, 1, {0, 3, 7});
+    Tensor A_accumulate(7, 1, {0, 3, 7});
+    softmax(A);
+    expectApprox(toTensor({.3f, .5f, .2f,  .3, .2, .4, .1}, 7, 1, {0, 3, 7}), A, "softmax");
   }
 
   {
-    Tensor A = toTensor({.3f, .5f, .2f}, 3, 1);
-    Tensor Z = toTensor({1.f, 2.f, 3.f}, 3, 1);
-    softmaxDerived<<<1, 3>>>(Z, A);
-    expectApprox(toTensor({-.27f, .05f, .22f}, 3, 1), Z, "softmaxDerived");
+    Tensor A = toTensor({.3f, .5f, .2f,  .1f, .2f, .7f}, 6, 1, {0, 3, 6});
+    Tensor Z_grad = toTensor({1.f, 2.f, 3.f,  -1.f, -2.f, -3.f}, 6, 1, {0, 3, 6});
+    Tensor A_grad(6, 1, {0, 3, 6});
+    softmaxDerived(A_grad, Z_grad, A);
+    expectApprox(toTensor({-.27f, .05f, .22f,  .16f, .12f, -.28f}, 6, 1, {0, 3, 6}), A_grad, "softmaxDerived");
   }
 
   {
@@ -144,7 +145,7 @@ void runStrengthNetTests() {
     Tensor A = toTensor({3, 4, 5, 6, 7}, 5, 1);
     Tensor B = toTensor({-8, 1, -2, -7, 0}, 5, 1);
     add(A, B);
-    relu<<<1, 5>>>(A);
+    relu(A);
     expectApprox(toTensor({0, 5, 3, 0, 7}, 5, 1), A, "add,relu");
   }
 
@@ -154,6 +155,13 @@ void runStrengthNetTests() {
     B.broadcast(3, 2);
     add(A, B);
     expectApprox(toTensor({5, 3, 7, 5, 9, 7}, 3, 2), A, "broadcast,add");
+  }
+
+  {
+    Tensor A = toTensor({3, 4,  5, 6,  7, 8,   5, 4,  3, 2,  1, 0, 2, 2}, 7, 2, {0, 3, 7});
+    Tensor B(2, 2, {0, 1, 2});
+    sum(B, A);
+    expectApprox(toTensor({15, 18,  11, 8}, 2, 2, {0, 1, 2}), B, "sum");
   }
 
   {
