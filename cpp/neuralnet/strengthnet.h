@@ -63,7 +63,9 @@ struct MoveFeatures {
 };
 
 namespace Tests {
-void runStrengthModelTests();}
+  void runStrengthNetTests();
+  void runStrengthModelTests();
+}
 
 // Implements the strength network.
 // Currently this is a feed-forward network with one hidden layer which takes MoveFeatures as input
@@ -88,7 +90,6 @@ public:
   void forward();
   void setTarget(const Output& targets); // before backward(), targets size must match last forward batch size
   void backward();                       // buffers must be filled by forward pass
-  void mergeGrads();
   void update(float weightPenalty, float learnrate);
   void printWeights(std::ostream& stream, const std::string& name, bool humanReadable = true) const;
   void printState(std::ostream& stream, const std::string& name, bool humanReadable = true) const;
@@ -115,6 +116,7 @@ private:
   void allocateTensors(); // build tensors according to N, batchSize and zoffset
   void freeTensors() noexcept;
 
+  friend void Tests::runStrengthNetTests();
   friend void Tests::runStrengthModelTests();
 
 };

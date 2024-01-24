@@ -439,7 +439,6 @@ void StrengthModel::train(FeaturesAndTargets& xy, size_t split, int epochs, size
         net.backward();
         grads_var += net.gradsVar();
       }
-      net.mergeGrads();
 
       // if(e % 5 == 4 && i == 0) {
       //   net.printWeights(cout, "epoch " + Global::intToString(e));

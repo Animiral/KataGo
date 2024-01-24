@@ -176,15 +176,19 @@ void runStrengthNetTests() {
     net.forward();
     vector<float> y = net.getOutput();
     cout << "Output = {" << y[0] << "," << y[1] << "}\n";
+    net.setTarget({1200.f, 1300.f});
+    net.backward();
+    // net.printState(cout, "smoke test");
+    // net.printGrads(cout, "smoke test");
   }
 
   {
     cout << "- fit two batched samples: ";
     vector<MoveFeatures> threemoves = {{.7f, 2.f, .7f, .7f, .1f, 1.f}, {.5f, 0.f, .2f, .6f, .2f, 3.f}, {.3f, -2.f, .8f, .8f, 0.f, 0.f}};
-    vector<MoveFeatures> twomoves = {{.4f, 1.f, .3f, .4f, .05f, 1.5f}, {.5f, 0.5f, .25f, .65f, .2f, 3.f}};
+    vector<MoveFeatures> twomoves = {{.4f, 1.f, .3f, .4f, .05f, 1.5f}, {.5f, .5f, .25f, .65f, .2f, 3.f}};
     vector<vector<MoveFeatures>> features = {threemoves, twomoves};
     vector<float> ys = {1200.f, 1300.f};
-    float learnrate = 0.01f;
+    float learnrate = .1f;
 
     StrengthNet net;
     Rand rand(123ull); // reproducible seed
@@ -202,9 +206,12 @@ void runStrengthNetTests() {
     // net.update(0.f, learnrate);
     // net.printWeights(cout, "after update");
 
-    for(int i = 0; i < 40*int(1.f/learnrate); i++) { // perfectly fit to threemoves input
+    for(int i = 0; i < 1500*int(1.f/learnrate); i++) { // perfectly fit to threemoves input
       net.forward();
-      // if(i%100==0)cout << "Training " << i << ": " << net.getOutput() << "\n";
+      // if(i%100==0) {
+      //   vector<float> y_hat2 = net.getOutput();
+      //   cout << "Training " << i << ": {" << y_hat2[0] << "," << y_hat2[1] << "}\n";
+      // }
       net.backward();
       net.update(0.f, learnrate);
     }
@@ -218,6 +225,73 @@ void runStrengthNetTests() {
     if(!pass) {
       cout << "Output after training: {" << y_hat2[0] << "," << y_hat2[1] << "}; label: {" << ys[0] << "," << ys[1] << "}\n";
     }
+  }
+
+  {
+    cout << "- large inputs: ";
+    size_t batchSize = 2200; // covers >2 blocks of 1024 threads each
+    vector<vector<MoveFeatures>> batch(batchSize);
+    vector<float> targets(batchSize);
+    Rand rand(123ull); // reproducible seed
+    StrengthNet net;
+    net.randomInit(rand);
+
+    for(size_t b = 0; b < batchSize; b++) {
+      size_t n = 2000 + rand.nextUInt(500);
+      batch[b].resize(n);
+      for(MoveFeatures& mf : batch[b]) {
+        mf.winProb = static_cast<float>(rand.nextDouble(0, 1));
+        mf.lead = static_cast<float>(rand.nextGaussian());
+        mf.movePolicy = static_cast<float>(rand.nextDouble(0, 1));
+        mf.maxPolicy = static_cast<float>(rand.nextDouble(mf.movePolicy, 1));
+        mf.winrateLoss = static_cast<float>(rand.nextDouble(-5, 80));
+        mf.pointsLoss = static_cast<float>(rand.nextDouble(-1, 10));
+      }
+      targets[b] = static_cast<float>(rand.nextGaussian() * 300 + 1500);
+    }
+    vector<uint32_t> perm(batchSize);
+    rand.fillShuffledUIntRange(batchSize, perm.data());
+
+    // net outputs must follow the same permutation as the input
+    net.setInput(batch);
+    net.forward();
+    vector<float> outputs = net.getOutput();
+    // net gradients must be the same before/after permutation
+    net.setTarget(targets);
+    net.backward();
+    vector<float> W_grad = static_cast<vector<float>>(*net.W_grad);
+    vector<float> b_grad = static_cast<vector<float>>(*net.b_grad);
+
+    vector<vector<MoveFeatures>> permBatch(batchSize);
+    vector<float> permTargets(batchSize);
+    for(size_t b = 0; b < batchSize; b++) {
+      permBatch[b] = batch[perm[b]];
+      permTargets[b] = targets[perm[b]];
+    }
+    net.setInput(permBatch);
+    net.forward();
+    vector<float> permOutputs = net.getOutput();
+    net.setTarget(permTargets);
+    net.backward();
+    vector<float> permW_grad(*net.W_grad);
+    vector<float> permb_grad(*net.b_grad);
+
+    bool pass = true;
+    for(size_t b = 0; b < batchSize; b++) {
+      if(permOutputs[b] != outputs[perm[b]])
+        pass = false;
+    }
+    for(size_t i = 0; i < W_grad.size(); i++) {
+      if(fabs(1-permW_grad[i]/W_grad[i]) > 0.01) { // tolerate some deviation due to float ops order
+        pass = false; cout << "permW_grad["<<i<<"]=" << permW_grad[i] << " != W_grad["<<i<<"]=" << W_grad[i] << "! ";
+      }
+    }
+    for(size_t i = 0; i < b_grad.size(); i++) {
+      if(fabs(1-permb_grad[i]/b_grad[i]) > 0.01) { // tolerate some deviation due to float ops order
+        pass = false; cout << "permb_grad["<<i<<"]=" << permb_grad[i] << " != b_grad["<<i<<"]=" << b_grad[i] << "! ";
+      }
+    }
+    cout << (pass ? "pass" : "fail") << "\n";
   }
 }
 }

@@ -21,10 +21,10 @@ __global__ void scaleK(Tensor y, float w); // y = y * w
 __global__ void hadamardK(Tensor y, const Tensor w); // y = y ⊙ w
 __global__ void matmulK(Tensor y, const Tensor W, const Tensor x); // y = W * x
 __global__ void addK(Tensor y, const Tensor x); // y = y + x
-__global__ void minDerivedK(Tensor x_grad, const Tensor y_grad, const Tensor x, const Tensor y); // x_grad = y_grad * d_min(x) / d_x
-
 __host__ __global__ enum { OP_PLUS, OP_MIN }; // for use with accumulateK
 __global__ void accumulateK(Tensor a, const Tensor t, uint op = OP_PLUS); // a = op(t) across x-dimension
+__global__ void minDerivedK(Tensor x_grad, const Tensor y_grad, const Tensor x, const Tensor y); // x_grad = y_grad * d_min(x) / d_x
+
 __global__ void reluK(Tensor h); // in-place relu
 __global__ void softmaxK(Tensor a); // in-place softmax
 __global__ void softmaxDerivedK(Tensor a_grad, const Tensor z_grad, const Tensor a); // a_grad = z_grad * d_softmax(z) / d_z where a = softmax(z)
@@ -52,13 +52,15 @@ using namespace StrengthNetImpl;
 void StrengthNet::forward() {
   assert(x); // tensors must be allocated by previous setInput()
 
-  // // layer 1
   h->cat(); x->cat();
   matmul(*h, W, *x);
   b.broadcast(N, hidden_ch);
   add(*h, b);
   b.broadcast(1, hidden_ch); // reset
   h->uncat(); x->uncat();
+  min(*y, *h);
+
+  // // layer 1
   // matmul<<<numBlocks, blockDim2d>>>(*h, W1, *x);
   // numBlocks = dim3((N * h->dims.y + blockDim1d.x - 1) / blockDim1d.x);
   // relu<<<numBlocks, blockDim1d>>>(*h);
@@ -70,7 +72,6 @@ void StrengthNet::forward() {
   // matmul<<<numBlocks, blockDim2d>>>(*a, W2z, *h);
 
   // // aggregate by attention
-  min(*y, *h);
   // numBlocks = numBlocksForTensor(*a, blockDim1d);
   // softmax<<<numBlocks, blockDim1d, N*sizeof(float)>>>(*a);
   // dotproduct<<<1, 1>>>(*y, *r, *a);
@@ -81,9 +82,9 @@ void StrengthNet::backward() {
 
   // dL/dy = 2(y - tgt)
   y_grad->assignFrom(*y);
-  scale(*y_grad, 2.f);
-  scale(*tgt, -2.f);
+  scale(*y_grad, -1.f);
   add(*y_grad, *tgt);
+  scale(*y_grad, -2.f);
 
   // dL/dh = dL/dy * I_min(h)
   minDerived(*h_grad, *y_grad, *h, *y);
@@ -121,16 +122,6 @@ void StrengthNet::backward() {
  
   // numBlocks = numBlocksForTensor(*W1_grad, blockDim2d);
   // transposeMatmul<<<numBlocks, blockDim2d>>>(*W1_grad, *h_grad, *x, index); // dL/dW1 = dL/dz1 * x^T
-}
-
-void StrengthNet::mergeGrads() {
-  accumulateTensorZ<<<1, {W_grad->dims.x, W_grad->dims.y}>>>(*W_grad);
-  accumulateTensorZ<<<1, {b_grad->dims.x, b_grad->dims.y}>>>(*b_grad);
-  W_grad->dims.z = b_grad->dims.z = 1;
-  // accumulateTensorZ<<<1, {W1_grad->dims.x, W1_grad->dims.y}>>>(*W1_grad);
-  // accumulateTensorZ<<<1, {W2r_grad->dims.x, W2r_grad->dims.y}>>>(*W2r_grad);
-  // accumulateTensorZ<<<1, {W2z_grad->dims.x, W2z_grad->dims.y}>>>(*W2z_grad);
-  // W1_grad->dims.z = W2r_grad->dims.z = W2z_grad->dims.z = 1;
 }
 
 void StrengthNet::update(float weightPenalty, float learnrate) {
@@ -288,6 +279,34 @@ __global__ void addK(Tensor y, const Tensor x) {
   at(y, xx, yy, zz) += at(x, xx, yy, zz);
 }
 
+__global__ void accumulateK(Tensor a, const Tensor t, uint op) {
+  assert(a.dims.y == t.viewDims.y);
+  assert(a.dims.z == t.viewDims.z);
+  if(0 == t.viewDims.x) // empty tensor: nothing to do
+    return;
+  assert(0 == blockIdx.x);
+  assert(0 == threadIdx.x); // x-sum is single-threaded
+
+  uint y = blockIdx.y * blockDim.y + threadIdx.y;
+  uint z = blockIdx.z * blockDim.z + threadIdx.z;
+
+  if(y >= t.dims.y || z >= t.viewDims.z)
+    return;
+
+  uint xdim, offset;
+  getxdim(t, z, xdim, offset);
+  float v = at(t, 0, y, z);
+  for(uint x = 1; x < xdim; x++) {
+    float elem = at(t, x, y, z);
+    switch(op) {
+      default:
+      case OP_PLUS: v = v + elem; break;
+      case OP_MIN: if(elem < v) v = elem; break;
+    }
+  }
+  at(a, 0, y, z) = v;
+}
+
 __global__ void minDerivedK(Tensor x_grad, const Tensor y_grad, const Tensor x, const Tensor y) {
   assert(x_grad.dims.x == x.viewDims.x);
   assert(x_grad.dims.y == x.viewDims.y);
@@ -314,43 +333,6 @@ __global__ void minDerivedK(Tensor x_grad, const Tensor y_grad, const Tensor x, 
 
   float minValue = at(y, 0, 0, zz);
   at(x_grad, xx, 0, zz) = at(y_grad, 0, 0, zz) * (at(x, xx, 0, zz) <= minValue);
-}
-
-__global__ void accumulateK(Tensor a, const Tensor t, uint op) {
-  assert(a.dims.y == t.viewDims.y);
-  assert(a.dims.z == t.viewDims.z);
-  if(0 == t.viewDims.x) // empty tensor: nothing to do
-    return;
-  assert(0 == blockIdx.x);
-  assert(0 == threadIdx.x); // x-sum is single-threaded
-
-  uint y = blockIdx.y * blockDim.y + threadIdx.y;
-  uint z = blockIdx.z * blockDim.z + threadIdx.z;
-
-  if(y >= t.dims.y || z >= t.viewDims.z)
-    return;
-
-  uint xdim, offset;
-  getxdim(t, z, xdim, offset);
-  
-  uint n = xdim; // remaining elements to sum
-  float* buffer = (float*)malloc(n * sizeof(float));
-  for(uint x = 0; x < n; x++)
-    buffer[x] = at(t, x, y, z);
-
-  for(uint s = n/2; s > 0; s = n/2) {
-    for(uint x = 0; x + n - s < n; x++) { // sum second half of data into first half
-      switch(op) {
-        default:
-        case OP_PLUS: buffer[x] = buffer[x] + buffer[x + n - s]; break;
-        case OP_MIN: if(buffer[x + n - s] < buffer[x]) buffer[x] = buffer[x + n - s]; break;
-      }
-    }
-    n -= s; // discard second half
-  }
-
-  at(a, 0, y, z) = buffer[0];
-  free(buffer);
 }
 
 __global__ void reluK(Tensor h) {
