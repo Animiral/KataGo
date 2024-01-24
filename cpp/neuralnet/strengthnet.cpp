@@ -354,11 +354,9 @@ void StrengthNet::allocateTensors() {
   y_grad = new Tensor(batchSize, 1, yoffsets);
   tgt = new Tensor(batchSize, 1, yoffsets);
 
-  vector<uint> Woffsets = iota(batchSize, in_ch);
-  W_grad = new Tensor(in_ch*batchSize, hidden_ch, Woffsets);
+  W_grad = new Tensor(in_ch, hidden_ch);
   // W1_grad = new Tensor(in_ch*batchSize, hidden_ch, Woffsets);
-  vector<uint> boffsets = iota(batchSize);
-  b_grad = new Tensor(batchSize, hidden_ch, boffsets);
+  b_grad = new Tensor(1, hidden_ch);
   // vector<uint> W2offsets = iota(batchSize, hidden_ch);
   // W2r_grad = new Tensor(hidden_ch*batchSize, 1, batchSize, W2offsets);
   // W2z_grad = new Tensor(hidden_ch*batchSize, 1, batchSize, W2offsets);
