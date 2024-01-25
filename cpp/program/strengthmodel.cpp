@@ -79,17 +79,14 @@ void Dataset::load(const string& path, const std::string& featureDir) {
     game.white.prevGame = players[game.white.player].lastOccurrence;
     game.black.prevGame = players[game.black.player].lastOccurrence;
 
-    string sgfPathWithoutExt = Global::chopSuffix(game.sgfPath, ".sgf");
-    string blackFeaturesPath = Global::strprintf("%s/%s_BlackFeatures.bin", featureDir.c_str(), sgfPathWithoutExt.c_str());
-    string whiteFeaturesPath = Global::strprintf("%s/%s_WhiteFeatures.bin", featureDir.c_str(), sgfPathWithoutExt.c_str());
-    game.black.features = readFeaturesFromFile(blackFeaturesPath);
-    game.white.features = readFeaturesFromFile(whiteFeaturesPath);
-
     players[game.white.player].lastOccurrence = gameIndex;
     players[game.black.player].lastOccurrence = gameIndex;
   }
 
   istrm.close();
+
+  if(!featureDir.empty())
+    loadFeatures(featureDir);
 }
 
 void Dataset::store(const string& path) const {
@@ -203,15 +200,25 @@ size_t Dataset::getOrInsertNameIndex(const std::string& name) {
   return it->second;
 }
 
+void Dataset::loadFeatures(const std::string& featureDir) {
+  for(Game& game : games) {
+    string sgfPathWithoutExt = Global::chopSuffix(game.sgfPath, ".sgf");
+    string blackFeaturesPath = Global::strprintf("%s/%s_BlackFeatures.bin", featureDir.c_str(), sgfPathWithoutExt.c_str());
+    string whiteFeaturesPath = Global::strprintf("%s/%s_WhiteFeatures.bin", featureDir.c_str(), sgfPathWithoutExt.c_str());
+    game.black.features = readFeaturesFromFile(blackFeaturesPath);
+    game.white.features = readFeaturesFromFile(whiteFeaturesPath);
+  }
+}
+
 vector<MoveFeatures> Dataset::readFeaturesFromFile(const string& featurePath) {
   vector<MoveFeatures> features;
   auto featureFile = std::unique_ptr<std::FILE, decltype(&std::fclose)>(std::fopen(featurePath.c_str(), "rb"), &std::fclose);
   if(nullptr == featureFile)
-    return features;
+    throw IOError("Failed to read access feature file " + featurePath);
   uint32_t header; // must match
   size_t readcount = std::fread(&header, 4, 1, featureFile.get());
   if(1 != readcount || FEATURE_HEADER != header)
-    return features;
+    throw IOError("Failed to read from feature file " + featurePath);
   while(!std::feof(featureFile.get())) {
     MoveFeatures mf;
     readcount = std::fread(&mf, sizeof(MoveFeatures), 1, featureFile.get());
@@ -301,23 +308,146 @@ Dataset::Prediction SmallPredictor::predict(const MoveFeatures* blackFeatures, s
 }
 
 
-StrengthModel::StrengthModel(const string& strengthModelFile_, const string& featureDir_) noexcept
-  : featureDir(featureDir_), net(), strengthModelFile(strengthModelFile_)
+StrengthModel::StrengthModel(const string& strengthModelFile, Dataset* dataset_) noexcept
+  : net(), dataset(dataset_)
 {
-  if(!net.loadModelFile(strengthModelFile)) {
+  bool loaded = false;
+  if(!strengthModelFile.empty() && !(loaded = net.loadModelFile(strengthModelFile))) {
     cerr << "Could not load existing strength model from " << strengthModelFile << ". Random-initializing new strength model.\n";
-    Rand rand; // TODO: allow seeding from outside StrengthModel
+  }
+  if(!loaded) {
+    Rand rand;
     net.randomInit(rand);
   }
 }
 
-FeaturesAndTargets StrengthModel::getFeaturesAndTargets(const Dataset& dataset) const {
-  FeaturesAndTargets featuresTargets;
-  for(const Dataset::Game& gm : dataset.games) {
-    featuresTargets.emplace_back(gm.black.features, gm.black.rating);
-    featuresTargets.emplace_back(gm.white.features, gm.white.rating);
+void StrengthModel::extractFeatures(const std::string& featureDir, const Search& search) {
+  for(Dataset::Game& game : dataset->games) {
+    auto sgf = std::unique_ptr<CompactSgf>(CompactSgf::loadFile(game.sgfPath));
+    extractGameFeatures(*sgf, search, game.black.features, game.white.features);
+    string sgfPathWithoutExt = Global::chopSuffix(game.sgfPath, ".sgf");
+    string blackFeaturesPath = Global::strprintf("%s/%s_BlackFeatures.bin", featureDir.c_str(), sgfPathWithoutExt.c_str());
+    string whiteFeaturesPath = Global::strprintf("%s/%s_WhiteFeatures.bin", featureDir.c_str(), sgfPathWithoutExt.c_str());
+    if(FileUtils::exists(blackFeaturesPath))
+      writeFeaturesToFile(blackFeaturesPath, game.black.features);
+    if(FileUtils::exists(whiteFeaturesPath))
+      writeFeaturesToFile(whiteFeaturesPath, game.white.features);
   }
-  return featuresTargets;
+}
+
+void StrengthModel::train(int epochs, int steps, size_t batchSize, float weightPenalty, float learnrate, size_t windowSize) {
+  Rand rand; // TODO: allow seeding from outside StrengthModel
+  SmallPredictor predictor(net);
+
+  for(int e = 0; e < epochs; e++) {
+    float grads_var = 0;
+    // train weights
+    for(int s = 0; s < steps; s++) {
+      dataset->randomBatch(rand, batchSize);
+      vector<vector<MoveFeatures>> inputs;
+      vector<float> targets;
+      for(size_t t = 0; t < dataset->games.size(); t++) {
+        const Dataset::Game& game = dataset->games[t];
+        for(auto& playerInfo : {game.white, game.black}) {
+          vector<MoveFeatures> features(windowSize);
+          size_t moveCount = dataset->getRecentMoves(playerInfo.player, t, features.data(), windowSize);
+          features.resize(moveCount);
+          inputs.push_back(features);
+          targets.push_back(playerInfo.rating);
+        }
+      }
+      net.setInput(inputs);
+      net.forward();
+      // cout << "Sample #" << i << "(" << xy[i].first.size() << " moves): (" << y_hat << "-" << xy[i].second << ")^2 = " << (y_hat-xy[i].second)*(y_hat-xy[i].second) << "\n";
+      net.setTarget(targets);
+      net.backward();
+      grads_var += net.gradsVar();
+
+      // if(e % 5 == 4 && i == 0) {
+      //   net.printWeights(cout, "epoch " + Global::intToString(e));
+      //   net.printState(cout, "epoch " + Global::intToString(e));
+      //   // cout << "Test #" << i-split << " (" << xy[i].first.size() << " moves): prediction=" << std::fixed << std::setprecision(3) << y_hat << ", target=" << xy[i].second << ", sqerr=" << sqerr << "\n";
+      // }
+
+      net.update(weightPenalty, learnrate);
+    }
+    grads_var /= steps; // average in 1 training update
+    // net.printWeights(cout, "epoch " + Global::intToString(e));
+    // net.printState(cout, "epoch " + Global::intToString(e));
+
+    // test epoch result
+    Evaluation trainingEval = evaluate(predictor, Dataset::Game::training, windowSize);
+    Evaluation validationEval = evaluate(predictor, Dataset::Game::validation, windowSize);
+    float theta_var = net.thetaVar();
+    // cout << "Epoch " << e << ": mse=" << std::fixed << std::setprecision(3) << mse << "\n";
+    cout << Global::strprintf("Epoch %d: mse_training=%.2f, mse_validation=%.2f, theta^2=%.4f, grad^2=%.4f\n", e, trainingEval.sqerr, validationEval.sqerr, theta_var, grads_var);
+  }
+}
+
+StrengthModel::Evaluation StrengthModel::evaluate(Predictor& predictor, int set, size_t windowSize) {
+  vector<MoveFeatures> blackFeatures(windowSize);
+  vector<MoveFeatures> whiteFeatures(windowSize);
+  int successCount = 0;
+  int sgfCount = 0;
+  float sqerr = 0;
+  float logp = 0;
+
+  for(size_t i = 0; i < dataset->games.size(); i++) {
+    Dataset::Game& gm = dataset->games[i];
+    if(gm.set != set && !(Dataset::Game::training == set && Dataset::Game::batch == gm.set))
+      continue;
+
+    size_t blackCount = dataset->getRecentMoves(gm.black.player, i, blackFeatures.data(), windowSize);
+    size_t whiteCount = dataset->getRecentMoves(gm.white.player, i, whiteFeatures.data(), windowSize);
+    gm.prediction = predictor.predict(blackFeatures.data(), blackCount, whiteFeatures.data(), whiteCount);
+    float diffBlack = gm.black.rating - gm.prediction.blackRating;
+    float diffWhite = gm.white.rating - gm.prediction.whiteRating;
+    sqerr += diffBlack * diffBlack + diffWhite * diffWhite;
+    float winnerPred = 1 - std::abs(gm.score - gm.prediction.score);
+    if(winnerPred > .5f)
+      successCount++;
+    logp += std::log(winnerPred);
+    sgfCount++;
+  }
+
+  float rate = float(successCount) / sgfCount;
+  return { sqerr, rate, logp };
+}
+
+StrengthModel::Analysis StrengthModel::analyze(vector<Sgf*> sgfs, const string& playerName, const Search& search) {
+  vector<MoveFeatures> playerFeatures;
+  for (const auto* sgf : sgfs)
+  {
+    Player p;
+    if(sgf->getPlayerName(P_BLACK) == playerName)
+      p = P_BLACK;
+    else if(sgf->getPlayerName(P_WHITE) == playerName)
+      p = P_WHITE;
+    else {
+      cerr << "Player \"" << playerName << "\" not found in " << sgf->fileName << ".\n";
+      continue;
+    }
+    vector<MoveFeatures> blackFeatures, whiteFeatures;
+    extractGameFeatures(CompactSgf(sgf), search, blackFeatures, whiteFeatures);
+    if(P_BLACK == p)
+      playerFeatures.insert(playerFeatures.end(), blackFeatures.begin(), blackFeatures.end());
+    if(P_WHITE == p)
+      playerFeatures.insert(playerFeatures.end(), whiteFeatures.begin(), whiteFeatures.end());
+  }
+
+  Analysis analysis;
+  for(const auto& mf : playerFeatures) {
+    analysis.avgWRLoss += mf.winrateLoss;
+    analysis.avgPLoss += mf.pointsLoss;
+  }
+  size_t N = playerFeatures.size();
+  analysis.avgWRLoss /= N;
+  analysis.avgPLoss /= N;
+  net.setInput({playerFeatures});
+  net.forward();
+  vector<float> rating = net.getOutput();
+  analysis.rating = rating[0];
+  return analysis;
 }
 
 void StrengthModel::extractGameFeatures(const CompactSgf& sgf, const Search& search, vector<MoveFeatures>& blackFeatures, vector<MoveFeatures>& whiteFeatures) {
@@ -420,111 +550,19 @@ void StrengthModel::extractGameFeatures(const CompactSgf& sgf, const Search& sea
   }
 }
 
-void StrengthModel::train(FeaturesAndTargets& xy, size_t split, int epochs, size_t batchSize, float weightPenalty, float learnrate) {
-  assert(split <= xy.size());
-  Rand rand; // TODO: allow seeding from outside StrengthModel
-  net.randomInit(rand);
-  batchSize = 1; // TODO: properly implement batches
-
-  for(int e = 0; e < epochs; e++) {
-    float grads_var = 0;
-    std::shuffle(&xy[0], &xy[split], rand); // TODO: use Dataset.set markers
-    // train weights
-    for(int i = 0; i < split; i += batchSize) {
-      for(size_t b = 0; i+b < split && b < batchSize; b++) {
-        net.setInput({xy[i+b].first});
-        net.forward();
-        // cout << "Sample #" << i << "(" << xy[i].first.size() << " moves): (" << y_hat << "-" << xy[i].second << ")^2 = " << (y_hat-xy[i].second)*(y_hat-xy[i].second) << "\n";
-        net.setTarget({xy[i+b].second});
-        net.backward();
-        grads_var += net.gradsVar();
-      }
-
-      // if(e % 5 == 4 && i == 0) {
-      //   net.printWeights(cout, "epoch " + Global::intToString(e));
-      //   net.printState(cout, "epoch " + Global::intToString(e));
-      //   // cout << "Test #" << i-split << " (" << xy[i].first.size() << " moves): prediction=" << std::fixed << std::setprecision(3) << y_hat << ", target=" << xy[i].second << ", sqerr=" << sqerr << "\n";
-      // }
-
-      net.update(weightPenalty, learnrate);
-    }
-    grads_var /= split; // average in 1 training update
-    // net.printWeights(cout, "epoch " + Global::intToString(e));
-    // net.printState(cout, "epoch " + Global::intToString(e));
-
-    // test epoch result
-    float mse_training = 0; // error on training set
-    for(int i = 0; i < split; i++) {
-      net.setInput({xy[i].first});
-      net.forward();
-      float y_hat = net.getOutput()[0];
-      float sqerr = (y_hat - xy[i].second) * (y_hat - xy[i].second);
-      mse_training += sqerr;
-    }
-    mse_training /= split;
-
-    float mse = 0;
-    for(int i = split; i < xy.size(); i++) {
-      net.setInput({xy[i].first});
-      net.forward();
-      float y_hat = net.getOutput()[0];
-      float sqerr = (y_hat - xy[i].second) * (y_hat - xy[i].second);
-      mse += sqerr;
-    }
-    mse /= xy.size() - split;
-    float theta_var = net.thetaVar();
-    // cout << "Epoch " << e << ": mse=" << std::fixed << std::setprecision(3) << mse << "\n";
-    cout << Global::strprintf("Epoch %d: mse_training=%.2f, mse=%.2f, theta^2=%.4f, grad^2=%.4f\n", e, mse_training, mse, theta_var, grads_var);
-  }
-  net.saveModelFile(strengthModelFile);
-}
-
-StrengthModel::Evaluation StrengthModel::evaluate(Dataset& dataset, Predictor& predictor, int set, size_t windowSize) {
-  vector<MoveFeatures> blackFeatures(windowSize);
-  vector<MoveFeatures> whiteFeatures(windowSize);
-  int successCount = 0;
-  int sgfCount = 0;
-  float sqerr = 0;
-  float logp = 0;
-
-  for(size_t i = 0; i < dataset.games.size(); i++) {
-    Dataset::Game& gm = dataset.games[i];
-    if(gm.set != set && !(Dataset::Game::training == set && Dataset::Game::batch == gm.set))
-      continue;
-
-    size_t blackCount = dataset.getRecentMoves(gm.black.player, i, blackFeatures.data(), windowSize);
-    size_t whiteCount = dataset.getRecentMoves(gm.white.player, i, whiteFeatures.data(), windowSize);
-    gm.prediction = predictor.predict(blackFeatures.data(), blackCount, whiteFeatures.data(), whiteCount);
-    float diffBlack = gm.black.rating - gm.prediction.blackRating;
-    float diffWhite = gm.white.rating - gm.prediction.whiteRating;
-    sqerr += diffBlack * diffBlack + diffWhite * diffWhite;
-    float winnerPred = 1 - std::abs(gm.score - gm.prediction.score);
-    if(winnerPred > .5f)
-      successCount++;
-    logp += std::log(winnerPred);
-    sgfCount++;
-  }
-
-  float rate = float(successCount) / sgfCount;
-  return { sqerr, rate, logp };
-}
-
-bool StrengthModel::maybeWriteMoveFeaturesCached(const string& cachePath, const vector<MoveFeatures>& features) const {
-  if(featureDir.empty() || features.empty())
-    return false;
-  string cacheDir = FileUtils::dirname(cachePath);
-  if(!FileUtils::create_directories(cacheDir))
-    return false;
-  auto cacheFile = std::unique_ptr<std::FILE, decltype(&std::fclose)>(std::fopen(cachePath.c_str(), "wb"), &std::fclose);
-  if(nullptr == cacheFile)
-    return false;
-  size_t writecount = std::fwrite(&Dataset::FEATURE_HEADER, 4, 1, cacheFile.get());
+void StrengthModel::writeFeaturesToFile(const string& featurePath, const vector<MoveFeatures>& features) const {
+  string featureDir = FileUtils::dirname(featurePath);
+  if(!FileUtils::create_directories(featureDir))
+    throw IOError("Failed to create directory " + featureDir);
+  auto featureFile = std::unique_ptr<std::FILE, decltype(&std::fclose)>(std::fopen(featurePath.c_str(), "wb"), &std::fclose);
+  if(nullptr == featureFile)
+    throw IOError("Failed to create feature file " + featurePath);
+  size_t writecount = std::fwrite(&Dataset::FEATURE_HEADER, 4, 1, featureFile.get());
   if(1 != writecount)
-    return false;
-  writecount = std::fwrite(features.data(), sizeof(MoveFeatures), features.size(), cacheFile.get());
+    throw IOError("Failed to write to feature file " + featurePath);
+  writecount = std::fwrite(features.data(), sizeof(MoveFeatures), features.size(), featureFile.get());
   if(features.size() != writecount)
-    return false;
-  if(0 != std::fclose(cacheFile.release()))
-    return false;
-  return true;
+    throw IOError("Failed to write to feature file " + featurePath);
+  if(0 != std::fclose(featureFile.release()))
+    throw IOError("Failed to write to feature file " + featurePath);
 }

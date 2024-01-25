@@ -117,41 +117,12 @@ int MainCmds::strength_analysis(const vector<string>& args) {
   }
 
   Search search(searchParams, nnEval, &logger, "");
+  StrengthModel strengthModel(strengthModelFile);
+  vector<Sgf*> sgfs = Sgf::loadFiles(sgfPaths);
+  StrengthModel::Analysis analysis = strengthModel.analyze(sgfs, playerName, search);
 
-  vector<MoveFeatures> playerFeatures;
-  StrengthModel strengthModel(strengthModelFile, "");
-  for (const auto& sgfPath: sgfPaths)
-  {
-    auto sgf = std::unique_ptr<Sgf>(Sgf::loadFile(sgfPath));
-    if(NULL == sgf)
-      throw IOError(string("Failed to open SGF: ") + sgfPath + ".");
-    Player p;
-    if(sgf->getPlayerName(P_BLACK) == playerName)
-      p = P_BLACK;
-    else if(sgf->getPlayerName(P_WHITE) == playerName)
-      p = P_WHITE;
-    else {
-      cerr << "Player \"" << playerName << "\" not found in " << sgfPath << ".\n";
-      continue;
-    }
-    vector<MoveFeatures> blackFeatures, whiteFeatures;
-    strengthModel.extractGameFeatures(CompactSgf(std::move(*sgf)), search, blackFeatures, whiteFeatures);
-    if(P_BLACK == p)
-      playerFeatures.insert(playerFeatures.end(), blackFeatures.begin(), blackFeatures.end());
-    if(P_WHITE == p)
-      playerFeatures.insert(playerFeatures.end(), whiteFeatures.begin(), whiteFeatures.end());
-  }
-
-  float wloss=0.f, ploss=0.f;
-  for(const auto& mf : playerFeatures) {
-    wloss += mf.winrateLoss;
-    ploss += mf.pointsLoss;
-  }
-  size_t N = playerFeatures.size();
-  cout << "Avg win%% loss: "  << std::fixed << std::setprecision(3) << wloss/N << ", pt loss: " << ploss/N << ".\n";
-  strengthModel.net.setInput({playerFeatures});
-  strengthModel.net.forward();
-  cout << "Rating for " << playerName << ": " << std::fixed << std::setprecision(2) << strengthModel.net.getOutput()[0] << "\n";
+  cout << "Avg win%% loss: "  << std::fixed << std::setprecision(3) << analysis.avgWRLoss << ", pt loss: " << analysis.avgPLoss << ".\n";
+  cout << "Rating for " << playerName << ": " << std::fixed << std::setprecision(2) << analysis.rating << "\n";
 
   delete nnEval;
   NeuralNet::globalCleanup();

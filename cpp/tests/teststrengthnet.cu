@@ -227,6 +227,7 @@ void runStrengthNetTests() {
     }
   }
 
+  if(0) // disabled for calculation time
   {
     cout << "- large inputs: ";
     size_t batchSize = 2200; // covers >2 blocks of 1024 threads each

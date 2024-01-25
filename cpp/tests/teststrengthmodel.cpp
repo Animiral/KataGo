@@ -22,9 +22,7 @@ void matmul(Tensor& y, const Tensor& W, const Tensor& x);
 namespace Tests {
 void runStrengthModelTests(const string& modelFile, const string& listFile, const string& featureDir) {
   Dataset dataset;
-  FeaturesAndTargets featuresTargets;
-
-  StrengthModel strengthModel(modelFile, featureDir);
+  StrengthModel strengthModel(modelFile, &dataset);
 
   try {
     createFeatureCache(listFile, featureDir);
@@ -145,10 +143,9 @@ void runStrengthModelTests(const string& modelFile, const string& listFile, cons
     cout << "\n";
   }
 
-  if(0) // disabled for calculation time
   {
-    size_t sample = 0;
-    cout << "- fits sample " << sample << " from list file " << listFile << ": ";
+    size_t sample = 2;
+    cout << "- fits game " << sample << " (black) from UT dataset: ";
 
     float estimate;
     bool pass;
@@ -159,19 +156,21 @@ void runStrengthModelTests(const string& modelFile, const string& listFile, cons
     StrengthNet net;
     Rand rand(123ull); // reproducible seed
     net.randomInit(rand);
-    net.setInput({game.black.features});
-    cout << game.black.features.size() << " input features\n";
+    vector<MoveFeatures> features(10);
+    features.resize(dataset.getRecentMoves(game.black.player, sample, features.data(), 10));
+    net.setInput({features});
+    // cout << features.size() << " input features\n";
     // net.printWeights(cout, "initial values");
     // std::ofstream hfile("h_values.csv"); // debug csv
 
     int i;
-    for(i = 0; i < 100; i++) {
+    for(i = 0; i < 1000; i++) {
       net.forward();
       // net.h.print(hfile, "h", false);
       net.setTarget({game.black.rating});
       net.backward();
       net.update(weightPenalty, learnrate);
-      cout << "epoch " << i << ": thetavar=" << net.thetaVar() << "\n";
+      // cout << "epoch " << i << ": thetavar=" << net.thetaVar() << "\n";
     }
 
     // hfile.close();
@@ -199,12 +198,12 @@ void runStrengthModelTests(const string& modelFile, const string& listFile, cons
     net.forward();
     estimate = net.getOutput()[0];
     pass = fabs(estimate - game.black.rating) <= 0.1f;
-
-    cout << "Estimate: " << estimate << ", target: " << game.black.rating << "\n";
     cout << (pass ? "pass" : "fail") << "\n";
+
+    if(!pass)
+      cout << "Estimate: " << estimate << ", target: " << game.black.rating << "\n";
   }
 
-  if(0) // disabled for calculation time (1000 epochs per data sample)
   {
     cout << "- fits all samples from list file " << listFile << ": ";
 
@@ -230,13 +229,13 @@ void runStrengthModelTests(const string& modelFile, const string& listFile, cons
     Rand rand(123ull); // reproducible seed
     dataset.randomSplit(rand, 0.33f, 0.33f);
     StochasticPredictor predictor;
-    StrengthModel::Evaluation eval = strengthModel.evaluate(dataset, predictor, Dataset::Game::training, 10);
+    StrengthModel::Evaluation eval = strengthModel.evaluate(predictor, Dataset::Game::training, 10);
     cout << Global::strprintf("  Training: sqerr = %f, rate = %.3f, logp = %f\n", eval.sqerr, eval.rate, eval.logp);
 
-    eval = strengthModel.evaluate(dataset, predictor, Dataset::Game::validation, 10);
+    eval = strengthModel.evaluate(predictor, Dataset::Game::validation, 10);
     cout << Global::strprintf("  Validation: sqerr = %f, rate = %.3f, logp = %f\n", eval.sqerr, eval.rate, eval.logp);
 
-    eval = strengthModel.evaluate(dataset, predictor, Dataset::Game::test, 10);
+    eval = strengthModel.evaluate(predictor, Dataset::Game::test, 10);
     cout << Global::strprintf("  Test: sqerr = %f, rate = %.3f, logp = %f\n", eval.sqerr, eval.rate, eval.logp);
   }
 }

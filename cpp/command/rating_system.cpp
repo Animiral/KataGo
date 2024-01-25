@@ -94,10 +94,10 @@ int MainCmds::rating_system(const vector<string>& args) {
     cerr << Version::getKataGoVersionForHelp() << endl;
   }
 
-  StrengthModel strengthModel(strengthModelFile, featureDir);
   Dataset dataset;
   dataset.load(listFile, featureDir);
   int set = Dataset::Game::training;
+  StrengthModel strengthModel(strengthModelFile, &dataset);
 
   // Print all games for information
   for(size_t i = 0; i < dataset.games.size(); i++) {
@@ -113,7 +113,7 @@ int MainCmds::rating_system(const vector<string>& args) {
   
   StochasticPredictor predictor;
   size_t windowSize = 1000;
-  StrengthModel::Evaluation eval = strengthModel.evaluate(dataset, predictor, Dataset::Game::training, windowSize);
+  StrengthModel::Evaluation eval = strengthModel.evaluate(predictor, Dataset::Game::training, windowSize);
   cout << Global::strprintf("Rating system sq.err=%f, successRate=%.3f, successLogp=%f\n", eval.sqerr, eval.rate, eval.logp);
 
   dataset.store(outlistFile);

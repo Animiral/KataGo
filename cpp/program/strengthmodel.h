@@ -48,7 +48,8 @@ public:
     int lastOccurrence; // max index of game where this player participated or -1
   };
 
-  void load(const std::string& path, const std::string& featureDir);
+  // load the games listed in the path, optionally with move features from featuresDir.
+  void load(const std::string& path, const std::string& featureDir = "");
   void store(const std::string& path) const;
   // retrieve up to bufsize moves played by the player in games before the game index, return # retrieved
   size_t getRecentMoves(size_t player, size_t game, MoveFeatures* buffer, size_t bufsize);
@@ -67,6 +68,7 @@ private:
   std::map<std::string, std::size_t> nameIndex;  // player names to unique index into player_
 
   std::size_t getOrInsertNameIndex(const std::string& name);  // insert with lastOccurrence
+  void loadFeatures(const std::string& featureDir);
   std::vector<MoveFeatures> readFeaturesFromFile(const std::string& featurePath);
 
 };
@@ -111,8 +113,6 @@ private:
 
 };
 
-using FeaturesAndTargets = std::vector<std::pair<std::vector<MoveFeatures>, float> >;
-
 // This class encapsulates the main strength model functions on a dataset.
 // It can extract features (=one-time preprocessing with Kata net), train our model, and evaluate it.
 class StrengthModel
@@ -120,15 +120,14 @@ class StrengthModel
 
 public:
 
-  // cache calculated move features for every sgfPath under featureDir
-  explicit StrengthModel(const std::string& strengthModelFile_, const std::string& featureDir_) noexcept;
+  // load the strength model or random-initialize a new one
+  explicit StrengthModel(const std::string& strengthModelFile = "", Dataset* dataset_ = nullptr) noexcept;
 
-  FeaturesAndTargets getFeaturesAndTargets(const Dataset& dataset) const;
-  // Analyze SGF with KataGo network and search to determine the embedded features of every move
-  static void extractGameFeatures(const CompactSgf& sgf, const Search& search, std::vector<MoveFeatures>& blackFeatures, std::vector<MoveFeatures>& whiteFeatures);
+  // use KataGo network to precompute features for every dataset game and write them to feature files
+  void extractFeatures(const std::string& featureDir, const Search& search);
 
-  // training loop, save result to file
-  void train(FeaturesAndTargets& xy, size_t split, int epochs, size_t batchSize, float weightPenalty, float learnrate);
+  // training loop on strength network
+  void train(int epochs, int steps, size_t batchSize, float weightPenalty, float learnrate, size_t windowSize);
 
   // run predictions using windowSize moves and determine rate/error over the games matching the given set (set=batch games also match set=training)
   struct Evaluation {
@@ -136,17 +135,25 @@ public:
     float rate;   // relative amount of matches in which the predicted winner matched the actual winner
     float logp;   // cumulative log-likelihood of all match outcomes in the eyes of the predictor
   };
-  Evaluation evaluate(Dataset& dataset, Predictor& predictor, int set, size_t windowSize = 1000);
+  Evaluation evaluate(Predictor& predictor, int set, size_t windowSize = 1000);
 
-  std::string featureDir;
+  // run the strength model on SGFs provided directly by the user and predict one rating number from them
+  struct Analysis {
+    float avgWRLoss;
+    float avgPLoss;
+    float rating;
+  };
+  Analysis analyze(std::vector<Sgf*> sgfs, const std::string& playerName, const Search& search);
+
   StrengthNet net;
 
 private:
 
-  std::string strengthModelFile;
-  // Dataset dataset; // TODO: refactor to have the same dataset for feature extraction, training and evaluation
+  Dataset* dataset;
 
-  bool maybeWriteMoveFeaturesCached(const std::string& cachePath, const std::vector<MoveFeatures>& features) const;
+  // Analyze SGF with KataGo network and search to determine the embedded features of every move
+  static void extractGameFeatures(const CompactSgf& sgf, const Search& search, std::vector<MoveFeatures>& blackFeatures, std::vector<MoveFeatures>& whiteFeatures);
+  void writeFeaturesToFile(const std::string& featurePath, const std::vector<MoveFeatures>& features) const;
 
 };
 

@@ -15,17 +15,6 @@ using namespace std;
 
 namespace {
 
-// poor man's pre-C++20 format, https://stackoverflow.com/questions/2342162/stdstring-formatting-like-sprintf
-template<typename ... Args>
-std::string customFormat( const std::string& format, Args ... args ) {
-  int size_s = std::snprintf( nullptr, 0, format.c_str(), args ... ) + 1; // Extra space for '\0'
-  if( size_s <= 0 ){ throw std::runtime_error( "Error during formatting." ); }
-  auto size = static_cast<size_t>( size_s );
-  std::unique_ptr<char[]> buf( new char[ size ] );
-  std::snprintf( buf.get(), size, format.c_str(), args ... );
-  return std::string( buf.get(), buf.get() + size - 1 ); // We don't want the '\0' inside
-}
-
 void loadParams(ConfigParser& config, SearchParams& params, Player& perspective, Player defaultPerspective) {
   params = Setup::loadSingleParams(config,Setup::SETUP_FOR_ANALYSIS);
   perspective = Setup::parseReportAnalysisWinrates(config,defaultPerspective);
@@ -102,13 +91,16 @@ int MainCmds::strength_training(const vector<string>& args) {
   const bool logToStderr = logger.isLoggingToStderr();
 
   // training config:
-  float splitFraction = cfg.contains("trainingTestSplit") ? cfg.getFloat("trainingTestSplit", 0.f, 1.f) : .8f;
+  float trainingFraction = cfg.contains("trainingFraction") ? cfg.getFloat("trainingFraction", 0.f, 1.f) : .8f;
+  float validationFraction = cfg.contains("validationFraction") ? cfg.getFloat("validationFraction", 0.f, 1.f) : .8f;
   int epochs = cfg.contains("trainingEpochs") ? cfg.getInt("trainingEpochs") : 100;
+  int steps = cfg.contains("trainingSteps") ? cfg.getInt("trainingSteps") : 100;
   size_t batchSize = cfg.contains("trainingBatchSize") ? cfg.getInt("trainingBatchSize") : 100;
   float weightPenalty = cfg.contains("trainingWeightPenalty") ? cfg.getFloat("trainingWeightPenalty") : 1e-5f;
   float learnrate = cfg.contains("trainingLearnrate") ? cfg.getFloat("trainingLearnrate") : 1e-3f;
-  logger.write(customFormat("Training configuration: %.2f training/test split, %d epochs, %d batchsize, %f weight penalty, %f learnrate.",
-    splitFraction, epochs, batchSize, weightPenalty, learnrate));
+  size_t windowSize = cfg.contains("recentMovesWindowSize") ? cfg.getInt("recentMovesWindowSize") : 1000;
+  logger.write(Global::strprintf("Training configuration: %.2f trainingFraction, %.2f validationFraction, %d epochs, %d steps, %d batchsize, %f weight penalty, %f learnrate. %d recentMovesWindowSize",
+    trainingFraction, validationFraction, epochs, steps, batchSize, weightPenalty, learnrate, windowSize));
 
   //Check for unused config keys
   cfg.warnUnusedKeys(cerr,&logger);
@@ -123,20 +115,19 @@ int MainCmds::strength_training(const vector<string>& args) {
   }
 
   { // main training
-    StrengthModel strengthModel(strengthModelFile, featureDir);
-    logger.write("Loaded strength model "+ strengthModelFile);
     Dataset dataset;
     dataset.load(listFile, featureDir);
     // dataset.resize(10);
-    
     logger.write("Loaded dataset with " + Global::intToString(dataset.games.size()) + " games from " + listFile);
-    FeaturesAndTargets featuresTargets = strengthModel.getFeaturesAndTargets(dataset);
+    dataset.randomSplit(seedRand, trainingFraction, validationFraction); // TODO: optional; this info will be loaded from the input data file
 
-    size_t split = static_cast<size_t>(featuresTargets.size() * splitFraction);
-    logger.write(customFormat("Training on set of size %d (%d training, %d test)",
-      featuresTargets.size(), split, featuresTargets.size() - split));
+    if(!strengthModelFile.empty())
+      logger.write("Loading strength model " + strengthModelFile);
+    StrengthModel strengthModel(strengthModelFile, &dataset);
+    strengthModel.train(epochs, steps, batchSize, weightPenalty, learnrate, windowSize);
 
-    strengthModel.train(featuresTargets, split, epochs, batchSize, weightPenalty, learnrate);
+    if(!strengthModelFile.empty())
+      strengthModel.net.saveModelFile(strengthModelFile);
   }
 
   logger.write("All cleaned up, quitting");
