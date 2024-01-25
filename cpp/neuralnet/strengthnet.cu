@@ -14,7 +14,6 @@ namespace StrengthNetImpl
 
 __device__ void getxdim(const Tensor& t, uint z, uint& xdim, uint& offset); // get x-size and offset of z'th layer
 __device__ float& at(const Tensor& t, uint x, uint y = 0, uint z = 0); // tensor element access
-__device__ float accumulate(float* data, uint n, float (*func)(float, float)); // Accumulate data with func
 
 __global__ void atK(Tensor t, float* out, uint x, uint y, uint z);
 __global__ void scaleK(Tensor y, float w); // y = y * w
@@ -29,8 +28,7 @@ __global__ void reluK(Tensor h); // in-place relu
 __global__ void softmaxK(Tensor a); // in-place softmax
 __global__ void softmaxDerivedK(Tensor a_grad, const Tensor z_grad, const Tensor a); // a_grad = z_grad * d_softmax(z) / d_z where a = softmax(z)
 
-__global__ void accumulateTensorZ(Tensor W); // reduce z dimension by sum
-__global__ void updateTensor(Tensor W, const Tensor W_grad, float weightPenalty, float learnrate); // W = W - W_grad * learnrate - d_(W ⊙ W) / d_W * weightPenalty
+__global__ void updateTensorK(Tensor W, const Tensor W_grad, float weightPenalty, float learnrate); // W = W - W_grad * learnrate - d_(W ⊙ W) / d_W * weightPenalty
 
 float getelem(const Tensor &t, uint x, uint y, uint z); // tensor element access (slow/wasteful)
 void scale(Tensor& y, float w);
@@ -125,8 +123,8 @@ void StrengthNet::backward() {
 }
 
 void StrengthNet::update(float weightPenalty, float learnrate) {
-  updateTensor<<<1, {W.dims.x, W.dims.y}>>>(W, *W_grad, weightPenalty, learnrate);
-  updateTensor<<<1, {b.dims.x, b.dims.y}>>>(b, *b_grad, weightPenalty, learnrate);
+  updateTensorK<<<1, {W.dims.x, W.dims.y}>>>(W, *W_grad, weightPenalty, learnrate);
+  updateTensorK<<<1, {b.dims.x, b.dims.y}>>>(b, *b_grad, weightPenalty, learnrate);
   // updateTensor<<<1, {W1.dims.x, W1.dims.y}>>>(W1, *W1_grad, weightPenalty, learnrate);
   // updateTensor<<<1, {W2r.dims.x, W2r.dims.y}>>>(W2r, *W2r_grad, weightPenalty, learnrate);
   // updateTensor<<<1, {W2z.dims.x, W2z.dims.y}>>>(W2z, *W2z_grad, weightPenalty, learnrate);
@@ -180,34 +178,6 @@ __device__ float& at(const Tensor& t, uint x, uint y, uint z) {
   assert(x < xdim);
 
   return t.data[(offset + x) * dimy + y];
-}
-
-__device__ float accumulate(float* data, uint n, float (*func)(float, float)) {
-  assert(0 == blockIdx.x); // this operation cannot use blocks
-  assert(blockDim.x >= n); // must have enough threads
-  extern __shared__ float buffer[];
-  uint i = threadIdx.x;
-
-  if(i < n)
-    buffer[i] = data[i];
-
-  __syncthreads();
-
-  for (uint s = n/2; s > 0; s = n/2) {
-      if (i + n - s < n) { // accumulate second half of data into first half
-          buffer[i] = func(buffer[i], buffer[i + n - s]);
-      }
-      n -= s; // discard second half
-      __syncthreads();
-  }
-
-  // now we are down to exactly either zero, one or two elements
-  if(2 == n)
-    return func(buffer[0], buffer[1]);
-  else if(1 == n)
-    return buffer[0];
-  else
-    return NAN; // some default
 }
 
 __global__ void atK(Tensor t, float* out, uint x, uint y = 0, uint z = 0) {
@@ -295,7 +265,10 @@ __global__ void accumulateK(Tensor a, const Tensor t, uint op) {
 
   uint xdim, offset;
   getxdim(t, z, xdim, offset);
-  float v = at(t, 0, y, z);
+
+  float v = 0; // some default value; the case xdim==0 must be handled!
+  if(xdim > 0)
+    v = at(t, 0, y, z);
   for(uint x = 1; x < xdim; x++) {
     float elem = at(t, x, y, z);
     switch(op) {
@@ -405,25 +378,12 @@ __global__ void softmaxDerivedK(Tensor a_grad, const Tensor z_grad, const Tensor
 }
 
 // 1 block with W.dims threads
-__global__ void accumulateTensorZ(Tensor W) {
-  float v = 0;
-  for(uint z = 0; z < W.dims.z; z++) {
-    v += at(W, threadIdx.x, threadIdx.y, z);
-  }
-  at(W, threadIdx.x, threadIdx.y, 0) = v;
-}
-
-// 1 block with W.dims threads
-__global__ void updateTensor(Tensor W, const Tensor W_grad, float weightPenalty, float learnrate) {
+__global__ void updateTensorK(Tensor W, const Tensor W_grad, float weightPenalty, float learnrate) {
   assert(W.dims.x == W_grad.dims.x);
   assert(W.dims.y == W_grad.dims.y);
   assert(1 == W_grad.viewDims.z);
 
-  float delta = 0;
-  for(uint z = 0; z < W_grad.viewDims.z; z++) {
-    delta += at(W_grad, threadIdx.x, threadIdx.y, z);
-  }
-  delta += at(W, threadIdx.x, threadIdx.y) * 2 * weightPenalty;
+  float delta = at(W_grad, threadIdx.x, threadIdx.y) + at(W, threadIdx.x, threadIdx.y) * 2 * weightPenalty;
   at(W, threadIdx.x, threadIdx.y) -= delta * learnrate;
 }
 

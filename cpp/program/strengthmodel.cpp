@@ -348,29 +348,45 @@ void StrengthModel::train(int epochs, int steps, size_t batchSize, float weightP
       vector<float> targets;
       for(size_t t = 0; t < dataset->games.size(); t++) {
         const Dataset::Game& game = dataset->games[t];
-        for(auto& playerInfo : {game.white, game.black}) {
-          vector<MoveFeatures> features(windowSize);
-          size_t moveCount = dataset->getRecentMoves(playerInfo.player, t, features.data(), windowSize);
-          features.resize(moveCount);
-          inputs.push_back(features);
-          targets.push_back(playerInfo.rating);
+        if(Dataset::Game::batch == game.set) {
+          for(auto& playerInfo : {game.white, game.black}) {
+            vector<MoveFeatures> features(windowSize);
+            size_t moveCount = dataset->getRecentMoves(playerInfo.player, t, features.data(), windowSize);
+            features.resize(moveCount);
+            inputs.push_back(features);
+            targets.push_back(playerInfo.rating);
+          }
         }
       }
       net.setInput(inputs);
       net.forward();
-      // cout << "Sample #" << i << "(" << xy[i].first.size() << " moves): (" << y_hat << "-" << xy[i].second << ")^2 = " << (y_hat-xy[i].second)*(y_hat-xy[i].second) << "\n";
+      // if(0 == s) {
+      //   auto outt = net.getOutput();
+      //   outt.resize(10);
+      //   cout << "Forward output: ";
+      //   for(auto o : outt)
+      //     cout << o << ", ";
+      //   cout << "\n";
+      //   cout << "Backward targets: ";
+      //   auto tt = targets;
+      //   tt.resize(10);
+      //   for(auto o : tt)
+      //     cout << o << ", ";
+      //   cout << "\n";
+      // }
       net.setTarget(targets);
       net.backward();
       grads_var += net.gradsVar();
-
-      // if(e % 5 == 4 && i == 0) {
-      //   net.printWeights(cout, "epoch " + Global::intToString(e));
-      //   net.printState(cout, "epoch " + Global::intToString(e));
+      // if(s == 0) {
+      //   net.printWeights(cout, "epoch " + Global::intToString(e) + " step " + Global::intToString(s));
+      //   net.printState(cout, "epoch " + Global::intToString(e) + " step " + Global::intToString(s));
+      //   net.printGrads(cout, "epoch " + Global::intToString(e) + " step " + Global::intToString(s));
       //   // cout << "Test #" << i-split << " (" << xy[i].first.size() << " moves): prediction=" << std::fixed << std::setprecision(3) << y_hat << ", target=" << xy[i].second << ", sqerr=" << sqerr << "\n";
       // }
 
       net.update(weightPenalty, learnrate);
     }
+    // cout << "Sample #" << i << "(" << xy[i].first.size() << " moves): (" << y_hat << "-" << xy[i].second << ")^2 = " << (y_hat-xy[i].second)*(y_hat-xy[i].second) << "\n";
     grads_var /= steps; // average in 1 training update
     // net.printWeights(cout, "epoch " + Global::intToString(e));
     // net.printState(cout, "epoch " + Global::intToString(e));
@@ -411,7 +427,8 @@ StrengthModel::Evaluation StrengthModel::evaluate(Predictor& predictor, int set,
   }
 
   float rate = float(successCount) / sgfCount;
-  return { sqerr, rate, logp };
+  float mse = sqerr / sgfCount;
+  return { mse, rate, logp };
 }
 
 StrengthModel::Analysis StrengthModel::analyze(vector<Sgf*> sgfs, const string& playerName, const Search& search) {

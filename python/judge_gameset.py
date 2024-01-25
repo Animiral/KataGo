@@ -165,6 +165,8 @@ if __name__ == "__main__":
     row_ids = {}
     count = 0
 
+    # TODO: assign to each row a marker for training/validaiton/test at random.
+
     # launch queries to the engine
     for row in rows:
         row_ids[count] = row
