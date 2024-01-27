@@ -42,7 +42,6 @@ int MainCmds::strength_training(const vector<string>& args) {
   ConfigParser cfg;
   string listFile; // CSV file listing all SGFs with labels to be fed into the strength training
   string featureDir;
-  string modelFile;
   string strengthModelFile;
   bool numAnalysisThreadsCmdlineSpecified;
   int numAnalysisThreadsCmdline;
@@ -119,7 +118,7 @@ int MainCmds::strength_training(const vector<string>& args) {
     dataset.load(listFile, featureDir);
     // dataset.resize(10);
     logger.write("Loaded dataset with " + Global::intToString(dataset.games.size()) + " games from " + listFile);
-    dataset.randomSplit(seedRand, trainingFraction, validationFraction); // TODO: optional; this info will be loaded from the input data file
+    // dataset.randomSplit(seedRand, trainingFraction, validationFraction); // disabled: this info is loaded from the input data file
 
     if(!strengthModelFile.empty())
       logger.write("Loading strength model " + strengthModelFile);

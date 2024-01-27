@@ -24,7 +24,7 @@ void Dataset::load(const string& path, const std::string& featureDir) {
   line = Global::trim(line);
 
   // map known fieldnames to row indexes, wherever they may be
-  enum class F { ignore, sgfPath, whiteName, blackName, whiteLabel, blackLabel, winner };
+  enum class F { ignore, sgfPath, whiteName, blackName, whiteLabel, blackLabel, winner, set };
   vector<F> fields;
   std::string field;
   std::istringstream iss(line);
@@ -35,6 +35,7 @@ void Dataset::load(const string& path, const std::string& featureDir) {
     else if("WhiteLabel" == field) fields.push_back(F::whiteLabel);
     else if("BlackLabel" == field) fields.push_back(F::blackLabel);
     else if("Winner" == field || "Judgement" == field) fields.push_back(F::winner);
+    else if("Set" == field) fields.push_back(F::set);
     else fields.push_back(F::ignore);
   }
 
@@ -68,6 +69,11 @@ void Dataset::load(const string& path, const std::string& featureDir) {
           game.score = 1;
         else if('w' == field[0] || 'W' == field[0])
           game.score = 0;
+        break;
+      case F::set:
+        if("t" == field || "T" == field) game.set = Game::training;
+        if("v" == field || "V" == field) game.set = Game::validation;
+        if("e" == field || "E" == field) game.set = Game::test;
         break;
       default:
       case F::ignore:
@@ -277,16 +283,18 @@ float normcdf(float x) noexcept {
 }
 
 Dataset::Prediction StochasticPredictor::predict(const MoveFeatures* blackFeatures, size_t blackCount, const MoveFeatures* whiteFeatures, size_t whiteCount) {
+  if(0 == blackCount || 0 == whiteCount)
+    return {0, 0, .5}; // no data for prediction
   constexpr float gamelength = 100; // assume 100 moves per player for an average game
   vector<float> buffer(std::max(blackCount, whiteCount));
   for(size_t i = 0; i < whiteCount; i++)
     buffer[i] = whiteFeatures[i].pointsLoss;
-  float wplavg = 1 <= whiteCount ? fAvg(vector<float>(buffer).data(), whiteCount) : 1;  // average white points loss; assume 1 if no data
-  float wplvar = 2 <= whiteCount ? fVar(buffer.data(), whiteCount, wplavg) : 0.5f;      // variance of white points loss
+  float wplavg = fAvg(vector<float>(buffer).data(), whiteCount);  // average white points loss
+  float wplvar = 2 <= whiteCount ? fVar(buffer.data(), whiteCount, wplavg) : 100.f;      // variance of white points loss
   for(size_t i = 0; i < blackCount; i++)
     buffer[i] = blackFeatures[i].pointsLoss;
-  float bplavg = 1 <= blackCount ? fAvg(vector<float>(buffer).data(), blackCount) : 1;  // average black points loss; assume 1 if no data
-  float bplvar = 2 <= blackCount ? fVar(buffer.data(), blackCount, bplavg) : 0.5f;      // variance of black points loss
+  float bplavg = fAvg(vector<float>(buffer).data(), blackCount);  // average black points loss
+  float bplvar = 2 <= blackCount ? fVar(buffer.data(), blackCount, bplavg) : 100.f;      // variance of black points loss
   const float epsilon = 0.000001f;  // avoid div by 0
   float z = std::sqrt(gamelength) * (wplavg - bplavg) / std::sqrt(bplvar + wplvar + epsilon); // white pt advantage in standard normal distribution at move# [2*gamelength]
   return {0, 0, normcdf(z)};
@@ -396,7 +404,7 @@ void StrengthModel::train(int epochs, int steps, size_t batchSize, float weightP
     Evaluation validationEval = evaluate(predictor, Dataset::Game::validation, windowSize);
     float theta_var = net.thetaVar();
     // cout << "Epoch " << e << ": mse=" << std::fixed << std::setprecision(3) << mse << "\n";
-    cout << Global::strprintf("Epoch %d: mse_training=%.2f, mse_validation=%.2f, theta^2=%.4f, grad^2=%.4f\n", e, trainingEval.sqerr, validationEval.sqerr, theta_var, grads_var);
+    cout << Global::strprintf("Epoch %d: mse_training=%.2f, mse_validation=%.2f, theta^2=%.4f, grad^2=%.4f\n", e, trainingEval.mse, validationEval.mse, theta_var, grads_var);
   }
 }
 

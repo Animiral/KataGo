@@ -29,7 +29,6 @@ int MainCmds::rating_system(const vector<string>& args) {
   string listFile; // CSV file listing all SGFs to be fed into the rating system
   string featureDir;
   string outlistFile; // Rating system CSV output file
-  string modelFile;
   string strengthModelFile;
   bool numAnalysisThreadsCmdlineSpecified;
   int numAnalysisThreadsCmdline;
@@ -37,8 +36,7 @@ int MainCmds::rating_system(const vector<string>& args) {
   KataGoCommandLine cmd("Calculate all match outcome predictions and player ranks in a dataset using the strength model.");
   try {
     cmd.addConfigFileArg("","strength_analysis_example.cfg");
-    cmd.addModelFileArg();
-    TCLAP::ValueArg<string> strengthModelFileArg("","strengthmodel","Neural net strength model file.",true,"","STRENGTH_MODEL_FILE");
+    TCLAP::ValueArg<string> strengthModelFileArg("","strengthmodel","Neural net strength model file.",false,"","STRENGTH_MODEL_FILE");
     cmd.add(strengthModelFileArg);
     cmd.setShortUsageArgLimit();
     TCLAP::ValueArg<string> listArg("","list","CSV file listing all SGFs to be fed into the rating system.",true,"","LIST_FILE");
@@ -56,7 +54,6 @@ int MainCmds::rating_system(const vector<string>& args) {
     listFile = listArg.getValue();
     featureDir = featureDirArg.getValue();
     outlistFile = outlistArg.getValue();
-    modelFile = cmd.getModelFile();
     strengthModelFile = strengthModelFileArg.getValue();
     numAnalysisThreadsCmdlineSpecified = numAnalysisThreadsArg.isSet();
     numAnalysisThreadsCmdline = numAnalysisThreadsArg.getValue();
@@ -85,7 +82,6 @@ int MainCmds::rating_system(const vector<string>& args) {
   cfg.warnUnusedKeys(cerr,&logger);
 
   logger.write("Loaded config "+ cfg.getFileName());
-  logger.write("Loaded model "+ modelFile);
   cmd.logOverrides(logger);
 
   logger.write("Rating System evaluation starting...");
@@ -96,7 +92,7 @@ int MainCmds::rating_system(const vector<string>& args) {
 
   Dataset dataset;
   dataset.load(listFile, featureDir);
-  int set = Dataset::Game::training;
+  int set = Dataset::Game::training; // TODO: choose set via arg
   StrengthModel strengthModel(strengthModelFile, &dataset);
 
   // Print all games for information
@@ -108,13 +104,21 @@ int MainCmds::rating_system(const vector<string>& args) {
     string blackName = dataset.players[gm.black.player].name;
     string whiteName = dataset.players[gm.white.player].name;
     string winner = gm.score > .5 ? "B+":"W+";
-    std::cout << blackName << " vs " << whiteName << ": " << winner << "\n";
+    cout << blackName << " vs " << whiteName << ": " << winner << "\n";
   }
   
-  StochasticPredictor predictor;
+  unique_ptr<Predictor> predictor;
+  if(strengthModelFile.empty()) {
+    cout << "Using stochastic model.\n";
+    predictor.reset(new StochasticPredictor());
+  }
+  else {
+    cout << "Using strength model at " << strengthModelFile << ".\n";
+    predictor.reset(new SmallPredictor(strengthModel.net));
+  }
   size_t windowSize = 1000;
-  StrengthModel::Evaluation eval = strengthModel.evaluate(predictor, Dataset::Game::training, windowSize);
-  cout << Global::strprintf("Rating system sq.err=%f, successRate=%.3f, successLogp=%f\n", eval.sqerr, eval.rate, eval.logp);
+  StrengthModel::Evaluation eval = strengthModel.evaluate(*predictor, Dataset::Game::training, windowSize);
+  cout << Global::strprintf("Rating system mse=%f, successRate=%.3f, successLogp=%f\n", eval.mse, eval.rate, eval.logp);
 
   dataset.store(outlistFile);
   logger.write("All cleaned up, quitting");

@@ -36,7 +36,7 @@ void runStrengthModelTests(const string& modelFile, const string& listFile, cons
   {
     cout << "- UT dataset contains " << dataset.games.size() << " games and " << dataset.players.size() << " players:\n";
     for(const Dataset::Game& game : dataset.games)
-      cout << "\tGame " << game.sgfPath << " - " << game.black.features.size() << " black features, " << game.white.features.size() << " white features\n";
+      cout << "\tGame " << game.sgfPath << " (" << "TVBE"[game.set] << ") - " << game.black.features.size() << " black features, " << game.white.features.size() << " white features\n";
     for(const Dataset::Player& player : dataset.players)
       cout << "\tPlayer " << player.name << ", last occurred in game [" << player.lastOccurrence << "]\n";
   }
@@ -230,13 +230,13 @@ void runStrengthModelTests(const string& modelFile, const string& listFile, cons
     dataset.randomSplit(rand, 0.33f, 0.33f);
     StochasticPredictor predictor;
     StrengthModel::Evaluation eval = strengthModel.evaluate(predictor, Dataset::Game::training, 10);
-    cout << Global::strprintf("  Training: sqerr = %f, rate = %.3f, logp = %f\n", eval.sqerr, eval.rate, eval.logp);
+    cout << Global::strprintf("  Training: mse = %f, rate = %.3f, logp = %f\n", eval.mse, eval.rate, eval.logp);
 
     eval = strengthModel.evaluate(predictor, Dataset::Game::validation, 10);
-    cout << Global::strprintf("  Validation: sqerr = %f, rate = %.3f, logp = %f\n", eval.sqerr, eval.rate, eval.logp);
+    cout << Global::strprintf("  Validation: mse = %f, rate = %.3f, logp = %f\n", eval.mse, eval.rate, eval.logp);
 
     eval = strengthModel.evaluate(predictor, Dataset::Game::test, 10);
-    cout << Global::strprintf("  Test: sqerr = %f, rate = %.3f, logp = %f\n", eval.sqerr, eval.rate, eval.logp);
+    cout << Global::strprintf("  Test: mse = %f, rate = %.3f, logp = %f\n", eval.mse, eval.rate, eval.logp);
   }
 }
 }

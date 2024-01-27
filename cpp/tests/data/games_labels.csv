@@ -1,4 +1,4 @@
-File,Player White,Player Black,WhiteLabel,BlackLabel
-sgfs/strengthmodeltests/1-p2-p1.sgf,p1,p2,1100,1200
-sgfs/strengthmodeltests/2-p3-p1.sgf,p1,p3,1130,1600
-sgfs/strengthmodeltests/3-p3-p2.sgf,p2,p3,1170,1610
+File,Player White,Player Black,WhiteLabel,BlackLabel,Set
+sgfs/strengthmodeltests/1-p2-p1.sgf,p1,p2,1100,1200,V
+sgfs/strengthmodeltests/2-p3-p1.sgf,p1,p3,1130,1600,E
+sgfs/strengthmodeltests/3-p3-p2.sgf,p2,p3,1170,1610,T
