@@ -100,7 +100,7 @@ void Dataset::store(const string& path) const {
   if (!ostrm.is_open())
     throw IOError("Could not write SGF list to " + path);
 
-  ostrm << "File,Player White,Player Black,Score,BlackRating,WhiteRating,PredictedScore,PredictedBlackRating,PredictedWhiteRating\n"; // header
+  ostrm << "File,Player White,Player Black,Score,BlackRating,WhiteRating,PredictedScore,PredictedBlackRating,PredictedWhiteRating,Set\n"; // header
 
   for(const Game& game : games) {
     string blackName = players[game.black.player].name;
@@ -109,10 +109,10 @@ void Dataset::store(const string& path) const {
     // file output
     size_t bufsize = game.sgfPath.size() + whiteName.size() + blackName.size() + 100;
     std::unique_ptr<char[]> buffer( new char[ bufsize ] );
-    int printed = std::snprintf(buffer.get(), bufsize, "%s,%s,%s,%.2f,%.2f,%.2f,%f,%f,%f\n",
+    int printed = std::snprintf(buffer.get(), bufsize, "%s,%s,%s,%f,%.2f,%.2f,%f,%f,%f,%c\n",
       game.sgfPath.c_str(), whiteName.c_str(), blackName.c_str(),
       game.score, game.black.rating, game.white.rating,
-      game.prediction.score, game.prediction.blackRating, game.prediction.whiteRating);
+      game.prediction.score, game.prediction.blackRating, game.prediction.whiteRating, "TVBE"[game.set]);
     if(printed <= 0)
       throw IOError("Error during formatting.");
     ostrm << buffer.get();
@@ -418,12 +418,15 @@ StrengthModel::Evaluation StrengthModel::evaluate(Predictor& predictor, int set,
 
   for(size_t i = 0; i < dataset->games.size(); i++) {
     Dataset::Game& gm = dataset->games[i];
-    if(gm.set != set && !(Dataset::Game::training == set && Dataset::Game::batch == gm.set))
-      continue;
 
+    // always perform prediction, even for games not in the set
     size_t blackCount = dataset->getRecentMoves(gm.black.player, i, blackFeatures.data(), windowSize);
     size_t whiteCount = dataset->getRecentMoves(gm.white.player, i, whiteFeatures.data(), windowSize);
     gm.prediction = predictor.predict(blackFeatures.data(), blackCount, whiteFeatures.data(), whiteCount);
+
+    if(gm.set != set && !(Dataset::Game::training == set && Dataset::Game::batch == gm.set))
+      continue;
+
     float diffBlack = gm.black.rating - gm.prediction.blackRating;
     float diffWhite = gm.white.rating - gm.prediction.whiteRating;
     sqerr += diffBlack * diffBlack + diffWhite * diffWhite;

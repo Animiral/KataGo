@@ -18,6 +18,19 @@ namespace {
       params.conservativePass = true;
   }
 
+  int parseSetMarker(const string& setMarker) {
+    if("t" == setMarker || "T" == setMarker)
+      return Dataset::Game::training;
+    if("v" == setMarker || "V" == setMarker)
+      return Dataset::Game::validation;
+    if("e" == setMarker || "E" == setMarker)
+      return Dataset::Game::test;
+    if("b" == setMarker || "B" == setMarker)
+      return Dataset::Game::batch;
+    else
+      return -1; // run on every game
+  }
+
 }
 
 int MainCmds::rating_system(const vector<string>& args) {
@@ -29,9 +42,8 @@ int MainCmds::rating_system(const vector<string>& args) {
   string listFile; // CSV file listing all SGFs to be fed into the rating system
   string featureDir;
   string outlistFile; // Rating system CSV output file
+  string setMarker;
   string strengthModelFile;
-  bool numAnalysisThreadsCmdlineSpecified;
-  int numAnalysisThreadsCmdline;
 
   KataGoCommandLine cmd("Calculate all match outcome predictions and player ranks in a dataset using the strength model.");
   try {
@@ -41,22 +53,20 @@ int MainCmds::rating_system(const vector<string>& args) {
     cmd.setShortUsageArgLimit();
     TCLAP::ValueArg<string> listArg("","list","CSV file listing all SGFs to be fed into the rating system.",true,"","LIST_FILE");
     cmd.add(listArg);
-    TCLAP::ValueArg<string> featureDirArg("","featuredir","Directory for move feature cache.",false,"","FEATURE_DIR");
+    TCLAP::ValueArg<string> featureDirArg("","featuredir","Directory for move feature cache.",true,"","FEATURE_DIR");
     cmd.add(featureDirArg);
     TCLAP::ValueArg<string> outlistArg("","outlist","Rating system CSV output file.",false,"","OUTLIST_FILE");
     cmd.add(outlistArg);
+    TCLAP::ValueArg<string> setArg("","set","Which set to rate: T/V/E/*.",false,"","SET");
+    cmd.add(setArg);
     cmd.addOverrideConfigArg();
-
-    TCLAP::ValueArg<int> numAnalysisThreadsArg("","analysis-threads","Analyze up to this many positions in parallel. Equivalent to numAnalysisThreads in the config.",false,0,"THREADS");
-    cmd.add(numAnalysisThreadsArg);
     cmd.parseArgs(args);
 
     listFile = listArg.getValue();
     featureDir = featureDirArg.getValue();
     outlistFile = outlistArg.getValue();
+    setMarker = setArg.getValue();
     strengthModelFile = strengthModelFileArg.getValue();
-    numAnalysisThreadsCmdlineSpecified = numAnalysisThreadsArg.isSet();
-    numAnalysisThreadsCmdline = numAnalysisThreadsArg.getValue();
 
     cmd.getConfig(cfg);
   }
@@ -64,14 +74,6 @@ int MainCmds::rating_system(const vector<string>& args) {
     cerr << "Error: " << e.error() << " for argument " << e.argId() << endl;
     return 1;
   }
-  cfg.applyAlias("numSearchThreadsPerAnalysisThread", "numSearchThreads");
-
-  if(cfg.contains("numAnalysisThreads") && numAnalysisThreadsCmdlineSpecified)
-    throw StringError("When specifying numAnalysisThreads in the config (" + cfg.getFileName() + "), it is redundant and disallowed to also specify it via -analysis-threads");
-
-  const int numAnalysisThreads = numAnalysisThreadsCmdlineSpecified ? numAnalysisThreadsCmdline : cfg.getInt("numAnalysisThreads",1,16384);
-  if(numAnalysisThreads <= 0 || numAnalysisThreads > 16384)
-    throw StringError("Invalid value for numAnalysisThreads: " + Global::intToString(numAnalysisThreads));
 
   const bool logToStdoutDefault = false;
   const bool logToStderrDefault = true;
@@ -92,13 +94,13 @@ int MainCmds::rating_system(const vector<string>& args) {
 
   Dataset dataset;
   dataset.load(listFile, featureDir);
-  int set = Dataset::Game::training; // TODO: choose set via arg
+  int set = parseSetMarker(setMarker);
   StrengthModel strengthModel(strengthModelFile, &dataset);
 
   // Print all games for information
   for(size_t i = 0; i < dataset.games.size(); i++) {
     Dataset::Game& gm = dataset.games[i];
-    if(gm.set != set && !(Dataset::Game::training == set && Dataset::Game::batch == gm.set))
+    if(-1 != set && gm.set != set && !(Dataset::Game::training == set && Dataset::Game::batch == gm.set))
       continue;
 
     string blackName = dataset.players[gm.black.player].name;
