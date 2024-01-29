@@ -36,13 +36,18 @@ match : Run self-play match games based on a config, more efficient than gtp due
 version : Print version and exit.
 
 analysis : Runs an engine designed to analyze entire games in parallel.
-strength_analysis : Runs an engine to analyze the strength of a player.
 tuner : (OpenCL only) Run tuning to find and optimize parameters that work on your GPU.
 
 ---Selfplay training subcommands---------
 
 selfplay : Play selfplay games and generate training data.
 gatekeeper : Poll directory for new nets and match them against the latest net so far.
+
+---Strength Model subcommands---------
+
+extract_features : Precomputes move features for all games in the dataset.
+strength_analysis : Runs an engine to analyze the strength of a player.
+rating_system : Calculates all match outcome predictions and player ranks in a dataset using the strength model.
 
 ---Testing/debugging subcommands-------------
 evalsgf : Utility/debug tool, analyze a single position of a game from an SGF file.
@@ -63,6 +68,7 @@ runsearchtestsv8 : Run a bunch more things using a neural net and dump details t
 runsearchtestsv9 : Run a bunch more things using a neural net and dump details to stdout
 runselfplayinittests : Run some tests involving selfplay training init using a neural net and dump details to stdout
 runsekitrainwritetests : Run some tests involving seki train output
+runstrengthmodeltests: Run strength model related tests
 
 )%%" << endl;
 }
@@ -71,6 +77,8 @@ static int handleSubcommand(const string& subcommand, const vector<string>& args
   vector<string> subArgs(args.begin()+1,args.end());
   if(subcommand == "analysis")
     return MainCmds::analysis(subArgs);
+  if(subcommand == "extract_features")
+    return MainCmds::extract_features(subArgs);
   if(subcommand == "strength_analysis")
     return MainCmds::strength_analysis(subArgs);
   if(subcommand == "strength_training")

@@ -23,6 +23,11 @@ void Dataset::load(const string& path, const std::string& featureDir) {
     throw IOError("Could not read header line from " + path);
   line = Global::trim(line);
 
+  // clean any previous data
+  games.clear();
+  players.clear();
+  nameIndex.clear();
+
   // map known fieldnames to row indexes, wherever they may be
   enum class F { ignore, sgfPath, whiteName, blackName, whiteLabel, blackLabel, winner, set };
   vector<F> fields;
@@ -329,16 +334,23 @@ StrengthModel::StrengthModel(const string& strengthModelFile, Dataset* dataset_)
   }
 }
 
-void StrengthModel::extractFeatures(const std::string& featureDir, const Search& search) {
+void StrengthModel::extractFeatures(const std::string& featureDir, const Search& search, Logger* logger) {
   for(Dataset::Game& game : dataset->games) {
-    auto sgf = std::unique_ptr<CompactSgf>(CompactSgf::loadFile(game.sgfPath));
-    extractGameFeatures(*sgf, search, game.black.features, game.white.features);
     string sgfPathWithoutExt = Global::chopSuffix(game.sgfPath, ".sgf");
     string blackFeaturesPath = Global::strprintf("%s/%s_BlackFeatures.bin", featureDir.c_str(), sgfPathWithoutExt.c_str());
     string whiteFeaturesPath = Global::strprintf("%s/%s_WhiteFeatures.bin", featureDir.c_str(), sgfPathWithoutExt.c_str());
-    if(FileUtils::exists(blackFeaturesPath))
+
+    if(FileUtils::exists(blackFeaturesPath) && FileUtils::exists(blackFeaturesPath))
+      continue; // skip this game as it has already been analyzed
+
+    if(logger)
+      logger->write("Extracting from " + game.sgfPath + "...");
+
+    auto sgf = std::unique_ptr<CompactSgf>(CompactSgf::loadFile(game.sgfPath));
+    extractGameFeatures(*sgf, search, game.black.features, game.white.features);
+    if(!FileUtils::exists(blackFeaturesPath))
       writeFeaturesToFile(blackFeaturesPath, game.black.features);
-    if(FileUtils::exists(whiteFeaturesPath))
+    if(!FileUtils::exists(whiteFeaturesPath))
       writeFeaturesToFile(whiteFeaturesPath, game.white.features);
   }
 }

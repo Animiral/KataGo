@@ -268,6 +268,7 @@ add_executable(katago
   distributed/client.cpp
   command/commandline.cpp
   command/analysis.cpp
+  command/extract_features.cpp
   command/strength_analysis.cpp
   command/strength_training.cpp
   command/rating_system.cpp

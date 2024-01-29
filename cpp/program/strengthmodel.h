@@ -124,7 +124,7 @@ public:
   explicit StrengthModel(const std::string& strengthModelFile = "", Dataset* dataset_ = nullptr) noexcept;
 
   // use KataGo network to precompute features for every dataset game and write them to feature files
-  void extractFeatures(const std::string& featureDir, const Search& search);
+  void extractFeatures(const std::string& featureDir, const Search& search, Logger* logger = nullptr);
 
   // training loop on strength network
   void train(int epochs, int steps, size_t batchSize, float weightPenalty, float learnrate, size_t windowSize);

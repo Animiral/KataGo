@@ -26,42 +26,39 @@ namespace
 
 }
 
-int MainCmds::strength_analysis(const vector<string>& args) {
+int MainCmds::extract_features(const vector<string>& args) {
   Board::initHash();
   ScoreValue::initTables();
   Rand seedRand;
 
   ConfigParser cfg;
-  string playerName;
   string modelFile;
-  string strengthModelFile;
+  string listFile; // CSV file listing all SGFs to be fed into the rating system
+  string featureDir; // Directory for move feature cache
   bool numAnalysisThreadsCmdlineSpecified;
   int numAnalysisThreadsCmdline;
-  // bool quitWithoutWaiting;
-  vector<string> sgfPaths;
 
-  KataGoCommandLine cmd("Run strength analysis engine.");
+  KataGoCommandLine cmd("Precompute move features for all games in the dataset.");
   try {
-    cmd.addConfigFileArg("","strength_analysis_example.cfg");
-    TCLAP::ValueArg<string> playerNameArg("","player","Analyze the moves of the player with this name in the SGFs.",false,"","PLAYER_NAME");
+    cmd.addConfigFileArg("","analysis_example.cfg");
     cmd.addModelFileArg();
-    TCLAP::ValueArg<string> strengthModelFileArg("","strengthmodel","Neural net strength model file.",true,"","STRENGTH_MODEL_FILE");
-    cmd.add(strengthModelFileArg);
     cmd.setShortUsageArgLimit();
+
+    TCLAP::ValueArg<string> listArg("","list","CSV file listing all SGFs to be fed into the rating system.",true,"","LIST_FILE");
+    cmd.add(listArg);
+    TCLAP::ValueArg<string> featureDirArg("","featuredir","Directory for move feature cache.",true,"","FEATURE_DIR");
+    cmd.add(featureDirArg);
     cmd.addOverrideConfigArg();
 
     TCLAP::ValueArg<int> numAnalysisThreadsArg("","analysis-threads","Analyze up to this many positions in parallel. Equivalent to numAnalysisThreads in the config.",false,0,"THREADS");
     cmd.add(numAnalysisThreadsArg);
-    TCLAP::UnlabeledMultiArg<string> sgfFileArg("","Sgf file(s) to analyze",true,string());
-    cmd.add(sgfFileArg);
     cmd.parseArgs(args);
 
-    playerName = playerNameArg.getValue();
     modelFile = cmd.getModelFile();
-    strengthModelFile = strengthModelFileArg.getValue();
+    listFile = listArg.getValue();
+    featureDir = featureDirArg.getValue();
     numAnalysisThreadsCmdlineSpecified = numAnalysisThreadsArg.isSet();
     numAnalysisThreadsCmdline = numAnalysisThreadsArg.getValue();
-    sgfPaths = sgfFileArg.getValue();
 
     cmd.getConfig(cfg);
   }
@@ -117,12 +114,10 @@ int MainCmds::strength_analysis(const vector<string>& args) {
   }
 
   Search search(searchParams, nnEval, &logger, "");
-  StrengthModel strengthModel(strengthModelFile);
-  vector<Sgf*> sgfs = Sgf::loadFiles(sgfPaths);
-  StrengthModel::Analysis analysis = strengthModel.analyze(sgfs, playerName, search);
-
-  cout << "Avg win%% loss: "  << std::fixed << std::setprecision(3) << analysis.avgWRLoss << ", pt loss: " << analysis.avgPLoss << ".\n";
-  cout << "Rating for " << playerName << ": " << std::fixed << std::setprecision(2) << analysis.rating << "\n";
+  Dataset dataset;
+  dataset.load(listFile); // deliberately omit passing featureDir; we want to compute features, not load them
+  StrengthModel strengthModel("", &dataset);
+  strengthModel.extractFeatures(featureDir, search, &logger);
 
   delete nnEval;
   NeuralNet::globalCleanup();
