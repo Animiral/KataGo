@@ -82,7 +82,7 @@ public:
   ~StrengthNet();
 
   void randomInit(Rand& rand);                 // new weights
-  bool loadModelFile(const std::string& path); // load weights
+  void loadModelFile(const std::string& path); // load weights
   void saveModelFile(const std::string& path); // store weights
 
   void setInput(const Input& features); // host to GPU, with scaling
@@ -100,18 +100,18 @@ public:
 private:
 
   static const uint32_t STRNET_HEADER;
-  static constexpr std::size_t in_ch = 6;
-  static constexpr std::size_t hidden_ch = 1; // 32;
-  static constexpr std::size_t out_ch = 2;
+  static constexpr uint in_ch = 6;
+  static constexpr uint hidden_ch = 1; // 32;
+  static constexpr uint out_ch = 2;
 
   std::size_t N; // total number of currently processed moves (across all batches)
   std::vector<uint> zoffset; // batching offsets common to all data tensors
 
   // all non-parameter tensors are allocated to appropriate size with setInput()
-  Tensor *x, *h, /* *r, *a,*/ *y;  // (intermediate) calculation values
-  Tensor *h_grad, /* *hr_grad, *hz_grad, *r_grad, *z_grad,*/ *y_grad, *tgt;  // intermediate gradients for backpropagation
-  Tensor W, b; // W1, W2r, W2z;  // parameters: weights with included biases
-  Tensor *W_grad, *b_grad; // *W1_grad, *W2r_grad, *W2z_grad;  // parameter update gradients
+  Tensor *x, *h, *r, *a, *ra, *y;  // (intermediate) calculation values
+  Tensor *h_grad, *hr_grad, *hz_grad, *r_grad, *z_grad, *a_grad, *y_grad, *tgt;  // intermediate gradients for backpropagation
+  Tensor W1, b1, W2r, b2r, W2z, b2z;  // parameters: weights with included biases
+  Tensor *W1_grad, *b1_grad, *W2r_grad, *b2r_grad, *W2z_grad, *b2z_grad;  // parameter update gradients
 
   void allocateTensors(); // build tensors according to N, batchSize and zoffset
   void freeTensors() noexcept;

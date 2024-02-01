@@ -325,8 +325,15 @@ StrengthModel::StrengthModel(const string& strengthModelFile, Dataset* dataset_)
   : net(), dataset(dataset_)
 {
   bool loaded = false;
-  if(!strengthModelFile.empty() && !(loaded = net.loadModelFile(strengthModelFile))) {
-    cerr << "Could not load existing strength model from " << strengthModelFile << ". Random-initializing new strength model.\n";
+  if(!strengthModelFile.empty()) {
+    try {
+      net.loadModelFile(strengthModelFile);
+      loaded = true;
+    }
+    catch(const IOError& error) {
+      cerr << Global::strprintf("Could not load existing strength model from %s: %s Random-initializing new strength model.\n",
+         strengthModelFile.c_str(), error.what());
+    }
   }
   if(!loaded) {
     Rand rand;

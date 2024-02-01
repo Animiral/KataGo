@@ -162,13 +162,11 @@ float Tensor::variance(std::initializer_list<Tensor> ts) {
 
 StrengthNet::StrengthNet()
 : N(0), zoffset{0, 0},
-x(nullptr), h(nullptr), y(nullptr),
-// r(nullptr), // a(nullptr),
-h_grad(nullptr), y_grad(nullptr), tgt(nullptr),
-// hr_grad(nullptr), // hz_grad(nullptr), // r_grad(nullptr), // z_grad(nullptr),
-W(in_ch, hidden_ch), b(1, hidden_ch),
-W_grad(nullptr), b_grad(nullptr)
-// W1_grad(nullptr), // W2r_grad(nullptr), // W2z_grad(nullptr),
+x(nullptr), h(nullptr), r(nullptr), a(nullptr), ra(nullptr), y(nullptr),
+h_grad(nullptr), hr_grad(nullptr), hz_grad(nullptr),
+r_grad(nullptr), z_grad(nullptr), a_grad(nullptr), y_grad(nullptr), tgt(nullptr),
+W1(in_ch, hidden_ch), b1(1, hidden_ch), W2r(hidden_ch, 1), b2r(1, 1), W2z(hidden_ch, 1), b2z(1, 1),
+W1_grad(nullptr), b1_grad(nullptr), W2r_grad(nullptr), b2r_grad(nullptr), W2z_grad(nullptr), b2z_grad(nullptr)
 {
 }
 
@@ -178,8 +176,12 @@ StrengthNet::~StrengthNet()
 }
 
 void StrengthNet::randomInit(Rand& rand) {
-  W.randomInit(rand);
-  b.randomInit(rand);
+  W1.randomInit(rand);
+  b1.randomInit(rand);
+  W2r.randomInit(rand);
+  b2r.randomInit(rand);
+  W2z.randomInit(rand);
+  b2z.randomInit(rand);
 }
 
 const uint32_t StrengthNet::STRNET_HEADER = 0x57237;
@@ -203,21 +205,21 @@ void tensorToFile(Tensor& tensor, FILE* file) {
 }
 }
 
-bool StrengthNet::loadModelFile(const std::string& path) {
+void StrengthNet::loadModelFile(const std::string& path) {
   auto file = std::unique_ptr<std::FILE, decltype(&std::fclose)>(std::fopen(path.c_str(), "rb"), &std::fclose);
   if(nullptr == file)
-    return false;
+    throw IOError(path + " is not a strength model file.");
   uint32_t header; // must match
   size_t readheader = std::fread(&header, 4, 1, file.get());
   if(1 != readheader || STRNET_HEADER != header)
     throw IOError(path + " is not a strength model file.");
-  tensorFromFile(W, file.get());
-  tensorFromFile(b, file.get());
-  // tensorFromFile(W1, file.get());
-  // tensorFromFile(W2r, file.get());
-  // tensorFromFile(W2z, file.get());
+  tensorFromFile(W1, file.get());
+  tensorFromFile(b1, file.get());
+  tensorFromFile(W2r, file.get());
+  tensorFromFile(b2r, file.get());
+  tensorFromFile(W2r, file.get());
+  tensorFromFile(b2z, file.get());
   std::fclose(file.release());
-  return true;
 }
 
 void StrengthNet::saveModelFile(const std::string& path) {
@@ -227,11 +229,12 @@ void StrengthNet::saveModelFile(const std::string& path) {
 	size_t wroteheader = std::fwrite(&STRNET_HEADER, 4, 1, file.get());
   if(1 != wroteheader)
     throw IOError("Failed to save complete strength model to " + path);
-  tensorToFile(W, file.get());
-  tensorToFile(b, file.get());
-  // tensorToFile(W1, file.get());
-  // tensorToFile(W2r, file.get());
-  // tensorToFile(W2z, file.get());
+  tensorToFile(W1, file.get());
+  tensorToFile(b1, file.get());
+  tensorToFile(W2r, file.get());
+  tensorToFile(b2r, file.get());
+  tensorToFile(W2z, file.get());
+  tensorToFile(b2z, file.get());
   if(0 != std::fclose(file.release()))
     throw IOError("Failed to save complete strength model to " + path);
 }
@@ -241,7 +244,6 @@ void StrengthNet::setInput(const vector<vector<MoveFeatures>>& features) {
   assert(features.size() > 0); // must have at least one input
   freeTensors();
 
-  // TODO: complete batch
   N = 0;
   zoffset.resize(features.size() + 1);
   zoffset[0] = 0;
@@ -290,41 +292,45 @@ void StrengthNet::setTarget(const Output& targets) {
 }
 
 void StrengthNet::printWeights(std::ostream& stream, const std::string& name, bool humanReadable) const {
-  stream << "* W *\n";   W.print(stream, name, humanReadable);
-  stream << "* b *\n";   b.print(stream, name, humanReadable);
-  // stream << "* W1 *\n";   W1->print(stream, name, humanReadable);
-  // stream << "* W2r *\n";  W2r->print(stream, name, humanReadable);
-  // stream << "* W2z *\n";  W2z->print(stream, name, humanReadable);
+  stream << "* W1 *\n";   W1.print(stream, name, humanReadable);
+  stream << "* b1 *\n";   b1.print(stream, name, humanReadable);
+  stream << "* W2r *\n";  W2r.print(stream, name, humanReadable);
+  stream << "* b2r *\n";  b2r.print(stream, name, humanReadable);
+  stream << "* W2z *\n";  W2z.print(stream, name, humanReadable);
+  stream << "* b2z *\n";  b2z.print(stream, name, humanReadable);
 }
 
 void StrengthNet::printState(std::ostream& stream, const std::string& name, bool humanReadable) const {
   stream << "* x *\n";  x->print(stream, name, humanReadable);
   stream << "* h *\n";  h->print(stream, name, humanReadable);
-  // stream << "* r *\n";  r->print(stream, name, humanReadable);
-  // stream << "* a *\n";  a->print(stream, name, humanReadable);
+  stream << "* r *\n";  r->print(stream, name, humanReadable);
+  stream << "* a *\n";  a->print(stream, name, humanReadable);
+  stream << "* ra *\n"; ra->print(stream, name, humanReadable);
   stream << "* y *\n";  y->print(stream, name, humanReadable);
 }
 
 void StrengthNet::printGrads(std::ostream& stream, const std::string& name, bool humanReadable) const {
-  stream << "* h_grad *\n";  h_grad->print(stream, name, humanReadable);
-  // stream << "* hr_grad *\n";  hr_grad->print(stream, name, humanReadable);
-  // stream << "* hz_grad *\n";  hz_grad->print(stream, name, humanReadable);
-  // stream << "* r_grad *\n";  r_grad->print(stream, name, humanReadable);
-  // stream << "* z_grad *\n";  z_grad->print(stream, name, humanReadable);
-  stream << "* y_grad *\n";  y_grad->print(stream, name, humanReadable);
-  stream << "* W_grad *\n";  W_grad->print(stream, name, humanReadable);
-  stream << "* b_grad *\n";  b_grad->print(stream, name, humanReadable);
-  // stream << "* W1_grad *\n";  W1_grad->print(stream, name, humanReadable);   // only prints first grad (z==0)!
-  // stream << "* W2r_grad *\n";  W2r_grad->print(stream, name, humanReadable); // only prints first grad (z==0)!
-  // stream << "* W2z_grad *\n";  W2z_grad->print(stream, name, humanReadable); // only prints first grad (z==0)!
+  stream << "* h_grad *\n";    h_grad->print(stream, name, humanReadable);
+  stream << "* hr_grad *\n";   hr_grad->print(stream, name, humanReadable);
+  stream << "* hz_grad *\n";   hz_grad->print(stream, name, humanReadable);
+  stream << "* r_grad *\n";    r_grad->print(stream, name, humanReadable);
+  stream << "* z_grad *\n";    z_grad->print(stream, name, humanReadable);
+  stream << "* a_grad *\n";    a_grad->print(stream, name, humanReadable);
+  stream << "* y_grad *\n";    y_grad->print(stream, name, humanReadable);
+  stream << "* W1_grad *\n";   W1_grad->print(stream, name, humanReadable);
+  stream << "* b1_grad *\n";   b1_grad->print(stream, name, humanReadable);
+  stream << "* W2r_grad *\n";  W2r_grad->print(stream, name, humanReadable);
+  stream << "* b2r_grad *\n";  b2r_grad->print(stream, name, humanReadable);
+  stream << "* W2z_grad *\n";  W2z_grad->print(stream, name, humanReadable);
+  stream << "* b2z_grad *\n";  b2z_grad->print(stream, name, humanReadable);
 }
 
 float StrengthNet::thetaVar() const {
-  return Tensor::variance({W, b});
+  return Tensor::variance({W1, b1, W2r, b2r, W2z, b2z});
 }
 
 float StrengthNet::gradsVar() const {
-  return Tensor::variance({*W_grad, *b_grad});
+  return Tensor::variance({*W1_grad, *b1_grad, *W2r_grad, *b2r_grad, *W2z_grad, *b2z_grad});
 }
 
 namespace {
@@ -341,45 +347,50 @@ void StrengthNet::allocateTensors() {
   uint batchSize = zoffset.size() - 1;
   x = new Tensor(N, in_ch, zoffset);
   h = new Tensor(N, hidden_ch, zoffset);
-  // r = new Tensor(N, 1, zoffset);
-  // a = new Tensor(N, 1, zoffset);
+  r = new Tensor(N, 1, zoffset);
+  a = new Tensor(N, 1, zoffset);
+  ra = new Tensor(N, 1, zoffset);
   vector<uint> yoffsets = iota(batchSize);
   y = new Tensor(batchSize, 1, yoffsets);
 
   h_grad = new Tensor(N, hidden_ch, zoffset);
-  // hr_grad = new Tensor(N, hidden_ch, zoffset);
-  // hz_grad = new Tensor(N, hidden_ch, zoffset);
-  // r_grad = new Tensor(N, 1, zoffset);
-  // z_grad = new Tensor(N, 1, zoffset);
+  hr_grad = new Tensor(N, hidden_ch, zoffset);
+  hz_grad = new Tensor(N, hidden_ch, zoffset);
+  r_grad = new Tensor(N, 1, zoffset);
+  z_grad = new Tensor(N, 1, zoffset);
+  a_grad = new Tensor(N, 1, zoffset);
   y_grad = new Tensor(batchSize, 1, yoffsets);
   tgt = new Tensor(batchSize, 1, yoffsets);
 
-  W_grad = new Tensor(in_ch, hidden_ch);
-  // W1_grad = new Tensor(in_ch*batchSize, hidden_ch, Woffsets);
-  b_grad = new Tensor(1, hidden_ch);
-  // vector<uint> W2offsets = iota(batchSize, hidden_ch);
-  // W2r_grad = new Tensor(hidden_ch*batchSize, 1, batchSize, W2offsets);
-  // W2z_grad = new Tensor(hidden_ch*batchSize, 1, batchSize, W2offsets);
+  W1_grad = new Tensor(in_ch, hidden_ch);
+  b1_grad = new Tensor(1, hidden_ch);
+  W2r_grad = new Tensor(hidden_ch, 1);
+  b2r_grad = new Tensor(1, 1);
+  W2z_grad = new Tensor(hidden_ch, 1);
+  b2z_grad = new Tensor(1, 1);
 }
 
 void StrengthNet::freeTensors() noexcept {
   delete x; x = nullptr;
   delete h; h = nullptr;
-  // delete r; r = nullptr;
-  // delete a; a = nullptr;
+  delete r; r = nullptr;
+  delete a; a = nullptr;
+  delete ra; ra = nullptr;
   delete y; y = nullptr;
 
   delete h_grad; h_grad = nullptr;
-  // delete hr_grad; hr_grad = nullptr;
-  // delete hz_grad; hz_grad = nullptr;
-  // delete r_grad; r_grad = nullptr;
-  // delete z_grad; z_grad = nullptr;
+  delete hr_grad; hr_grad = nullptr;
+  delete hz_grad; hz_grad = nullptr;
+  delete r_grad; r_grad = nullptr;
+  delete z_grad; z_grad = nullptr;
+  delete a_grad; a_grad = nullptr;
   delete y_grad; y_grad = nullptr;
   delete tgt; tgt = nullptr;
 
-  delete W_grad; W_grad = nullptr;
-  delete b_grad; b_grad = nullptr;
-  // delete W1_grad; W1_grad = nullptr;
-  // delete W2r_grad; W2r_grad = nullptr;
-  // delete W2z_grad; W2z_grad = nullptr;
+  delete W1_grad; W1_grad = nullptr;
+  delete b1_grad; b1_grad = nullptr;
+  delete W2r_grad; W2r_grad = nullptr;
+  delete b2r_grad; b2r_grad = nullptr;
+  delete W2z_grad; W2z_grad = nullptr;
+  delete b2z_grad; b2z_grad = nullptr;
 }

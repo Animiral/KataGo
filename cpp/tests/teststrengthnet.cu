@@ -260,8 +260,8 @@ void runStrengthNetTests() {
     // net gradients must be the same before/after permutation
     net.setTarget(targets);
     net.backward();
-    vector<float> W_grad = static_cast<vector<float>>(*net.W_grad);
-    vector<float> b_grad = static_cast<vector<float>>(*net.b_grad);
+    vector<float> W1_grad = static_cast<vector<float>>(*net.W1_grad);
+    vector<float> b1_grad = static_cast<vector<float>>(*net.b1_grad);
 
     vector<vector<MoveFeatures>> permBatch(batchSize);
     vector<float> permTargets(batchSize);
@@ -274,22 +274,22 @@ void runStrengthNetTests() {
     vector<float> permOutputs = net.getOutput();
     net.setTarget(permTargets);
     net.backward();
-    vector<float> permW_grad(*net.W_grad);
-    vector<float> permb_grad(*net.b_grad);
+    vector<float> permW_grad(*net.W1_grad);
+    vector<float> permb_grad(*net.b1_grad);
 
     bool pass = true;
     for(size_t b = 0; b < batchSize; b++) {
       if(permOutputs[b] != outputs[perm[b]])
         pass = false;
     }
-    for(size_t i = 0; i < W_grad.size(); i++) {
-      if(fabs(1-permW_grad[i]/W_grad[i]) > 0.01) { // tolerate some deviation due to float ops order
-        pass = false; cout << "permW_grad["<<i<<"]=" << permW_grad[i] << " != W_grad["<<i<<"]=" << W_grad[i] << "! ";
+    for(size_t i = 0; i < W1_grad.size(); i++) {
+      if(fabs(1-permW_grad[i]/W1_grad[i]) > 0.01) { // tolerate some deviation due to float ops order
+        pass = false; cout << "permW_grad["<<i<<"]=" << permW_grad[i] << " != W_grad["<<i<<"]=" << W1_grad[i] << "! ";
       }
     }
-    for(size_t i = 0; i < b_grad.size(); i++) {
-      if(fabs(1-permb_grad[i]/b_grad[i]) > 0.01) { // tolerate some deviation due to float ops order
-        pass = false; cout << "permb_grad["<<i<<"]=" << permb_grad[i] << " != b_grad["<<i<<"]=" << b_grad[i] << "! ";
+    for(size_t i = 0; i < b1_grad.size(); i++) {
+      if(fabs(1-permb_grad[i]/b1_grad[i]) > 0.01) { // tolerate some deviation due to float ops order
+        pass = false; cout << "permb_grad["<<i<<"]=" << permb_grad[i] << " != b_grad["<<i<<"]=" << b1_grad[i] << "! ";
       }
     }
     cout << (pass ? "pass" : "fail") << "\n";
