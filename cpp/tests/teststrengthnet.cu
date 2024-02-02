@@ -14,6 +14,7 @@ void hadamard(Tensor& y, const Tensor& w);
 void matmul(Tensor& y, const Tensor& W, const Tensor& x);
 void add(Tensor& y, const Tensor& x);
 void relu(Tensor& t);
+void reluDerived(Tensor& g, const Tensor& a);
 void min(Tensor& y, const Tensor& x);
 void minDerived(Tensor& x_grad, const Tensor& y_grad, const Tensor& x, const Tensor& y);
 void sum(Tensor& y, const Tensor& x);
@@ -70,11 +71,11 @@ void runStrengthNetTests() {
   }
 
   {
-    Tensor A = toTensor({1, -3, 3,  2, -2, -1}, 2, 3);
+    Tensor A = toTensor({1, -3, 3,  2, -2, -1,  -1, 2, 0}, 3, 3, {0, 2, 3});
     Tensor B = toTensor({2, 1, 2}, 1, 3);
-    B.broadcast(2, 3);
+    B.broadcast(3, 3, 2);
     hadamard(A, B);
-    expectApprox(toTensor({2, -3, 6,  4, -2, -2}, 2, 3), A, "hadamard, broadcast");
+    expectApprox(toTensor({2, -3, 6,  4, -2, -2,  -2, 2, 0}, 3, 3, {0, 2, 3}), A, "hadamard, broadcast");
   }
 
   {
@@ -150,6 +151,13 @@ void runStrengthNetTests() {
   }
 
   {
+    Tensor G = toTensor({-1, 1, -2, -2, -5}, 5, 1, {0, 2, 5});
+    Tensor H = toTensor({1, 0, 2, 1, 0}, 5, 1, {0, 2, 5});
+    reluDerived(G, H);
+    expectApprox(toTensor({-1, 0, -2, -2, 0}, 5, 1, {0, 2, 5}), G, "reluDerived");
+  }
+
+  {
     Tensor A = toTensor({3, 4, 5, 6, 7, 8}, 3, 2);
     Tensor B = toTensor({2, -1}, 1, 2);
     B.broadcast(3, 2);
@@ -172,14 +180,16 @@ void runStrengthNetTests() {
     StrengthNet net;
     Rand rand(123ull); // reproducible seed
     net.randomInit(rand);
+    // net.printWeights(cout, "smoke test: initial weights");
     net.setInput(features);
     net.forward();
+    // net.printState(cout, "smoke test: forward");
     vector<float> y = net.getOutput();
     cout << "Output = {" << y[0] << "," << y[1] << "}\n";
     net.setTarget({1200.f, 1300.f});
     net.backward();
-    // net.printState(cout, "smoke test");
-    // net.printGrads(cout, "smoke test");
+    // net.printState(cout, "smoke test: backward");
+    // net.printGrads(cout, "smoke test: backward");
   }
 
   {
@@ -198,17 +208,16 @@ void runStrengthNetTests() {
     // net.printWeights(cout, "before update");
     // net.forward();
     // net.printState(cout, "before update");
-    // float y_hat = net.getOutput();
-    // cout << "Initial output: " << y_hat << "\n";
-    // net.backward(y, 0);
-    // net.mergeGrads();
+    // vector<float> y_hat = net.getOutput();
+    // cout << "Initial output: {" << y_hat[0] << "," << y_hat[1] << "}\n";
+    // net.backward();
     // net.printGrads(cout, "before update");
     // net.update(0.f, learnrate);
     // net.printWeights(cout, "after update");
 
-    for(int i = 0; i < 1500*int(1.f/learnrate); i++) { // perfectly fit to threemoves input
+    for(int i = 0; i < 1500*int(1.f/learnrate); i++) {
       net.forward();
-      // if(i%100==0) {
+      // if(i%100==0 || i < 5) {
       //   vector<float> y_hat2 = net.getOutput();
       //   cout << "Training " << i << ": {" << y_hat2[0] << "," << y_hat2[1] << "}\n";
       // }
@@ -279,8 +288,9 @@ void runStrengthNetTests() {
 
     bool pass = true;
     for(size_t b = 0; b < batchSize; b++) {
-      if(permOutputs[b] != outputs[perm[b]])
-        pass = false;
+      if(permOutputs[b] != outputs[perm[b]]) {
+        pass = false; cout << "permOutputs["<<b<<"]=" << permOutputs[b] << " != outputs[perm["<<b<<"]]=" << outputs[perm[b]] << "! ";
+      }
     }
     for(size_t i = 0; i < W1_grad.size(); i++) {
       if(fabs(1-permW_grad[i]/W1_grad[i]) > 0.01) { // tolerate some deviation due to float ops order

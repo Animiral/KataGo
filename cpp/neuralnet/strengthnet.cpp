@@ -97,7 +97,7 @@ void Tensor::assignFrom(const Tensor& rhs) {
 // }
 
 void Tensor::broadcast(uint xdim, uint ydim, uint batchSize) {
-  assert(1 == dims.x || xdim == dims.x);
+  assert(dims.z == dims.x || xdim == dims.x);
   assert(1 == dims.y || ydim == dims.y);
   assert(1 == dims.z || batchSize == dims.z);
   viewDims = {xdim, ydim, batchSize};

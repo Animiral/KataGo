@@ -25,6 +25,7 @@ __global__ void accumulateK(Tensor a, const Tensor t, uint op = OP_PLUS); // a =
 __global__ void minDerivedK(Tensor x_grad, const Tensor y_grad, const Tensor x, const Tensor y); // x_grad = y_grad * d_min(x) / d_x
 
 __global__ void reluK(Tensor h); // in-place relu
+__global__ void reluDerivedK(Tensor g, const Tensor a);  // in-place g *= d_relu(a) / d_a
 __global__ void softmaxK(Tensor a); // in-place softmax
 __global__ void softmaxDerivedK(Tensor a_grad, const Tensor z_grad, const Tensor a); // a_grad = z_grad * d_softmax(z) / d_z where a = softmax(z)
 
@@ -36,6 +37,7 @@ void hadamard(Tensor& y, const Tensor& w);
 void matmul(Tensor& y, const Tensor& W, const Tensor& x);
 void add(Tensor& y, const Tensor& x);
 void relu(Tensor& t);
+void reluDerived(Tensor& g, const Tensor& a);
 void min(Tensor& y, const Tensor& x);
 void max(Tensor& y, const Tensor& x);
 void minDerived(Tensor& x_grad, const Tensor& y_grad, const Tensor& x, const Tensor& y);
@@ -79,9 +81,7 @@ void StrengthNet::forward() {
   // aggregate by attention
   softmax(*a);
   ra->assignFrom(*r);
-  ra->cat(); r->cat(); a->cat();
   hadamard(*ra, *a);
-  ra->uncat(); r->uncat(); a->uncat();
   sum(*y, *ra);
 }
 
@@ -101,11 +101,11 @@ void StrengthNet::backward() {
   r_grad->assignFrom(*a); // dy/dr
   uint batchSize = zoffset.size()-1;
   y_grad->broadcast(N, 1, batchSize);
-  r_grad->cat(); y_grad->cat();
-  hadamard(*r_grad, *y_grad); //AAAAAA
+  hadamard(*r_grad, *y_grad);
 
   a_grad->assignFrom(*r);
-  hadamard(*a_grad, *y_grad); //AAAAAA
+  hadamard(*a_grad, *y_grad);
+  y_grad->broadcast(batchSize, 1, batchSize); // reset
   softmaxDerived(*z_grad, *a_grad, *a); // dy/da
 
   // layer 2
@@ -115,16 +115,16 @@ void StrengthNet::backward() {
   matmul(*W2r_grad, *r_grad, *h);
   sum(*b2r_grad, *r_grad);
 
-  W2r.transpose();
+  W2r.transpose(); hr_grad->cat();
   matmul(*hr_grad, W2r, *r_grad);
-  W2r.transpose();
+  W2r.transpose(); hr_grad->uncat();
   
   matmul(*W2z_grad, *z_grad, *h);
   sum(*b2z_grad, *z_grad);
 
-  W2z.transpose();
+  W2z.transpose(); hz_grad->cat();
   matmul(*hz_grad, W2z, *z_grad);
-  W2z.transpose();
+  W2z.transpose(); hz_grad->uncat();
 
   r_grad->uncat(); z_grad->uncat();
   h->transpose(); h->uncat(); // reset
@@ -133,7 +133,7 @@ void StrengthNet::backward() {
   add(*h_grad, *hz_grad);
 
   // layer 1
-  relu(*h_grad);
+  reluDerived(*h_grad, *h);
 
   // dL/dW = dL/dh * x^T; dL/db = sum(dL/dh)
   x->transpose();
@@ -194,7 +194,7 @@ __device__ float& at(const Tensor& t, uint x, uint y, uint z) {
   getxdim(t, z, xdim, offset);
 
   // implement broadcast
-  if(1 == dimx)
+  if(t.dims.z == dimx)
     x = 0;
   if(1 == dimy)
     y = 0;
@@ -216,12 +216,22 @@ __global__ void scaleK(Tensor y, float w) {
 __global__ void hadamardK(Tensor y, Tensor w) {
   assert(y.dims.x == w.viewDims.x);
   assert(y.dims.y == w.viewDims.y);
-  assert(1 == y.viewDims.z); // Tensor must be cat before elementwise ops
-  assert(1 == w.viewDims.z);
+  assert(y.dims.z == w.viewDims.z);
+
   uint xx = blockIdx.x * blockDim.x + threadIdx.x;
   uint yy = blockIdx.y * blockDim.y + threadIdx.y;
-  if(xx < y.dims.x && yy < y.dims.y)
-    at(y, xx, yy, 0) *= at(w, xx, yy, 0);
+  uint zz = blockIdx.z * blockDim.z + threadIdx.z;
+
+  if(yy >= y.dims.y || zz >= y.dims.z)
+    return;
+
+  uint xdim, offset; // dimx covers whole batch, xdim covers z'th layer
+  getxdim(y, zz, xdim, offset);
+
+  if(xx >= xdim)
+    return;
+
+  at(y, xx, yy, zz) *= at(w, xx, yy, zz);
 }
 
 // y = W*x
@@ -340,6 +350,19 @@ __global__ void reluK(Tensor h) {
     h.data[i] = 0;
 }
 
+__global__ void reluDerivedK(Tensor g, const Tensor a) {
+  assert(g.dims.x == a.dims.x);
+  assert(g.dims.y == a.dims.y);
+  assert(g.dims.z == a.dims.z);
+
+  int i = blockIdx.x * blockDim.x + threadIdx.x;
+  if(i >= g.dims.x * g.dims.y)
+    return;
+
+  if(a.data[i] <= 0)
+    g.data[i] = 0;
+}
+
 __global__ void softmaxK(Tensor a) {
   assert(1 == a.dims.y);
   assert(a.dims.x == a.viewDims.x);
@@ -435,8 +458,9 @@ void scale(Tensor& y, float w) {
 }
 
 void hadamard(Tensor& y, const Tensor& w) {
-  dim3 blockDim(32, 32, 1);
+  dim3 blockDim(8, 8, 8);
   dim3 numBlocks = numBlocksForTensor(y, blockDim);
+  numBlocks.z = (y.dims.z + 7) / blockDim.z;
   hadamardK<<<numBlocks, blockDim>>>(y, w);
 }
 
@@ -455,6 +479,11 @@ void add(Tensor& y, const Tensor& x) {
 void relu(Tensor& t) {
   uint numBlocks = (t.dims.x * t.dims.y + 1023) / 1024;
   reluK<<<numBlocks, 1024>>>(t);
+}
+
+void reluDerived(Tensor& g, const Tensor& a) {
+  uint numBlocks = (g.dims.x * g.dims.y + 1023) / 1024;
+  reluDerivedK<<<numBlocks, 1024>>>(g, a);
 }
 
 void min(Tensor& y, const Tensor& x) {

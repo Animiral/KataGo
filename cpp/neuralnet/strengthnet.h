@@ -17,7 +17,7 @@
 struct Tensor {
 
   float* data;     // GPU device pointer; column-major order
-  uint *zoffset;   // dims.z+1 monotone increasing indexes into data array
+  uint* zoffset;   // dims.z+1 monotone increasing indexes into data array
   uint3 dims;      // x: #elements in all batches, y: #features, z: #batch
   uint3 viewDims;  // for broadcasting data along some dimensions
   bool transposed; // if true, data is considered in row-major order instead of column-major
@@ -34,7 +34,7 @@ struct Tensor {
   void randomInit(Rand& rand);                  // new weights
   Tensor clone() const;                         // copy with ownership
   void assignFrom(const Tensor& rhs);           // same-size assign
-  // void reshape(uint xdim, uint ydim = 1, uint batchSize = 1);  // TODO: this will be required for accumulating gradients
+  // void reshape(uint xdim, uint ydim = 1, uint batchSize = 1);
   void broadcast(uint xdim, uint ydim = 1, uint batchSize = 1);
   void transpose();                             // swap dims.x & dims.y, flip transposed
   void cat();                                   // treat the whole batch as single 2D tensor; hcat normally, vcat if transposed
@@ -101,7 +101,7 @@ private:
 
   static const uint32_t STRNET_HEADER;
   static constexpr uint in_ch = 6;
-  static constexpr uint hidden_ch = 1; // 32;
+  static constexpr uint hidden_ch = 32;
   static constexpr uint out_ch = 2;
 
   std::size_t N; // total number of currently processed moves (across all batches)
