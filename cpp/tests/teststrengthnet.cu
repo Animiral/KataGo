@@ -117,10 +117,10 @@ void runStrengthNetTests() {
   }
 
   {
-    Tensor A = toTensor({2.796027196f, 3.306852819f, 2.390562088f, 1.796027196f, 1.390562088f, 2.083709268f, 0.697414907f}, 7, 1, {0, 3, 7});
-    Tensor A_accumulate(7, 1, {0, 3, 7});
+    Tensor A = toTensor({2.796027196f, 3.306852819f, 2.390562088f, 1.796027196f, 1.390562088f, 2.083709268f, 0.697414907f}, 7, 1, {0, 3, 3, 7});
+    Tensor A_accumulate(7, 1, {0, 3, 3, 7});
     softmax(A);
-    expectApprox(toTensor({.3f, .5f, .2f,  .3, .2, .4, .1}, 7, 1, {0, 3, 7}), A, "softmax");
+    expectApprox(toTensor({.3f, .5f, .2f,  .3, .2, .4, .1}, 7, 1, {0, 3, 3, 7}), A, "softmax");
   }
 
   {

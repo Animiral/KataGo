@@ -59,8 +59,6 @@ void StrengthNet::forward() {
   add(*h, b1);
   b1.broadcast(1, hidden_ch); // reset
   x->uncat();
-  // h->uncat();
-  // min(*y, *h);
   relu(*h);
 
   // layer 2
@@ -93,9 +91,6 @@ void StrengthNet::backward() {
   scale(*y_grad, -1.f);
   add(*y_grad, *tgt);
   scale(*y_grad, -2.f);
-
-  // // dL/dh = dL/dy * I_min(h)
-  // minDerived(*h_grad, *y_grad, *h, *y);
 
   // dL/dr = dL/dy * a
   r_grad->assignFrom(*a); // dy/dr
@@ -373,6 +368,9 @@ __global__ void softmaxK(Tensor a) {
 
   uint xdim, offset;
   getxdim(a, i, xdim, offset);
+
+  if(0 == xdim)
+    return; // softmax on empty input, nothing to do
 
   float maxValue = at(a, 0, 0, i);
   for(uint j = 1; j < xdim; j++) {
