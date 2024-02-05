@@ -122,6 +122,7 @@ int MainCmds::rating_system(const vector<string>& args) {
   StrengthModel::Evaluation eval = strengthModel.evaluate(*predictor, Dataset::Game::training, windowSize);
   cout << Global::strprintf("Rating system mse=%f, successRate=%.3f, successLogp=%f\n", eval.mse, eval.rate, eval.logp);
 
+  cout << Global::strprintf("Store evaluation in %s...\n", outlistFile.c_str());
   dataset.store(outlistFile);
   logger.write("All cleaned up, quitting");
   return 0;
