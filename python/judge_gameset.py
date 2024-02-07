@@ -17,8 +17,6 @@ from sgfmill import sgf
 from sgfmill import sgf_moves
 from typing import Tuple, List, Optional, Union, Literal
 
-MAX_VISITS=50  # default search limit for all queries
-
 Color = Union[Literal["b"],Literal["w"]]
 Move = Union[Literal["pass"],Tuple[int,int]]
 
@@ -100,23 +98,24 @@ class KataGo:
         # print(response)
         return query_id, winrate
 
-def analyze(sgf_file, katago, query_id):
+def analyze(sgf_file, katago, query_id, max_visits):
     """Evaluate the end position and return the winner B+XX%, W+XX%, Jigo"""
     with open(sgf_file, "rb") as f:
         game = sgf.Sgf_game.from_bytes(f.read())
 
-    katago.query(query_id, game, max_visits=MAX_VISITS)
+    katago.query(query_id, game, max_visits=max_visits)
 
-def judge(winrate):
-    """Return the game result based on the given black winrate"""
+def judge(winrate, threshold = 0.6):
+    """Return the game score based on the given black winrate"""
+    assert(threshold >= 0.5)
     if winrate is None:
         return "error"  # cannot judge this game
-    elif winrate < 0.4:
-        return f"W+{(1-winrate)*100}%"
-    elif winrate <= 0.6:
-        return "Jigo"
+    elif winrate < (1-threshold):
+        return "0"
+    elif winrate <= threshold:
+        return "0.5"
     else:
-        return f"B+{winrate*100}%"
+        return "1"
 
 if __name__ == "__main__":
     description = """
@@ -124,29 +123,42 @@ if __name__ == "__main__":
     """
     parser = argparse.ArgumentParser(description=description)
     parser.add_argument(
-        "-katago-path",
+        "--keep-undecided",
+        help="Output games which cannot be decided for either black or white",
+        type=bool,
+        required=False,
+    )
+    parser.add_argument(
+        "--max-visits",
+        help="Number of maxVisits to be passed to KataGo",
+        type=int,
+        default=50,
+        required=False,
+    )
+    parser.add_argument(
+        "--katago-path",
         help="Path to katago executable",
         required=True,
     )
     parser.add_argument(
-        "-config-path",
+        "--config-path",
         help="Path to KataGo analysis config (e.g. cpp/configs/analysis_example.cfg in KataGo repo)",
         required=True,
     )
     parser.add_argument(
-        "-model-path",
+        "--model-path",
         help="Path to neural network .bin.gz file",
         required=True,
     )
     parser.add_argument(
-        "-o", "-outfile",
+        "-o", "--outfile",
         metavar="OUTFILE",
         default="games_judged.csv",
         type=str,
-        help="Output file (overwrites!)",
+        help="Output file (appends if it exists)",
     )
     parser.add_argument(
-        "-i", "-input",
+        "-i", "--input",
         default="games.csv",
         type=str,
         help="Input file containing list of game record(s) in first CSV column",
@@ -158,24 +170,30 @@ if __name__ == "__main__":
 
     # Input CSV format (title row):
     # File,Player White,Player Black,Winner
-    with open(args["i"], 'r') as infile:
+    with open(args["input"], 'r') as infile:
         reader = csv.DictReader(infile)
         rows = list(reader)
 
-    row_ids = {}
-    count = 0
-
-    # TODO: assign to each row a marker for training/validaiton/test at random.
+    row_ids = dict(enumerate(rows))
+    max_visits = args["max_visits"]
 
     # launch queries to the engine
-    for row in rows:
-        row_ids[count] = row
+    for i, row in row_ids.items():
         sgf_file = row['File']
-        print(f"Submit query {count}...")
-        analyze(sgf_file, katago, count)
-        count = count + 1
+        print(f"Submit query {i}...")
+        analyze(sgf_file, katago, i, max_visits)
     katago.finish()
     print("Finished writing queries.")
+
+    # write output CSV file
+    outfile = open(args["outfile"], 'a')
+    fieldnames = list(rows[0].keys())
+    fieldnames.append('Score')
+    has_winner = 'Winner' in rows[0].keys()
+    if has_winner:
+        fieldnames.remove('Winner')  # replaced by Score
+    writer = csv.DictWriter(outfile, fieldnames=fieldnames)
+    writer.writeheader()
 
     # process responses
     while True:
@@ -183,16 +201,13 @@ if __name__ == "__main__":
         print(f"Got response {query_id}: winrate {winrate}.")
         if query_id is None:
             break
-        row_ids[query_id]['Judgement'] = judge(winrate)
-
-    # write output CSV file
-    with open(args["o"], 'w') as outfile:
-        fieldnames = rows[0].keys()
-        writer = csv.DictWriter(outfile, fieldnames=fieldnames)
-
-        writer.writeheader()
-        for i in range(0, count):
-            row = row_ids[i]
+        score = judge(winrate)
+        if "0.5" != score or args["keep_undecided"]:
+            row = row_ids[query_id]
+            row['Score'] = score
+            if has_winner:
+                del row['Winner']
             writer.writerow(row)
 
+    outfile.close()
     print("Finished writing output file.")
