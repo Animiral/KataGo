@@ -31,7 +31,7 @@ public:
       int prevGame;       // index of most recent game with this player before this or -1
       std::vector<MoveFeatures> features; // precomputed from the moves of this player in this game
     } white, black;
-    float score;             // game outcome for black: 0 for loss, 1 for win
+    float score;          // game outcome for black: 0 for loss, 1 for win, 0.5 for undecided
     Prediction prediction;
     
     enum {
