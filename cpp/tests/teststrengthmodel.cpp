@@ -1,6 +1,7 @@
 #include "program/strengthmodel.h"
 #include "tests/tests.h"
 #include "core/fileutils.h"
+#include "core/global.h"
 #include <iomanip>
 #include "core/using.h"
 
@@ -145,6 +146,42 @@ void runStrengthModelTests(const string& modelFile, const string& listFile, cons
 
   {
     size_t sample = 2;
+    cout << "- save/load: ";
+
+    vector<MoveFeatures> features(10);
+    features.resize(dataset.getRecentMoves(dataset.games[sample].black.player, sample, features.data(), 10));
+    StrengthNet& net = strengthModel.net;
+    Rand rand(123ull); // reproducible seed
+    net.randomInit(rand);
+    net.setInput({features});
+    net.forward();
+    vector<float> expected = net.getOutput();
+    std::ostringstream weightsBefore;
+    net.printWeights(weightsBefore, "before save/load", true);
+
+    net.saveModelFile(modelFile);
+    net.loadModelFile(modelFile);
+
+    net.forward();
+    vector<float> actual = net.getOutput();
+
+    bool pass = true;
+    for(int i = 0; i < expected.size(); i++) {
+      if(actual[i] != expected[i]) {
+        cout << Global::strprintf("(%.2f != %.2f) ", actual[i], expected[i]);
+        pass = false;
+      }
+    }
+    cout << (pass ? "pass" : "fail") << "\n";
+
+    if(!pass) {
+      cout << weightsBefore.str();
+      net.printWeights(cout, "after save/load", true);
+    }
+  }
+
+  {
+    size_t sample = 2;
     cout << "- fits game " << sample << " (black) from UT dataset: ";
 
     float estimate;
@@ -153,7 +190,7 @@ void runStrengthModelTests(const string& modelFile, const string& listFile, cons
     float learnrate = 0.01f;
 
     auto& game = dataset.games[sample];
-    StrengthNet net;
+    StrengthNet& net = strengthModel.net;
     Rand rand(123ull); // reproducible seed
     net.randomInit(rand);
     vector<MoveFeatures> features(10);

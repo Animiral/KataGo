@@ -217,7 +217,7 @@ void StrengthNet::loadModelFile(const std::string& path) {
   tensorFromFile(b1, file.get());
   tensorFromFile(W2r, file.get());
   tensorFromFile(b2r, file.get());
-  tensorFromFile(W2r, file.get());
+  tensorFromFile(W2z, file.get());
   tensorFromFile(b2z, file.get());
   std::fclose(file.release());
 }
