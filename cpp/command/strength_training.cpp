@@ -122,7 +122,7 @@ int MainCmds::strength_training(const vector<string>& args) {
 
     if(!strengthModelFile.empty())
       logger.write("Loading strength model " + strengthModelFile);
-    StrengthModel strengthModel(strengthModelFile, &dataset);
+    StrengthModel strengthModel(strengthModelFile, &dataset, &seedRand);
     strengthModel.train(epochs, steps, batchSize, weightPenalty, learnrate, windowSize, seedRand);
 
     if(!strengthModelFile.empty())

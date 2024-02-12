@@ -258,24 +258,14 @@ vector<MoveFeatures> Dataset::readFeaturesFromFile(const string& featurePath) {
 }
 
 
-float Predictor::eloScore(float blackRating, float whiteRating) {
-  float Qblack = static_cast<float>(std::pow(10, blackRating / 400));
-  float Qwhite = static_cast<float>(std::pow(10, whiteRating / 400));
-  return Qblack / (Qblack + Qwhite);
+float Predictor::glickoScore(float blackRating, float whiteRating) {
+  float GLICKO2_SCALE = 173.7178f;
+  return 1 / (1 + exp((whiteRating - blackRating) / GLICKO2_SCALE));
+  // Elo Score (for reference):
+  // float Qblack = static_cast<float>(std::pow(10, blackRating / 400));
+  // float Qwhite = static_cast<float>(std::pow(10, whiteRating / 400));
+  // return Qblack / (Qblack + Qwhite);
 }
-
-// TODO: adapt code from OGS/goratings into glickoScore
-    // def expected_win_probability(self, white: "Glicko2Entry", handicap_adjustment: float, ignore_g: bool = False) -> float:
-    //     # Implementation extracted from glicko2_update below.
-    //     if not ignore_g:
-    //         def g() -> float:
-    //             return 1
-    //     else:
-    //         def g() -> float:
-    //             return 1 / sqrt(1 + (3 * white.phi ** 2) / (pi ** 2))
-
-    //     E = 1 / (1 + exp(-g() * (self.rating + handicap_adjustment - white.rating) / GLICKO2_SCALE))
-    //     return E
 
 namespace {
 
@@ -340,12 +330,12 @@ Dataset::Prediction SmallPredictor::predict(const MoveFeatures* blackFeatures, s
   net->setInput({vector<MoveFeatures>(whiteFeatures, whiteFeatures + whiteCount)});
   net->forward();
   prediction.whiteRating = net->getOutput()[0];
-  prediction.score = eloScore(prediction.blackRating, prediction.whiteRating);
+  prediction.score = glickoScore(prediction.blackRating, prediction.whiteRating);
   return prediction;
 }
 
 
-StrengthModel::StrengthModel(const string& strengthModelFile, Dataset* dataset_) noexcept
+StrengthModel::StrengthModel(const string& strengthModelFile, Dataset* dataset_, Rand* rand) noexcept
   : net(), dataset(dataset_)
 {
   bool loaded = false;
@@ -360,8 +350,13 @@ StrengthModel::StrengthModel(const string& strengthModelFile, Dataset* dataset_)
     }
   }
   if(!loaded) {
-    Rand rand;
-    net.randomInit(rand);
+    if(rand) {
+      net.randomInit(*rand);
+    }
+    else {
+      Rand localRand;
+      net.randomInit(localRand);
+    }
   }
 }
 
@@ -388,6 +383,18 @@ void StrengthModel::extractFeatures(const std::string& featureDir, const Search&
 
 void StrengthModel::train(int epochs, int steps, size_t batchSize, float weightPenalty, float learnrate, size_t windowSize, Rand& rand) {
   SmallPredictor predictor(net);
+
+  {
+    // evaluate starting net
+    Evaluation trainingEval = evaluate(predictor, Dataset::Game::training, windowSize);
+    Evaluation validationEval = evaluate(predictor, Dataset::Game::validation, windowSize);
+    float theta_var = net.thetaVar();
+    // cout << "Epoch " << e << ": mse=" << std::fixed << std::setprecision(3) << mse << "\n";
+    cout << Global::strprintf("Before training: sqrt_mse_T=%.2f, alpha_T=%.3f, lbd_T=%.2f, sqrt_mse_V=%.2f, alpha_V=%.3f, lbd_V=%.2f, theta^2=%.4f\n",
+      sqrt(trainingEval.mse), trainingEval.rate, trainingEval.logp,
+      sqrt(validationEval.mse), validationEval.rate, validationEval.logp,
+      theta_var);
+  }
 
   for(int e = 0; e < epochs; e++) {
     float grads_var = 0;

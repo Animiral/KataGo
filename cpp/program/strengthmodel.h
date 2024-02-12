@@ -87,8 +87,8 @@ public:
 
 protected:
 
-  // give an expected score by assuming that the given ratings are Elo ratings.
-  static float eloScore(float blackRating, float whiteRating);
+  // give an expected score by assuming that the given ratings are Glicko-2 ratings.
+  static float glickoScore(float blackRating, float whiteRating);
 
 };
 
@@ -121,7 +121,7 @@ class StrengthModel
 public:
 
   // load the strength model or random-initialize a new one
-  explicit StrengthModel(const std::string& strengthModelFile = "", Dataset* dataset_ = nullptr) noexcept;
+  explicit StrengthModel(const std::string& strengthModelFile = "", Dataset* dataset_ = nullptr, Rand* rand = nullptr) noexcept;
 
   // use KataGo network to precompute features for every dataset game and write them to feature files
   void extractFeatures(const std::string& featureDir, const Search& search, Logger* logger = nullptr);
