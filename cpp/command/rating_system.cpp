@@ -10,14 +10,6 @@ using namespace std;
 
 namespace {
 
-  void loadParams(ConfigParser& config, SearchParams& params, Player& perspective, Player defaultPerspective) {
-    params = Setup::loadSingleParams(config,Setup::SETUP_FOR_ANALYSIS);
-    perspective = Setup::parseReportAnalysisWinrates(config,defaultPerspective);
-    //Set a default for conservativePass that differs from matches or selfplay
-    if(!config.contains("conservativePass") && !config.contains("conservativePass0"))
-      params.conservativePass = true;
-  }
-
   int parseSetMarker(const string& setMarker) {
     if("t" == setMarker || "T" == setMarker)
       return Dataset::Game::training;
@@ -34,10 +26,6 @@ namespace {
 }
 
 int MainCmds::rating_system(const vector<string>& args) {
-  Board::initHash();
-  ScoreValue::initTables();
-  Rand seedRand;
-
   ConfigParser cfg;
   string listFile; // CSV file listing all SGFs to be fed into the rating system
   string featureDir;
@@ -80,9 +68,6 @@ int MainCmds::rating_system(const vector<string>& args) {
   Logger logger(&cfg, logToStdoutDefault, logToStderrDefault);
   const bool logToStderr = logger.isLoggingToStderr();
 
-  //Check for unused config keys
-  cfg.warnUnusedKeys(cerr,&logger);
-
   logger.write("Loaded config "+ cfg.getFileName());
   cmd.logOverrides(logger);
 
@@ -97,18 +82,6 @@ int MainCmds::rating_system(const vector<string>& args) {
   int set = parseSetMarker(setMarker);
   StrengthModel strengthModel(strengthModelFile, &dataset);
 
-  // Print all games for information
-  for(size_t i = 0; i < dataset.games.size(); i++) {
-    Dataset::Game& gm = dataset.games[i];
-    if(-1 != set && gm.set != set && !(Dataset::Game::training == set && Dataset::Game::batch == gm.set))
-      continue;
-
-    string blackName = dataset.players[gm.black.player].name;
-    string whiteName = dataset.players[gm.white.player].name;
-    string winner = gm.score > .5 ? "B+":"W+";
-    cout << blackName << " vs " << whiteName << ": " << winner << "\n";
-  }
-  
   unique_ptr<Predictor> predictor;
   if(strengthModelFile.empty()) {
     cout << "Using stochastic model.\n";
@@ -119,8 +92,8 @@ int MainCmds::rating_system(const vector<string>& args) {
     predictor.reset(new SmallPredictor(strengthModel.net));
   }
   size_t windowSize = 1000;
-  StrengthModel::Evaluation eval = strengthModel.evaluate(*predictor, Dataset::Game::training, windowSize);
-  cout << Global::strprintf("Rating system mse=%f, successRate=%.3f, successLogp=%f\n", eval.mse, eval.rate, eval.logp);
+  StrengthModel::Evaluation eval = strengthModel.evaluate(*predictor, set, windowSize);
+  cout << Global::strprintf("Evaluation on %d games: mse=%f, successRate=%.3f, successLogp=%f\n", eval.count, eval.mse, eval.rate, eval.logp);
 
   cout << Global::strprintf("Store evaluation in %s...\n", outlistFile.c_str());
   dataset.store(outlistFile);

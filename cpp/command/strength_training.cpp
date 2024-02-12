@@ -37,7 +37,7 @@ struct MoveFeatures {
 int MainCmds::strength_training(const vector<string>& args) {
   Board::initHash();
   ScoreValue::initTables();
-  Rand seedRand;
+  Rand seedRand("deterministic training"); // use default c'tor for random training
 
   ConfigParser cfg;
   string listFile; // CSV file listing all SGFs with labels to be fed into the strength training
@@ -123,7 +123,7 @@ int MainCmds::strength_training(const vector<string>& args) {
     if(!strengthModelFile.empty())
       logger.write("Loading strength model " + strengthModelFile);
     StrengthModel strengthModel(strengthModelFile, &dataset);
-    strengthModel.train(epochs, steps, batchSize, weightPenalty, learnrate, windowSize);
+    strengthModel.train(epochs, steps, batchSize, weightPenalty, learnrate, windowSize, seedRand);
 
     if(!strengthModelFile.empty())
       strengthModel.net.saveModelFile(strengthModelFile);

@@ -12,6 +12,7 @@
 #include <iomanip>
 
 using namespace std;
+using Global::strprintf;
 
 namespace
 {
@@ -44,6 +45,7 @@ int MainCmds::strength_analysis(const vector<string>& args) {
   try {
     cmd.addConfigFileArg("","strength_analysis_example.cfg");
     TCLAP::ValueArg<string> playerNameArg("","player","Analyze the moves of the player with this name in the SGFs.",false,"","PLAYER_NAME");
+    cmd.add(playerNameArg);
     cmd.addModelFileArg();
     TCLAP::ValueArg<string> strengthModelFileArg("","strengthmodel","Neural net strength model file.",true,"","STRENGTH_MODEL_FILE");
     cmd.add(strengthModelFileArg);
@@ -121,8 +123,9 @@ int MainCmds::strength_analysis(const vector<string>& args) {
   vector<Sgf*> sgfs = Sgf::loadFiles(sgfPaths);
   StrengthModel::Analysis analysis = strengthModel.analyze(sgfs, playerName, search);
 
-  cout << "Avg win%% loss: "  << std::fixed << std::setprecision(3) << analysis.avgWRLoss << ", pt loss: " << analysis.avgPLoss << ".\n";
-  cout << "Rating for " << playerName << ": " << std::fixed << std::setprecision(2) << analysis.rating << "\n";
+  logger.write(strprintf("Analyzed %d moves.", analysis.moveCount));
+  logger.write(strprintf("Avg win%% loss: %.3f, pt loss: %f.", analysis.avgWRLoss, analysis.avgPLoss));
+  logger.write(strprintf("Rating for %s: %.2f", playerName.c_str(), analysis.rating));
 
   delete nnEval;
   NeuralNet::globalCleanup();

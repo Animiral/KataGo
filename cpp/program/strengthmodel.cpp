@@ -12,6 +12,7 @@
 #include "core/using.h"
 
 using std::map;
+using std::sqrt;
 
 void Dataset::load(const string& path, const std::string& featureDir) {
   std::ifstream istrm(path);
@@ -302,7 +303,7 @@ float fVar(float a[], size_t N, float avg) noexcept { // corrected variance
 // Therefore its value is capped such that the result P as well as
 // 1.f-P are in the closed interval (0, 1) under float arithmetic.
 float normcdf(float x) noexcept {
-  float P = .5f * (1.f + std::erf(x / std::sqrt(2.f)));
+  float P = .5f * (1.f + std::erf(x / sqrt(2.f)));
   if(P >= 1) return std::nextafter(1.f, 0.f);     // =0.99999994f, log(0.99999994f): -5.96e-08
   if(P <= 0) return 1 - std::nextafter(1.f, 0.f); // =0.00000006f, log(0.00000006f): -16.63
   else return P;
@@ -324,7 +325,7 @@ Dataset::Prediction StochasticPredictor::predict(const MoveFeatures* blackFeatur
   float bplavg = fAvg(vector<float>(buffer).data(), blackCount);  // average black points loss
   float bplvar = 2 <= blackCount ? fVar(buffer.data(), blackCount, bplavg) : 100.f;      // variance of black points loss
   const float epsilon = 0.000001f;  // avoid div by 0
-  float z = std::sqrt(gamelength) * (wplavg - bplavg) / std::sqrt(bplvar + wplvar + epsilon); // white pt advantage in standard normal distribution at move# [2*gamelength]
+  float z = sqrt(gamelength) * (wplavg - bplavg) / sqrt(bplvar + wplvar + epsilon); // white pt advantage in standard normal distribution at move# [2*gamelength]
   return {0, 0, normcdf(z)};
 }
 
@@ -385,8 +386,7 @@ void StrengthModel::extractFeatures(const std::string& featureDir, const Search&
   }
 }
 
-void StrengthModel::train(int epochs, int steps, size_t batchSize, float weightPenalty, float learnrate, size_t windowSize) {
-  Rand rand; // TODO: allow seeding from outside StrengthModel
+void StrengthModel::train(int epochs, int steps, size_t batchSize, float weightPenalty, float learnrate, size_t windowSize, Rand& rand) {
   SmallPredictor predictor(net);
 
   for(int e = 0; e < epochs; e++) {
@@ -446,16 +446,19 @@ void StrengthModel::train(int epochs, int steps, size_t batchSize, float weightP
     Evaluation validationEval = evaluate(predictor, Dataset::Game::validation, windowSize);
     float theta_var = net.thetaVar();
     // cout << "Epoch " << e << ": mse=" << std::fixed << std::setprecision(3) << mse << "\n";
-    cout << Global::strprintf("Epoch %d: mse_training=%.2f, mse_validation=%.2f, theta^2=%.4f, grad^2=%.4f\n", e, trainingEval.mse, validationEval.mse, theta_var, grads_var);
+    cout << Global::strprintf("Epoch %d: sqrt_mse_T=%.2f, alpha_T=%.3f, lbd_T=%.2f, sqrt_mse_V=%.2f, alpha_V=%.3f, lbd_V=%.2f, theta^2=%.4f, grad^2=%.4f\n",
+      e, sqrt(trainingEval.mse), trainingEval.rate, trainingEval.logp,
+      sqrt(validationEval.mse), validationEval.rate, validationEval.logp,
+      theta_var, grads_var);
   }
 }
 
 StrengthModel::Evaluation StrengthModel::evaluate(Predictor& predictor, int set, size_t windowSize) {
   vector<MoveFeatures> blackFeatures(windowSize);
   vector<MoveFeatures> whiteFeatures(windowSize);
-  int successCount = 0;
-  int sgfCount = 0;
-  float sqerr = 0;
+  size_t successCount = 0;
+  size_t count = 0;
+  float mse = 0;
   float logp = 0;
 
   for(size_t i = 0; i < dataset->games.size(); i++) {
@@ -466,22 +469,25 @@ StrengthModel::Evaluation StrengthModel::evaluate(Predictor& predictor, int set,
     size_t whiteCount = dataset->getRecentMoves(gm.white.player, i, whiteFeatures.data(), windowSize);
     gm.prediction = predictor.predict(blackFeatures.data(), blackCount, whiteFeatures.data(), whiteCount);
 
-    if(gm.set != set && !(Dataset::Game::training == set && Dataset::Game::batch == gm.set))
+    // skip games not in set, also set < 0 means "include everything"
+    if(set >= 0 && gm.set != set && !(Dataset::Game::training == set && Dataset::Game::batch == gm.set))
       continue;
 
     float diffBlack = gm.black.rating - gm.prediction.blackRating;
     float diffWhite = gm.white.rating - gm.prediction.whiteRating;
-    sqerr += diffBlack * diffBlack + diffWhite * diffWhite;
-    float winnerPred = 1 - std::abs(gm.score - gm.prediction.score);
-    if(winnerPred > .5f)
+    mse += diffBlack * diffBlack + diffWhite * diffWhite;
+    if((.5 >= gm.score && .5 >= gm.prediction.score)  // white win predicted (0.5 counts as prediction for white)
+    || (.5 < gm.score && .5 < gm.prediction.score)) { // black win predicted
       successCount++;
-    logp += std::log(winnerPred);
-    sgfCount++;
+    }
+    logp += std::log(1 - std::abs(gm.score - gm.prediction.score));
+    count++;
   }
 
-  float rate = float(successCount) / sgfCount;
-  float mse = sqerr / sgfCount;
-  return { mse, rate, logp };
+  float rate = float(successCount) / count;
+  mse /= count;
+  logp /= count;
+  return { count, mse, rate, logp };
 }
 
 StrengthModel::Analysis StrengthModel::analyze(vector<Sgf*> sgfs, const string& playerName, const Search& search) {
@@ -505,17 +511,19 @@ StrengthModel::Analysis StrengthModel::analyze(vector<Sgf*> sgfs, const string& 
       playerFeatures.insert(playerFeatures.end(), whiteFeatures.begin(), whiteFeatures.end());
   }
 
+  net.setInput({playerFeatures});
+  net.forward();
+  vector<float> rating = net.getOutput();
+
   Analysis analysis;
   for(const auto& mf : playerFeatures) {
     analysis.avgWRLoss += mf.winrateLoss;
     analysis.avgPLoss += mf.pointsLoss;
   }
   size_t N = playerFeatures.size();
+  analysis.moveCount = N;
   analysis.avgWRLoss /= N;
   analysis.avgPLoss /= N;
-  net.setInput({playerFeatures});
-  net.forward();
-  vector<float> rating = net.getOutput();
   analysis.rating = rating[0];
   return analysis;
 }
