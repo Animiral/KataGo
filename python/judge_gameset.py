@@ -8,6 +8,7 @@ Output the evaluation results to a new file with the declared winner as a new CS
 import argparse
 import json
 import csv
+import os
 import subprocess
 import time
 from threading import Thread
@@ -19,6 +20,15 @@ from typing import Tuple, List, Optional, Union, Literal
 
 Color = Union[Literal["b"],Literal["w"]]
 Move = Union[Literal["pass"],Tuple[int,int]]
+
+def processed_games(outfile: str):
+    try:
+        with open(outfile, 'r') as file:
+            reader = csv.DictReader(file)
+            return set(r['File'] for r in reader)
+
+    except FileNotFoundError:
+        return set()
 
 def sgfmill_to_str(move: Move) -> str:
     if move == "pass":
@@ -117,11 +127,11 @@ def judge(winrate, threshold = 0.6):
     else:
         return "1"
 
-def processOneResponse(katago, writer):
+def process_one_response(katago, writer):
     query_id, winrate = katago.response()
     print(f"Got response {query_id}: winrate {winrate}.")
     if query_id is None or winrate is None:
-        return
+        return False
     score = judge(winrate)
     if "0.5" != score or args["keep_undecided"]:
         row = row_ids[query_id]
@@ -129,6 +139,7 @@ def processOneResponse(katago, writer):
         if has_winner:
             del row['Winner']
         writer.writerow(row)
+    return True
 
 if __name__ == "__main__":
     description = """
@@ -180,6 +191,9 @@ if __name__ == "__main__":
     print(args)
 
     katago = KataGo(args["katago_path"], args["config_path"], args["model_path"])
+    resumed_games = processed_games(args["outfile"])
+    if resumed_games:
+        print(f"Resuming from {len(resumed_games)} already judged.")
 
     # Input CSV format (title row):
     # File,Player White,Player Black,Winner
@@ -191,28 +205,36 @@ if __name__ == "__main__":
     max_visits = args["max_visits"]
 
     # write output CSV file
-    outfile = open(args["outfile"], 'a')
+    writemode = 'a' if resumed_games else 'w'
+    outfile = open(args["outfile"], writemode)
     fieldnames = list(rows[0].keys())
     fieldnames.append('Score')
     has_winner = 'Winner' in rows[0].keys()
     if has_winner:
         fieldnames.remove('Winner')  # replaced by Score
     writer = csv.DictWriter(outfile, fieldnames=fieldnames)
-    writer.writeheader()
+    if not resumed_games:
+        writer.writeheader()
 
     # launch queries to the engine, pick up responses with 100 queries in queue
+    queued = 0
     for i, row in row_ids.items():
         sgf_file = row['File']
+        if sgf_file in resumed_games:
+            continue
+
         print(f"Submit query {i}...")
         analyze(sgf_file, katago, i, max_visits)
-        if i > 100:
-            processOneResponse(katago, writer)
+        queued += 1
+        if queued > 100:
+            process_one_response(katago, writer)
+
     katago.finish()
     print("Finished writing queries.")
 
     # process remaining responses
-    while True:
-        processOneResponse(katago, writer)
+    while process_one_response(katago, writer):
+        pass
 
     outfile.close()
     print("Finished writing output file.")
