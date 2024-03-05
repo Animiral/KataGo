@@ -117,6 +117,19 @@ def judge(winrate, threshold = 0.6):
     else:
         return "1"
 
+def processOneResponse(katago, writer):
+    query_id, winrate = katago.response()
+    print(f"Got response {query_id}: winrate {winrate}.")
+    if query_id is None or winrate is None:
+        return
+    score = judge(winrate)
+    if "0.5" != score or args["keep_undecided"]:
+        row = row_ids[query_id]
+        row['Score'] = score
+        if has_winner:
+            del row['Winner']
+        writer.writerow(row)
+
 if __name__ == "__main__":
     description = """
     Run a KataGo query on every move in the given SGF(s).
@@ -177,14 +190,6 @@ if __name__ == "__main__":
     row_ids = dict(enumerate(rows))
     max_visits = args["max_visits"]
 
-    # launch queries to the engine
-    for i, row in row_ids.items():
-        sgf_file = row['File']
-        print(f"Submit query {i}...")
-        analyze(sgf_file, katago, i, max_visits)
-    katago.finish()
-    print("Finished writing queries.")
-
     # write output CSV file
     outfile = open(args["outfile"], 'a')
     fieldnames = list(rows[0].keys())
@@ -195,19 +200,19 @@ if __name__ == "__main__":
     writer = csv.DictWriter(outfile, fieldnames=fieldnames)
     writer.writeheader()
 
-    # process responses
+    # launch queries to the engine, pick up responses with 100 queries in queue
+    for i, row in row_ids.items():
+        sgf_file = row['File']
+        print(f"Submit query {i}...")
+        analyze(sgf_file, katago, i, max_visits)
+        if i > 100:
+            processOneResponse(katago, writer)
+    katago.finish()
+    print("Finished writing queries.")
+
+    # process remaining responses
     while True:
-        query_id, winrate = katago.response()
-        print(f"Got response {query_id}: winrate {winrate}.")
-        if query_id is None:
-            break
-        score = judge(winrate)
-        if "0.5" != score or args["keep_undecided"]:
-            row = row_ids[query_id]
-            row['Score'] = score
-            if has_winner:
-                del row['Winner']
-            writer.writerow(row)
+        processOneResponse(katago, writer)
 
     outfile.close()
     print("Finished writing output file.")
