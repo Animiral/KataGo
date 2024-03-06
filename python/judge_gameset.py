@@ -113,7 +113,10 @@ def analyze(sgf_file, katago, query_id, max_visits):
     with open(sgf_file, "rb") as f:
         game = sgf.Sgf_game.from_bytes(f.read())
 
-    katago.query(query_id, game, max_visits=max_visits)
+    try:
+        katago.query(query_id, game, max_visits=max_visits)
+    except Exception as e:
+        print(f"Error analyzing {sgf_file}: {e}.")
 
 def judge(winrate, threshold = 0.6):
     """Return the game score based on the given black winrate"""
