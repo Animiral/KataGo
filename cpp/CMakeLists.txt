@@ -269,6 +269,7 @@ add_executable(katago
   command/commandline.cpp
   command/analysis.cpp
   command/extract_features.cpp
+  command/extract_pocfeatures.cpp
   command/strength_analysis.cpp
   command/strength_training.cpp
   command/rating_system.cpp

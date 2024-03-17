@@ -45,7 +45,8 @@ gatekeeper : Poll directory for new nets and match them against the latest net s
 
 ---Strength Model subcommands---------
 
-extract_features : Precomputes move features for all games in the dataset.
+extract_features : Precomputes recent move features for all games in the dataset.
+extract_pocfeatures : Precomputes proof-of-concept model move features for all games in the dataset.
 strength_analysis : Runs an engine to analyze the strength of a player.
 rating_system : Calculates all match outcome predictions and player ranks in a dataset using the strength model.
 
@@ -79,6 +80,8 @@ static int handleSubcommand(const string& subcommand, const vector<string>& args
     return MainCmds::analysis(subArgs);
   if(subcommand == "extract_features")
     return MainCmds::extract_features(subArgs);
+  if(subcommand == "extract_pocfeatures")
+    return MainCmds::extract_pocfeatures(subArgs);
   if(subcommand == "strength_analysis")
     return MainCmds::strength_analysis(subArgs);
   if(subcommand == "strength_training")

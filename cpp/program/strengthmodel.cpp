@@ -84,8 +84,10 @@ void Dataset::load(const string& path, const std::string& featureDir) {
         game.prediction.score = std::strtof(field.c_str(), nullptr);
         break;
       case F::set:
+        if("-" == field) game.set = Game::none;
         if("t" == field || "T" == field) game.set = Game::training;
         if("v" == field || "V" == field) game.set = Game::validation;
+        if("b" == field || "B" == field) game.set = Game::batch;
         if("e" == field || "E" == field) game.set = Game::test;
         break;
       default:
@@ -135,7 +137,7 @@ void Dataset::store(const string& path) const {
     int printed = std::snprintf(buffer.get(), bufsize, "%s,%s,%s,%s,%.2f,%.2f,%.9f,%f,%f,%c\n",
       game.sgfPath.c_str(), whiteName.c_str(), blackName.c_str(),
       scoreToString(game.score), game.black.rating, game.white.rating,
-      game.prediction.score, game.prediction.blackRating, game.prediction.whiteRating, "TVBE"[game.set]);
+      game.prediction.score, game.prediction.blackRating, game.prediction.whiteRating, "-TVBE"[game.set]);
     if(printed <= 0)
       throw IOError("Error during formatting.");
     ostrm << buffer.get();

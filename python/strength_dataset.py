@@ -333,8 +333,6 @@ class StrengthDataset(Dataset):
                 newcount = count + len(mymoves)
                 overshoot = max(0, newcount - window)
                 count = min(newcount, window)
-                if overshoot < 0 or overshoot >= len(mymoves):
-                    import pdb; pdb.set_trace()
                 startmove = mymoves[overshoot]
                 writer.writerow({'File': historic.sgfPath, 'StartMove': startmove, 'Count': len(mymoves)-overshoot})
                 historic = entry.prevGame

@@ -37,7 +37,7 @@ void runStrengthModelTests(const string& modelFile, const string& listFile, cons
   {
     cout << "- UT dataset contains " << dataset.games.size() << " games and " << dataset.players.size() << " players:\n";
     for(const Dataset::Game& game : dataset.games)
-      cout << "\tGame " << game.sgfPath << " (" << "TVBE"[game.set] << ") - " << game.black.features.size() << " black features, " << game.white.features.size() << " white features\n";
+      cout << "\tGame " << game.sgfPath << " (" << "-TVBE"[game.set] << ") - " << game.black.features.size() << " black features, " << game.white.features.size() << " white features\n";
     for(const Dataset::Player& player : dataset.players)
       cout << "\tPlayer " << player.name << ", last occurred in game [" << player.lastOccurrence << "]\n";
   }
@@ -113,7 +113,7 @@ void runStrengthModelTests(const string& modelFile, const string& listFile, cons
     dataset2.games.insert(dataset2.games.end(), dataset.games.begin(), dataset.games.end()); // 3 more games
     dataset2.games.insert(dataset2.games.end(), dataset.games.begin(), dataset.games.end()); // 3 more games
     char setmarker[9];
-    auto pickmarker = [](auto& game) { return "TVBE"[game.set]; };
+    auto pickmarker = [](auto& game) { return "-TVBE"[game.set]; };
 
     cout << "    " << dataset2.games.size() << " games split 6/2/1: ";
     dataset2.randomSplit(rand, 0.66f, 0.22f);

@@ -35,10 +35,11 @@ public:
     Prediction prediction;
     
     enum {
-      training = 0,   // is in the training set if ~game.set & 1 is true
-      validation = 1, // is in validation set
-      batch = 2,      // is in active minibatch
-      test = 3        // is in test set
+      none = 0,
+      training = 1,   // is in the training set if game.set & 1 is true
+      validation = 2, // is in validation set
+      batch = 3,      // is in active minibatch
+      test = 4        // is in test set
     } set;
   };
 

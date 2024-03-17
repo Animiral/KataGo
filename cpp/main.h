@@ -3,6 +3,7 @@
 namespace MainCmds {
   int analysis(const std::vector<std::string>& args);
   int extract_features(const std::vector<std::string>& args);
+  int extract_pocfeatures(const std::vector<std::string>& args);
   int strength_analysis(const std::vector<std::string>& args);
   int strength_training(const std::vector<std::string>& args);
   int rating_system(const std::vector<std::string>& args);
