@@ -149,6 +149,7 @@ int readMovesIntoTensor(const string& sgfPath, Player pla, RecentMovesTensor& rm
       float* binaryInputNCHW = rmt.binaryInputNCHW->data + idx * nnXLen * nnYLen * numSpatialFeatures;
       float* globalInputNC = rmt.globalInputNC->data + idx * numGlobalFeatures;
       NNInputs::fillRowV7(board, history, move.pla, nnInputParams, nnXLen, nnYLen, inputsUseNHWC, binaryInputNCHW, globalInputNC);
+      memset(&rmt.locInputNCHW->data[idx * nnXLen * nnYLen], 0, nnXLen * nnYLen * sizeof(float));
       if(Board::PASS_LOC != move.loc) {
         int pos = NNPos::locToPos(move.loc, board.x_size, nnXLen, nnYLen);
         rmt.locInputNCHW->data[idx * nnXLen * nnYLen + pos] = 1;
@@ -197,10 +198,10 @@ RecentMovesTensor getRecentMovesTensor(const Dataset& dataset, const Dataset::Ga
 
     if(playerId == historicGame.black.player) {
       pla = P_BLACK;
-      historic = game.black.prevGame;
+      historic = historicGame.black.prevGame;
     } else if(playerId == historicGame.white.player) {
       pla = P_WHITE;
-      historic = game.white.prevGame;
+      historic = historicGame.white.prevGame;
     } else {
       throw StringError(Global::strprintf("Game %s does not contain player %d (name=%s)",
         historicGame.sgfPath.c_str(), playerId, dataset.players[playerId].name.c_str()));

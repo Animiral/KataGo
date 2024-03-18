@@ -11,19 +11,6 @@ from sgfmill import sgf
 from torch.utils.data import Dataset, DataLoader
 from torch.nn.utils.rnn import pad_sequence
 
-from board import Board
-from features import Features
-
-max_board_size = 19  # used for filling net input tensors
-
-# only required to build input tensors of recent moves
-class GameState:
-    def __init__(self,board_size):
-        self.board_size = board_size
-        self.board = Board(size=board_size)
-        self.moves = []
-        self.boards = [self.board.copy()]
-
 class PlayerGameEntry:
     """Represents the data for one of the players in a game"""
     def __init__(self, name: str, rating: float, prevGame: Optional[GameEntry]):
@@ -52,45 +39,14 @@ class GameEntry:
         else:
             raise Exception(f"Player {name} does not occur in game {self.sgfPath}.")
 
-def makeTensor(board, pla, loc):
-    """Build an input to the KataGo network"""
-
-def generateBoards(sgfPath, startMove, count):
-    """Generator for all position data as specified in a recent move record"""
-    with open(sgfPath, 'r') as f:
-        sgf_data = f.read()
-    game = sgf.Sgf_game.from_string(sgf_data)
-    ms = game.get_main_sequence()
-    gs = GameState(max_board_size)
-
-    # get to starting position, then generate every 2nd board position
-    for i in range(startMove + 2*count - 1):
-        color, moveloc = ms[i].get_move()
-        if moveloc is None:
-            pla = Board.EMPTY
-            loc = Board.PASS_LOC
-        else:
-            pla = {'b': Board.BLACK, 'w': Board.WHITE}[color]
-            loc = gs.board.loc(*moveloc)
-        if i > startMove and (i % 2) == (startMove % 2):
-            yield gs, pla, loc
-
-        if loc != Board.PASS_LOC:
-            gs.board.play(pla,loc)
-            gs.moves.append((pla,loc))
-            gs.boards.append(gs.board.copy())
-
 class StrengthDataset(Dataset):
     """Load the dataset from a CSV list file"""
     featureDims = 6  # TODO, adapt to whichever features we currently use
 
-    def __init__(self, listpath: str, featuredir: str, marker: str, katamodel):
+    def __init__(self, listpath: str, featuredir: str, marker: str):
         self.featuredir = featuredir
         self.players: Dict[str, GameEntry] = {}  # stores last occurrence of player
         self.games = List[GameEntry]
-        self.bin_input_shape = katamodel.bin_input_shape        # one input to Kata model
-        self.global_input_shape = katamodel.global_input_shape  # one input to Kata model
-        self.features = Features(katamodel.config, max_board_size)
 
         with open(listpath, 'r') as listfile:
             reader = csv.DictReader(listfile)
@@ -105,9 +61,9 @@ class StrengthDataset(Dataset):
         """Load recent move features on demand"""
         game = self.marked[idx]
         if game.black.recentMoves is None:
-            self._fillRecentMoves(game.black.name, game)
+            self._fillRecentMoves(game.black, game)
         if game.white.recentMoves is None:
-            self._fillRecentMoves(game.white.name, game)
+            self._fillRecentMoves(game.white, game)
         return (game.black.recentMoves, game.white.recentMoves, game.black.rating, game.white.rating, game.score)
 
     def write(self, outpath: str):
@@ -200,61 +156,31 @@ class StrengthDataset(Dataset):
         count = len(features_flat) // StrengthDataset.featureDims
         return torch.from_numpy(features_flat).reshape(count, StrengthDataset.featureDims)
 
-    def _fillRecentMoves(self, player: str, game: GameEntry):
-        """Place strength model input tensors in game.black/white.recentMoves"""
+    def _fillRecentMoves(self, entry: PlayerGameEntry, game: GameEntry):
+        """
+        Place strength model input tensors in game.black/white.recentMoves.
+        The data must exist in the feature cache directory.
+        """
+        if entry is game.black:
+            color = 'Black'
+        elif entry is game.white:
+            color = 'White'
+        else:
+            raise Exception(f"Entry for player {entry.name} is not from game {game.sgfPath}.")
 
-        # rules are arbitrary because most moves evaluate the same regardless of rules
-        rules = {
-            "koRule": "KO_POSITIONAL",
-            "scoringRule": "SCORING_AREA",
-            "taxRule": "TAX_NONE",
-            "multiStoneSuicideLegal": True,
-            "hasButton": False,
-            "encorePhase": 0,
-            "passWouldEndPhase": False,
-            "whiteKomi": 7.5,
-            "asymPowersOfTwo": 0.0,
-        }
-
-        color = 'Black' if game.black.name == player else 'White'
         sgfPathWithoutExt, _ = os.path.splitext(game.sgfPath)
-        recentpath = f"{self.featuredir}/{sgfPathWithoutExt}_{color}RecentMoves.csv"
+        recentpath = f"{self.featuredir}/{sgfPathWithoutExt}_{color}RecentMoves.npz"
 
-        if not exists(recentpath):
-            raise IOError(f"Precomputed recent moves not found in {recentpath}")
+        with np.load(recentpath) as npz:
+            binaryInputNCHW = npz["binaryInputNCHW"]
+            locInputNCHW = npz["locInputNCHW"]
+            globalInputNC = npz["globalInputNC"]
+        del npz
 
-        with open(recentpath, 'r') as recentfile:
-            reader = csv.DictReader(recentfile)
-            recents = [(row['File'], int(row['StartMove']), int(row['Count'])) for row in reader]
-
-        playerdata = {game.black.name: game.black, game.white.name: game.white}[player]
-        total = sum(r[2] for r in recents)
-        bin_input_data = np.zeros(shape=[total]+self.bin_input_shape, dtype=np.float32)
-        global_input_data = np.zeros(shape=[total]+self.global_input_shape, dtype=np.float32)
-        if 0 == total:
-            playerdata.recentMoves = (bin_input_data, global_input_data)  # ToDo: one-hot tensor for next move
-            return
-
-        # fill_row_features assumes N(HW)C order but we actually use NCHW order, so work with it and revert after
-        bin_input_data = np.transpose(bin_input_data,axes=(0,2,3,1))
-        bin_input_data = bin_input_data.reshape([total,max_board_size*max_board_size,-1])
-        loc_input_data = np.zeros(shape=[*bin_input_data.shape[:-1], 1], dtype=np.float32)  # 1-hot of next move to strength-evaluate
-
-        i = 0
-        for sgfPath, startMove, count in recents:
-            for gs, pla, loc in generateBoards(sgfPath, startMove, count):
-                # print(f"{gs.board.to_string()}\npla={pla}, loc={loc}\n")
-                opp = Board.get_opp(pla)
-                move_idx = len(gs.moves)
-                self.features.fill_row_features(gs.board,pla,opp,gs.boards,gs.moves,move_idx,rules,bin_input_data,global_input_data,idx=i)
-                if Board.PASS_LOC != loc:
-                    loc_pos = self.features.loc_to_tensor_pos(loc, gs.board)
-                    loc_input_data[i,loc_pos,0] = 1.0
-                i += 1
-        bin_input_data = bin_input_data.reshape([total,max_board_size,max_board_size,-1])
-        bin_input_data = np.transpose(bin_input_data,axes=(0,3,1,2))
-
-        playerdata.recentMoves = (bin_input_data, loc_input_data, global_input_data)
+        binaryInputNCHW = torch.from_numpy(binaryInputNCHW) #.to(device)
+        locInputNCHW = torch.from_numpy(locInputNCHW) #.to(device)
+        globalInputNC = torch.from_numpy(globalInputNC) #.to(device)
+        entry.recentMoves = (binaryInputNCHW, locInputNCHW, globalInputNC)
 
     def _fillRecentMovesFromPocFeatures(self, player: str, game: GameEntry, window: int = 1000):
         recentMoves = torch.empty(0, StrengthDataset.featureDims)
@@ -339,11 +265,13 @@ class StrengthDataset(Dataset):
 
 def pad_collate(batch):
     brecent, wrecent, brating, wrating, score = zip(*batch)
-    blens = [r.shape[0] for r in brecent]
-    wlens = [r.shape[0] for r in wrecent]
-    brecent, wrecent = torch.cat(brecent, dim=0), torch.cat(wrecent, dim=0)
+    b_spatial, b_next, b_global = zip(*brecent)
+    w_spatial, w_next, w_global = zip(*wrecent)
+    blens = [r.shape[0] for r in b_spatial]
+    wlens = [r.shape[0] for r in w_spatial]
+    b_spatial, b_next, b_global, w_spatial, w_next, w_global = map(lambda t: torch.cat(t, dim=0), (b_spatial, b_next, b_global, w_spatial, w_next, w_global))
     brating, wrating, score = map(torch.Tensor, (brating, wrating, score))
-    return brecent, wrecent, blens, wlens, brating, wrating, score
+    return (b_spatial, b_next, b_global), (w_spatial, w_next, w_global), blens, wlens, brating, wrating, score
 
 class StrengthDataLoader(DataLoader):
     def __init__(self, *args, **kwargs):

@@ -39,11 +39,11 @@ def main(args):
 
     katamodel, _, other_state_dict = load_katamodel(katamodelfile, use_swa=False, device=device)
 
-    train_data = StrengthDataset(listfile, featuredir, 'T', katamodel)
-    test_data = StrengthDataset(listfile, featuredir, 'V', katamodel)
+    train_data = StrengthDataset(listfile, featuredir, 'T')
+    test_data = StrengthDataset(listfile, featuredir, 'V')
     test_loader = StrengthDataLoader(test_data, batch_size=batch_size)
     print(f"Loaded {len(train_data)} training games, {len(test_data)} validation games.")
-    game0 = train_data[50]
+    # game0 = train_data[50]
 
     # model = StrengthNet(StrengthDataset.featureDims).to(device)
     model = katamodel.to(device)
@@ -81,13 +81,14 @@ def train(loader, model, optimizer, totalsize: int=0):
     MSE = nn.MSELoss()
     trainloss = []
 
-    for batchnr, (bx, wx, blens, wlens, by, wy, score) in enumerate(loader):
-        bx, by, wx, wy = map(lambda t: t.to(device), (bx, by, wx, wy))
+    for batchnr, ((b_spatial, b_next, b_global), (w_spatial, w_next, w_global), blens, wlens, by, wy, score) in enumerate(loader):
+        b_spatial, b_next, b_global, by, w_spatial, w_next, w_global, wy = map(lambda t: t.to(device), (b_spatial, b_next, b_global, by, w_spatial, w_next, w_global, wy))
         # bpred, wpred = model(bx, blens), model(wx, wlens)
         # loss = MSE(bpred, by) + MSE(wpred, wy) # + crossentropy(bt(bpred, wpred), score)
         # loss.backward()
         # optimizer.step()
         # optimizer.zero_grad()
+        loss = torch.tensor(5)
 
         # status
         batch_size = len(score)
