@@ -1,5 +1,8 @@
 import argparse
+import math
 import torch
+from datetime import datetime
+
 from torch import nn
 from torch.utils.data import Dataset, DataLoader, RandomSampler, BatchSampler
 
@@ -7,9 +10,19 @@ from strength_dataset import StrengthDataset, StrengthDataLoader
 from strengthmodel import StrengthModel
 from load_model import load_model as load_katamodel
 from model_pytorch import Model as KataModel
+from strengthmodel import StrengthModel
 
 
 device = "cuda"
+
+def to_device(*args):
+    if 1 == len(args):
+        if type(args[0]) == torch.Tensor:
+            return args[0].to(device)
+        else:
+            return to_device(*args[0])
+    else:
+        return tuple(to_device(a) for a in args)
 
 def main(args):
     listfile = args["listfile"]
@@ -19,6 +32,7 @@ def main(args):
     trainlossfile = args["trainlossfile"]
     testlossfile = args["testlossfile"]
     batch_size = args["batch_size"]
+    validation_size = args["validation_size"]
     steps = args["steps"]
     epochs = args["epochs"]
 
@@ -28,6 +42,7 @@ def main(args):
     print(f"Batch size: {batch_size}")
     print(f"Steps: {steps}")
     print(f"Epochs: {epochs}")
+    print(f"Validation size: {validation_size}")
     print(f"Device: {device}")
 
     if trainlossfile:
@@ -38,15 +53,17 @@ def main(args):
         testlossfile = open(testlossfile, 'w')
 
     katamodel, _, other_state_dict = load_katamodel(katamodelfile, use_swa=False, device=device)
+    model = StrengthModel(katamodel).to(device)
 
     train_data = StrengthDataset(listfile, featuredir, 'T')
     test_data = StrengthDataset(listfile, featuredir, 'V')
+    if validation_size > 0:
+        import random
+        random.shuffle(test_data.marked)
+        test_data.marked = test_data.marked[:validation_size]
     test_loader = StrengthDataLoader(test_data, batch_size=batch_size)
     print(f"Loaded {len(train_data)} training games, {len(test_data)} validation games.")
-    # game0 = train_data[50]
 
-    # model = StrengthNet(StrengthDataset.featureDims).to(device)
-    model = katamodel.to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
 
     if outfile:
@@ -56,7 +73,7 @@ def main(args):
     for e in range(epochs):
         sampler = BatchSampler(RandomSampler(train_data, replacement=True, num_samples=steps*batch_size), batch_size, False)
         train_loader = StrengthDataLoader(train_data, batch_sampler=sampler)
-        print(f"Epoch {e+1}\n-------------------------------")
+        print(f"Epoch {e+1} ({datetime.now()})\n-------------------------------")
 
         trainloss = train(train_loader, model, optimizer, steps*batch_size)
         if trainlossfile:
@@ -81,14 +98,14 @@ def train(loader, model, optimizer, totalsize: int=0):
     MSE = nn.MSELoss()
     trainloss = []
 
-    for batchnr, ((b_spatial, b_next, b_global), (w_spatial, w_next, w_global), blens, wlens, by, wy, score) in enumerate(loader):
-        b_spatial, b_next, b_global, by, w_spatial, w_next, w_global, wy = map(lambda t: t.to(device), (b_spatial, b_next, b_global, by, w_spatial, w_next, w_global, wy))
-        # bpred, wpred = model(bx, blens), model(wx, wlens)
-        # loss = MSE(bpred, by) + MSE(wpred, wy) # + crossentropy(bt(bpred, wpred), score)
-        # loss.backward()
-        # optimizer.step()
-        # optimizer.zero_grad()
-        loss = torch.tensor(5)
+    for batchnr, (bx, wx, blens, wlens, by, wy, score) in enumerate(loader):
+        if 0 == len(bx) + len(wx):
+            continue  # no data in this batch (if both players are new in all games)
+
+        loss = compute_loss_on_device(model, bx, wx, blens, wlens, by, wy, score)
+        loss.backward()
+        optimizer.step()
+        optimizer.zero_grad()
 
         # status
         batch_size = len(score)
@@ -107,13 +124,23 @@ def test(loader, model):
     test_loss, correct = 0, 0
     with torch.no_grad():
         for bx, wx, blens, wlens, by, wy, score in loader:
-            bx, by, wx, wy = map(lambda t: t.to(device), (bx, by, wx, wy))
-            bpred, wpred = model(bx, blens), model(wx, wlens)
-            loss = MSE(bpred, by) + MSE(wpred, wy)
+            loss = compute_loss_on_device(model, bx, wx, blens, wlens, by, wy, score)
             test_loss += loss.item()
     test_loss /= batches
     print(f"Validation Error: \n Avg loss: {test_loss:>8f} \n")
     return test_loss
+
+def compute_loss_on_device(model, bx, wx, blens, wlens, by, wy, score):
+    bx, wx = to_device(bx, wx)
+    by, wy = to_device(by, wy)
+    bpred = model(*bx, blens)
+    wpred = model(*wx, wlens)
+    return (MSE(bpred, by) + MSE(wpred, wy)) / 10e6 + crossentropy(logreg(bpred, wpred), score)
+
+def logreg(b, w):
+    """Return the chance that b beats w on a Glicko scale"""
+    GLICKO2_SCALE = 173.7178
+    return 1 / (1 + math.exp((w - b) / GLICKO2_SCALE))
 
 if __name__ == "__main__":
     description = """
@@ -137,6 +164,7 @@ if __name__ == "__main__":
     optional_args.add_argument('-b', '--batch-size', help='Minibatch size', type=int, default=100, required=False)
     optional_args.add_argument('-t', '--steps', help='Number of batches per epoch', type=int, default=100, required=False)
     optional_args.add_argument('-e', '--epochs', help='Nr of training epochs', type=int, default=5, required=False)
+    optional_args.add_argument('-v', '--validation-size', help='Random sample subset of validation set', type=int, default=0, required=False)
     optional_args.add_argument('--trainlossfile', help='Output file to store training loss values', type=str, required=False)
     optional_args.add_argument('--testlossfile', help='Output file to store validation loss values', type=str, required=False)
 

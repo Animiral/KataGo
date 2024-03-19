@@ -1636,56 +1636,58 @@ class Model(torch.nn.Module):
         out = self.norm_trunkfinal(out, mask=mask, mask_sum=mask_sum)
         out = self.act_trunkfinal(out)
 
-        # print("MAIN")
-        out_policy = self.policy_head(out, mask=mask, mask_sum_hw=mask_sum_hw, mask_sum=mask_sum)
-        (
-            out_value,
-            out_miscvalue,
-            out_moremiscvalue,
-            out_ownership,
-            out_scoring,
-            out_futurepos,
-            out_seki,
-            out_scorebelief_logprobs,
-        ) = self.value_head(out, mask=mask, mask_sum_hw=mask_sum_hw, mask_sum=mask_sum, input_global=input_global)
+        # strength model modification: immediately return trunk output
+        return out
 
-        if self.has_intermediate_head:
-            return (
-                (
-                    out_policy,
-                    out_value,
-                    out_miscvalue,
-                    out_moremiscvalue,
-                    out_ownership,
-                    out_scoring,
-                    out_futurepos,
-                    out_seki,
-                    out_scorebelief_logprobs,
-                ),
-                (
-                    iout_policy,
-                    iout_value,
-                    iout_miscvalue,
-                    iout_moremiscvalue,
-                    iout_ownership,
-                    iout_scoring,
-                    iout_futurepos,
-                    iout_seki,
-                    iout_scorebelief_logprobs,
-                ),
-            )
-        else:
-            return ((
-                out_policy,
-                out_value,
-                out_miscvalue,
-                out_moremiscvalue,
-                out_ownership,
-                out_scoring,
-                out_futurepos,
-                out_seki,
-                out_scorebelief_logprobs,
-            ),)
+        # out_policy = self.policy_head(out, mask=mask, mask_sum_hw=mask_sum_hw, mask_sum=mask_sum)
+        # (
+        #     out_value,
+        #     out_miscvalue,
+        #     out_moremiscvalue,
+        #     out_ownership,
+        #     out_scoring,
+        #     out_futurepos,
+        #     out_seki,
+        #     out_scorebelief_logprobs,
+        # ) = self.value_head(out, mask=mask, mask_sum_hw=mask_sum_hw, mask_sum=mask_sum, input_global=input_global)
+
+        # if self.has_intermediate_head:
+        #     return (
+        #         (
+        #             out_policy,
+        #             out_value,
+        #             out_miscvalue,
+        #             out_moremiscvalue,
+        #             out_ownership,
+        #             out_scoring,
+        #             out_futurepos,
+        #             out_seki,
+        #             out_scorebelief_logprobs,
+        #         ),
+        #         (
+        #             iout_policy,
+        #             iout_value,
+        #             iout_miscvalue,
+        #             iout_moremiscvalue,
+        #             iout_ownership,
+        #             iout_scoring,
+        #             iout_futurepos,
+        #             iout_seki,
+        #             iout_scorebelief_logprobs,
+        #         ),
+        #     )
+        # else:
+        #     return ((
+        #         out_policy,
+        #         out_value,
+        #         out_miscvalue,
+        #         out_moremiscvalue,
+        #         out_ownership,
+        #         out_scoring,
+        #         out_futurepos,
+        #         out_seki,
+        #         out_scorebelief_logprobs,
+        #     ),)
 
     def float32ify_output(self, outputs_byheads):
         return tuple(self.float32ify_single_heads_output(outputs) for outputs in outputs_byheads)
