@@ -317,7 +317,7 @@ void NNInputs::fillScoring(
 
 
 NNOutput::NNOutput()
-  :whiteOwnerMap(NULL),noisedPolicyProbs(NULL)
+  :trunkData(NULL),whiteOwnerMap(NULL),noisedPolicyProbs(NULL)
 {}
 NNOutput::NNOutput(const NNOutput& other) {
   nnHash = other.nnHash;
@@ -333,6 +333,13 @@ NNOutput::NNOutput(const NNOutput& other) {
 
   nnXLen = other.nnXLen;
   nnYLen = other.nnYLen;
+  const size_t trunkChannels = 384; // strength model is only compatible with this specific size
+  if(other.trunkData != NULL) {
+    trunkData = new float[trunkChannels * nnXLen * nnYLen];
+    std::copy(other.trunkData, other.trunkData + trunkChannels * nnXLen * nnYLen, trunkData);
+  }
+  else
+    trunkData = NULL;
   if(other.whiteOwnerMap != NULL) {
     whiteOwnerMap = new float[nnXLen * nnYLen];
     std::copy(other.whiteOwnerMap, other.whiteOwnerMap + nnXLen * nnYLen, whiteOwnerMap);
@@ -393,6 +400,8 @@ NNOutput::NNOutput(const vector<shared_ptr<NNOutput>>& others) {
 
   nnXLen = others[0]->nnXLen;
   nnYLen = others[0]->nnYLen;
+
+  // NOTE on trunkData: aggregation not implemented
 
   {
     float whiteOwnerMapCount = 0.0f;
@@ -461,6 +470,15 @@ NNOutput& NNOutput::operator=(const NNOutput& other) {
 
   nnXLen = other.nnXLen;
   nnYLen = other.nnYLen;
+  const size_t trunkChannels = 384; // strength model is only compatible with this specific size
+  if(trunkData != NULL)
+    delete[] trunkData;
+  if(other.trunkData != NULL) {
+    trunkData = new float[trunkChannels * nnXLen * nnYLen];
+    std::copy(other.trunkData, other.trunkData + trunkChannels * nnXLen * nnYLen, trunkData);
+  }
+  else
+    trunkData = NULL;
   if(whiteOwnerMap != NULL)
     delete[] whiteOwnerMap;
   if(other.whiteOwnerMap != NULL) {
@@ -485,6 +503,10 @@ NNOutput& NNOutput::operator=(const NNOutput& other) {
 
 
 NNOutput::~NNOutput() {
+  if(trunkData != NULL) {
+    delete[] trunkData;
+    trunkData = NULL;
+  }
   if(whiteOwnerMap != NULL) {
     delete[] whiteOwnerMap;
     whiteOwnerMap = NULL;
@@ -602,8 +624,8 @@ void SymmetryHelpers::copyInputsWithSymmetry(const float* src, float* dst, int n
   copyWithSymmetry(src, dst, nSize, hSize, wSize, cSize, useNHWC, symmetry, false);
 }
 
-void SymmetryHelpers::copyOutputsWithSymmetry(const float* src, float* dst, int nSize, int hSize, int wSize, int symmetry) {
-  copyWithSymmetry(src, dst, nSize, hSize, wSize, 1, false, symmetry, true);
+void SymmetryHelpers::copyOutputsWithSymmetry(const float* src, float* dst, int nSize, int hSize, int wSize, int symmetry, int cSize) {
+  copyWithSymmetry(src, dst, nSize, hSize, wSize, cSize, false, symmetry, true);
 }
 
 int SymmetryHelpers::invert(int symmetry) {

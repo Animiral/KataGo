@@ -536,6 +536,8 @@ void NNEvaluator::serve(
           emptyOutput->whiteOwnerMap = new float[nnXLen*nnYLen];
         else
           emptyOutput->whiteOwnerMap = NULL;
+        const size_t trunkNumChannels = 384; // strength model requires this size
+        emptyOutput->trunkData = new float[trunkNumChannels*nnXLen*nnYLen];
         outputBuf.push_back(emptyOutput);
       }
 

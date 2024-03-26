@@ -1889,6 +1889,7 @@ struct Model {
     void* inputBuf,
     void* inputGlobalBuf,
 
+    float* trunkBuf,
     float* policyPassBuf,
     float* policyBuf,
 
@@ -1938,8 +1939,6 @@ struct Model {
     CudaUtils::debugPrint2D(string("Initial global features"), inputGlobalBuf, batchSize, trunk->initialMatMul->inChannels, usingFP16);
     #endif
 
-    SizedBuf<void*> trunkBuf(scratch->allocator, scratch->getBufSizeXY(trunk->trunkNumChannels));
-
     trunk->apply(
       cudaHandles,
       scratch,
@@ -1948,7 +1947,7 @@ struct Model {
       inputGlobalBuf,
       maskBuf,
       maskSumBuf,
-      trunkBuf.buf,
+      trunkBuf,
       workspaceBuf,
       workspaceBytes
     );
@@ -1959,7 +1958,7 @@ struct Model {
       maskBuf,
       maskFloatBuf,
       maskSumBuf,
-      trunkBuf.buf,
+      trunkBuf,
       policyPassBuf,
       policyBuf,
       workspaceBuf,
@@ -1971,7 +1970,7 @@ struct Model {
       batchSize,
       maskBuf,
       maskSumBuf,
-      trunkBuf.buf,
+      trunkBuf,
       valueBuf,
       scoreValueBuf,
       ownershipBuf,
@@ -2036,6 +2035,8 @@ struct Buffers {
   size_t inputGlobalBufBytesFloat;
   size_t inputGlobalBufBytes;
 
+  float* trunkBuf;
+  size_t trunkBufBytes;
   float* policyPassBuf;
   size_t policyPassBufBytes;
   float* policyBuf;
@@ -2072,6 +2073,9 @@ struct Buffers {
     CUDA_ERR("Buffers",cudaMalloc(&inputGlobalBuf, inputGlobalBufBytes));
 
     assert(m.version >= 12 ? m.policyHead->p2Channels == 2 : m.policyHead->p2Channels == 1);
+
+    trunkBufBytes = m.trunk->trunkNumChannels * batchXYBytes;
+    CUDA_ERR("Buffers",cudaMalloc(&trunkBuf, trunkBufBytes));
     policyPassBufBytes = m.policyHead->p2Channels * batchFloatBytes;
     CUDA_ERR("Buffers",cudaMalloc(&policyPassBuf, policyPassBufBytes));
     policyBufBytes = m.policyHead->p2Channels * batchXYFloatBytes;
@@ -2315,6 +2319,7 @@ struct InputBuffers {
   size_t singleInputBytes;
   size_t singleInputGlobalElts;
   size_t singleInputGlobalBytes;
+  size_t singleTrunkResultBytes;
   size_t singlePolicyPassResultElts;
   size_t singlePolicyPassResultBytes;
   size_t singlePolicyResultElts;
@@ -2337,6 +2342,7 @@ struct InputBuffers {
   float* userInputBuffer; //Host pointer
   float* userInputGlobalBuffer; //Host pointer
 
+  float* trunkResults; //Host pointer
   float* policyPassResults; //Host pointer
   float* policyResults; //Host pointer
   float* valueResults; //Host pointer
@@ -2352,6 +2358,7 @@ struct InputBuffers {
     singleInputBytes = (size_t)m.numInputChannels * nnXLen * nnYLen * sizeof(float);
     singleInputGlobalElts = (size_t)m.numInputGlobalChannels;
     singleInputGlobalBytes = (size_t)m.numInputGlobalChannels * sizeof(float);
+    singleTrunkResultBytes = (size_t)m.trunk.trunkNumChannels * nnXLen * nnYLen * sizeof(float);
     singlePolicyPassResultElts = (size_t)(policyChannels);
     singlePolicyPassResultBytes = (size_t)(policyChannels) * sizeof(float);
     singlePolicyResultElts = (size_t)(policyChannels * nnXLen * nnYLen);
@@ -2377,6 +2384,7 @@ struct InputBuffers {
     userInputBuffer = new float[(size_t)m.numInputChannels * maxBatchSize * nnXLen * nnYLen];
     userInputGlobalBuffer = new float[(size_t)m.numInputGlobalChannels * maxBatchSize];
 
+    trunkResults = new float[(size_t)m.trunk.trunkNumChannels * maxBatchSize * nnXLen * nnYLen * sizeof(float)];
     policyPassResults = new float[(size_t)maxBatchSize * policyChannels];
     policyResults = new float[(size_t)maxBatchSize * policyChannels * nnXLen * nnYLen];
     valueResults = new float[(size_t)maxBatchSize * m.numValueChannels];
@@ -2388,6 +2396,7 @@ struct InputBuffers {
   ~InputBuffers() {
     delete[] userInputBuffer;
     delete[] userInputGlobalBuffer;
+    delete[] trunkResults;
     delete[] policyPassResults;
     delete[] policyResults;
     delete[] valueResults;
@@ -2501,6 +2510,7 @@ void NeuralNet::getOutput(
     buffers->inputBuf,
     buffers->inputGlobalBuf,
 
+    buffers->trunkBuf,
     buffers->policyPassBuf,
     buffers->policyBuf,
 
@@ -2512,6 +2522,7 @@ void NeuralNet::getOutput(
     buffers->workspaceBytes
   );
 
+  CUDA_ERR("getOutput",cudaMemcpy(inputBuffers->trunkResults, buffers->trunkBuf, inputBuffers->singleTrunkResultBytes*batchSize, cudaMemcpyDeviceToHost));
   CUDA_ERR("getOutput",cudaMemcpy(inputBuffers->policyPassResults, buffers->policyPassBuf, inputBuffers->singlePolicyPassResultBytes*batchSize, cudaMemcpyDeviceToHost));
   CUDA_ERR("getOutput",cudaMemcpy(inputBuffers->policyResults, buffers->policyBuf, inputBuffers->singlePolicyResultBytes*batchSize, cudaMemcpyDeviceToHost));
   CUDA_ERR("getOutput",cudaMemcpy(inputBuffers->valueResults, buffers->valueBuf, inputBuffers->singleValueResultBytes*batchSize, cudaMemcpyDeviceToHost));
@@ -2527,6 +2538,10 @@ void NeuralNet::getOutput(
     assert(output->nnXLen == nnXLen);
     assert(output->nnYLen == nnYLen);
     float policyOptimism = (float)inputBufs[row]->policyOptimism;
+
+    // trunk output is a hacky addition to facilitate preprocessing for the strength model 
+    const float* trunkSrcBuf = inputBuffers->trunkResults + row * nnXLen * nnYLen;
+    SymmetryHelpers::copyOutputsWithSymmetry(trunkSrcBuf, output->trunkData, 1, nnYLen, nnXLen, inputBufs[row]->symmetry, gpuHandle->model->trunk->trunkNumChannels);
 
     const float* policyPassSrcBuf = inputBuffers->policyPassResults + row * policyChannels;
     const float* policySrcBuf = inputBuffers->policyResults + row * policyChannels * nnXLen * nnYLen;

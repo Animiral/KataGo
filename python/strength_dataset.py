@@ -279,14 +279,34 @@ class StrengthDataLoader(DataLoader):
         super().__init__(*args, **kwargs)
 
 if __name__ == "__main__":
-    print("Test moves_dataset.py")
-    listpath = 'csv/games_labels.csv'
-    featuredir = 'featurecache'
-    marker = 'V'
-    dataset = StrengthDataset(listpath, featuredir, marker)
-    print(f"Loaded {len(dataset.games)} games, {len(dataset)} of type {marker}.")
+    from load_model import load_model as load_katamodel
+    from model_pytorch import Model as KataModel
+    device = "cuda"
+    modelPath = "/home/user/source/katago/models/kata1-b18c384nbt-s9131461376-d4087399203.ckpt"
 
-    loader = DataLoader(dataset, batch_size=3, collate_fn=pad_collate)
 
-    for bx, wx, blens, wlens, by, wy, score in loader:
-        print(f"Got batch size bx: {bx.shape} ({blens}), wx: {wx.shape} ({wlens}); {by}; {wy}; {score}.")
+    # with np.load(trunkNpzPath) as npz:
+    #     trunkOutputNCHW = torch.from_numpy(npz["trunkOutputNCHW"]).to(device)
+    # del npz
+
+    katamodel, _, other_state_dict = load_katamodel(modelPath, use_swa=False, device=device)
+    print("Test trunks using model " + modelPath)
+
+    def dumpTrunkOutput(npzPath, outPath, katamodel):
+        with np.load(npzPath) as npz:
+            binaryInputNCHW = torch.from_numpy(npz["binaryInputNCHW"]).to(device)
+            locInputNCHW = torch.from_numpy(npz["locInputNCHW"]).to(device)
+            globalInputNC = torch.from_numpy(npz["globalInputNC"]).to(device)
+        del npz
+
+        katamodel.eval()
+        with torch.no_grad():
+            out = katamodel(binaryInputNCHW, globalInputNC)
+
+        with open(outPath, 'w') as file:
+            for value in out.flatten():
+                file.write(f"{value.item():.6f}\n")
+
+    dumpTrunkOutput("stuff/13056-Input.npz", "stuff/13056-PyOutput.txt", katamodel)
+    dumpTrunkOutput("stuff/13788-Input.npz", "stuff/13788-PyOutput.txt", katamodel)
+    dumpTrunkOutput("stuff/13801-Input.npz", "stuff/13801-PyOutput.txt", katamodel)
