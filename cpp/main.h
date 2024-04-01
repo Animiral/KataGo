@@ -2,6 +2,7 @@
 
 namespace MainCmds {
   int analysis(const std::vector<std::string>& args);
+  int position_tensor(const std::vector<std::string>& args);
   int extract_features(const std::vector<std::string>& args);
   int extract_pocfeatures(const std::vector<std::string>& args);
   int strength_analysis(const std::vector<std::string>& args);

@@ -1,4 +1,5 @@
-#include "program/strengthmodel.h"
+#include "strmodel/strengthmodel.h"
+#include "strmodel/dataset.h"
 #include "tests/tests.h"
 #include "core/fileutils.h"
 #include "core/global.h"
@@ -307,7 +308,7 @@ void mockGameFeatures(const string& sgfPath, vector<MoveFeatures>& blackFeatures
 }
 
 void createFeatureCache(const string& listFile, const string& featureDir) {
-  const uint32_t FEATURE_HEADER = 0xfea70235; // same as in strengthmodel.h
+  const uint32_t FEATURE_HEADER_POC = 0xfea70235; // same as in strengthmodel.h
   std::ifstream istrm(listFile);
   string sgfPath; // we just assume that sgfPath is the first field in the CSV
   std::getline(istrm, sgfPath); // throw away header
@@ -319,9 +320,9 @@ void createFeatureCache(const string& listFile, const string& featureDir) {
     FileUtils::create_directories(FileUtils::dirname(blackFeaturePath)); // ensure dir structure
     auto blackFeatureFile = std::unique_ptr<std::FILE, decltype(&std::fclose)>(std::fopen(blackFeaturePath.c_str(), "wb"), &std::fclose);
     auto whiteFeatureFile = std::unique_ptr<std::FILE, decltype(&std::fclose)>(std::fopen(whiteFeaturePath.c_str(), "wb"), &std::fclose);
-    if(                   1 != std::fwrite(&FEATURE_HEADER, 4, 1, blackFeatureFile.get()) ||
+    if(                   1 != std::fwrite(&FEATURE_HEADER_POC, 4, 1, blackFeatureFile.get()) ||
        blackFeatures.size() != std::fwrite(blackFeatures.data(), sizeof(MoveFeatures), blackFeatures.size(), blackFeatureFile.get()) ||
-                          1 != std::fwrite(&FEATURE_HEADER, 4, 1, whiteFeatureFile.get()) ||
+                          1 != std::fwrite(&FEATURE_HEADER_POC, 4, 1, whiteFeatureFile.get()) ||
        whiteFeatures.size() != std::fwrite(whiteFeatures.data(), sizeof(MoveFeatures), whiteFeatures.size(), whiteFeatureFile.get()) ||
                           0 != std::fclose(blackFeatureFile.release()) ||
                           0 != std::fclose(whiteFeatureFile.release())) {

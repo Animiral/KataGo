@@ -236,7 +236,8 @@ add_executable(katago
   program/playsettings.cpp
   program/play.cpp
   program/selfplaymanager.cpp
-  program/strengthmodel.cpp
+  strmodel/strengthmodel.cpp
+  strmodel/dataset.cpp
   ${GIT_HEADER_FILE_ALWAYS_UPDATED}
   tests/testboardarea.cpp
   tests/testboardbasic.cpp
@@ -268,6 +269,7 @@ add_executable(katago
   distributed/client.cpp
   command/commandline.cpp
   command/analysis.cpp
+  command/position_tensor.cpp
   command/extract_features.cpp
   command/extract_pocfeatures.cpp
   command/strength_analysis.cpp

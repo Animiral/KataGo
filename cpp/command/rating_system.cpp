@@ -1,7 +1,7 @@
 #include "../core/global.h"
 #include "../core/config_parser.h"
 #include "../program/setup.h"
-#include "../program/strengthmodel.h"
+#include "../strmodel/strengthmodel.h"
 #include "../command/commandline.h"
 #include "../main.h"
 #include <iomanip>

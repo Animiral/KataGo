@@ -2639,6 +2639,74 @@ void NeuralNet::getOutput(
 
 }
 
+void NeuralNet::getOutputTrunk(
+  ComputeHandle* gpuHandle,
+  InputBuffers* inputBuffers,
+  int numBatchEltsFilled,
+  float* trunkBuffer
+) {
+  assert(numBatchEltsFilled <= inputBuffers->maxBatchSize);
+  assert(numBatchEltsFilled > 0);
+  const int batchSize = numBatchEltsFilled;
+  const int nnXLen = gpuHandle->nnXLen;
+  const int nnYLen = gpuHandle->nnYLen;
+  const int version = gpuHandle->model->version;
+
+  const int numSpatialFeatures = NNModelVersion::getNumSpatialFeatures(version);
+  const int numGlobalFeatures = NNModelVersion::getNumGlobalFeatures(version);
+  assert(numSpatialFeatures == gpuHandle->model->numInputChannels);
+  assert(numSpatialFeatures * nnXLen * nnYLen == inputBuffers->singleInputElts);
+  assert(numGlobalFeatures == inputBuffers->singleInputGlobalElts);
+
+  Buffers* buffers = gpuHandle->buffers.get();
+  ScratchBuffers* scratch = gpuHandle->scratch.get();
+
+  assert(!gpuHandle->usingFP16); // not implemented here
+  assert(!gpuHandle->inputsUseNHWC); // not implemented here
+  assert(gpuHandle->requireExactNNLen); // only process 19x19 boards
+
+  assert(inputBuffers->userInputBufferBytes == buffers->inputBufBytes);
+  assert(inputBuffers->userInputGlobalBufferBytes == buffers->inputGlobalBufBytes);
+  assert(inputBuffers->singleInputBytes == inputBuffers->singleInputElts*4);
+  assert(inputBuffers->singleInputGlobalBytes == inputBuffers->singleInputGlobalElts*4);
+
+  CUDA_ERR("getOutputTrunk",cudaMemcpy(buffers->inputBuf, inputBuffers->userInputBuffer, inputBuffers->singleInputBytes*batchSize, cudaMemcpyHostToDevice));
+  CUDA_ERR("getOutputTrunk",cudaMemcpy(buffers->inputGlobalBuf, inputBuffers->userInputGlobalBuffer, inputBuffers->singleInputGlobalBytes*batchSize, cudaMemcpyHostToDevice));
+
+  // used in pooling layers to normalize for board size
+  SizedBuf<void*> mask(scratch->allocator, scratch->getBufSizeXY(1));
+  SizedBuf<void*> maskFloat(scratch->allocator, scratch->getBufSizeXYFloat(1));
+  SizedBuf<void*> maskSum(scratch->allocator, scratch->getBufSizeFloat(1));
+
+  void* maskBuf = mask.buf;
+  float* maskFloatBuf = (float*)maskFloat.buf;
+  float* maskSumBuf = (float*)maskSum.buf;
+  customCudaChannel0ExtractNCHW((const float*)buffers->inputBuf, (float*)maskBuf, batchSize, gpuHandle->model->numInputChannels, nnXLen*nnYLen);
+  CUDA_ERR("modelExtractMask",cudaPeekAtLastError());
+  fillMaskFloatBufAndMaskSumBuf(maskBuf,maskFloatBuf,maskSumBuf,gpuHandle->usingFP16,batchSize,nnXLen,nnYLen);
+
+  //Set to NULL to signal downstream that this buf doesn't need to be used
+  maskBuf = NULL;
+  maskFloatBuf = NULL;
+  //The global pooling structures need this no matter what, for normalizing based on this and its sqrt.
+  //maskSumBuf = NULL;
+
+  gpuHandle->model->trunk->apply(
+    gpuHandle->cudaHandles.get(),
+    scratch,
+    batchSize,
+    buffers->inputBuf,
+    buffers->inputGlobalBuf,
+    maskBuf,
+    maskSumBuf,
+    buffers->trunkBuf,
+    buffers->workspaceBuf,
+    buffers->workspaceBytes
+  );
+
+  CUDA_ERR("getOutputTrunk",cudaMemcpy(trunkBuffer, buffers->trunkBuf, inputBuffers->singleTrunkResultBytes*batchSize, cudaMemcpyDeviceToHost));
+}
+
 //TESTING ----------------------------------------------------------------------------------
 
 
@@ -2700,7 +2768,6 @@ bool NeuralNet::testEvaluateConv(
 
   return true;
 }
-
 
 bool NeuralNet::testEvaluateBatchNorm(
   const BatchNormLayerDesc* desc,

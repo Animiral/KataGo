@@ -45,6 +45,7 @@ gatekeeper : Poll directory for new nets and match them against the latest net s
 
 ---Strength Model subcommands---------
 
+position_tensor : Precomputes tensors for one move (inputs, trunk output)
 extract_features : Precomputes recent move features for all games in the dataset.
 extract_pocfeatures : Precomputes proof-of-concept model move features for all games in the dataset.
 strength_analysis : Runs an engine to analyze the strength of a player.
@@ -78,6 +79,8 @@ static int handleSubcommand(const string& subcommand, const vector<string>& args
   vector<string> subArgs(args.begin()+1,args.end());
   if(subcommand == "analysis")
     return MainCmds::analysis(subArgs);
+  if(subcommand == "position_tensor")
+    return MainCmds::position_tensor(subArgs);
   if(subcommand == "extract_features")
     return MainCmds::extract_features(subArgs);
   if(subcommand == "extract_pocfeatures")

@@ -6,7 +6,7 @@
 #include "../program/setup.h"
 #include "../program/playutils.h"
 #include "../program/play.h"
-#include "../program/strengthmodel.h"
+#include "../strmodel/strengthmodel.h"
 #include "../command/commandline.h"
 #include "../main.h"
 #include <iomanip>

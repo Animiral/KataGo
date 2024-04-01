@@ -122,6 +122,20 @@ namespace NeuralNet {
     std::vector<NNOutput*>& outputs
   );
 
+  //Perform only the trunk part of the Neural Net ---------------------------------------------------------
+
+  // Preconditions:
+  // buffers have been filled with input data for all batches.
+  // trunkBuffer has enough space allocated to hold all batch results.
+
+  // Result: mutably writes the results of the numBatchEltsFilled many parallel neural net evaluations
+  // into the trunkBuffer.
+  void getOutputTrunk(
+    ComputeHandle* computeHandle,
+    InputBuffers* buffers,
+    int numBatchEltsFilled,
+    float* trunkBuffer
+  );
 
   //FOR TESTING -----------------------------------------------------------------------
   //For all of the below, the input buffers must have exactly the size expected of the input for the operation.
