@@ -2413,6 +2413,12 @@ struct InputBuffers {
 InputBuffers* NeuralNet::createInputBuffers(const LoadedModel* loadedModel, int maxBatchSize, int nnXLen, int nnYLen) {
   return new InputBuffers(loadedModel,maxBatchSize,nnXLen,nnYLen);
 }
+float* NeuralNet::getSpatialBuffer(InputBuffers* buffers) {
+  return buffers->userInputBuffer;
+}
+float* NeuralNet::getGlobalBuffer(InputBuffers* buffers) {
+  return buffers->userInputGlobalBuffer;
+}
 void NeuralNet::freeInputBuffers(InputBuffers* inputBuffers) {
   delete inputBuffers;
 }

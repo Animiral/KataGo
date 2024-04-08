@@ -236,6 +236,7 @@ add_executable(katago
   program/playsettings.cpp
   program/play.cpp
   program/selfplaymanager.cpp
+  strmodel/precompute.cpp
   strmodel/strengthmodel.cpp
   strmodel/dataset.cpp
   ${GIT_HEADER_FILE_ALWAYS_UPDATED}

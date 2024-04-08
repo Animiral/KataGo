@@ -9,12 +9,14 @@
 #include "../program/play.h"
 #include "../strmodel/dataset.h"
 #include "../strmodel/strengthmodel.h"
+#include "../strmodel/precompute.h"
 #include "../command/commandline.h"
 #include "../neuralnet/modelversion.h"
 #include "../neuralnet/nneval.h"
 #include "../main.h"
 #include <iomanip>
 #include <memory>
+#include <zip.h>
 
 using namespace std;
 
@@ -23,38 +25,25 @@ void getTensorsForPosition(const Board& board, const BoardHistory& history, Play
 namespace
 {
 
-  void loadParams(ConfigParser& config, SearchParams& params, Player& perspective, Player defaultPerspective) {
-    params = Setup::loadSingleParams(config,Setup::SETUP_FOR_ANALYSIS);
-    perspective = Setup::parseReportAnalysisWinrates(config,defaultPerspective);
-    //Set a default for conservativePass that differs from matches or selfplay
-    if(!config.contains("conservativePass") && !config.contains("conservativePass0"))
-      params.conservativePass = true;
-  }
+  constexpr int maxMoves = 1000; // capacity for moves
 
-  struct RecentMovesTensor {
-    int count; // first dimension size actually written
-    unique_ptr<NumpyBuffer<float>> binaryInputNCHW; // game position tensors
-    unique_ptr<NumpyBuffer<float>> locInputNCHW; // 1-hot move location tensors
-    unique_ptr<NumpyBuffer<float>> globalInputNC; // global position tensors
-    unique_ptr<NumpyBuffer<float>> trunkOutputNCHW; // NN state after last batch norm, without heads
-    unique_ptr<NumpyBuffer<float>> pickNC; // trunk output at indicated location
-  };
-
-  void writeRecentMovesNpz(const RecentMovesTensor& tensors, const string& filePath);
-  void writeTrunkNpz(const RecentMovesTensor& tensors, const string& filePath);
-  void writePickNpz(const RecentMovesTensor& tensors, const string& filePath);
+  unique_ptr<LoadedModel, void(*)(LoadedModel*)> loadModel(string file);
+  void readFromSgf(const string& sgfPath, int moveNumber, const string& modelFile);
+  void readFromZip(const string& zipPath, int moveNumber);
   void dumpTensor(string path, float* data, size_t N);
+
+  ConfigParser cfg;
+  Logger* theLogger = nullptr;
 
 }
 
 int MainCmds::position_tensor(const vector<string>& args) {
   Board::initHash();
   ScoreValue::initTables();
-  Rand seedRand;
 
-  ConfigParser cfg;
   string modelFile;
   string sgfPath;
+  string zipPath;
   int moveNumber;
 
   KataGoCommandLine cmd("Precompute move features for all games in the dataset.");
@@ -63,15 +52,18 @@ int MainCmds::position_tensor(const vector<string>& args) {
     cmd.addModelFileArg();
     cmd.setShortUsageArgLimit();
 
-    TCLAP::ValueArg<string> sgfArg("","sgf","SGF file with the game to extract.",true,"","SGF_FILE");
+    TCLAP::ValueArg<string> sgfArg("","sgf","SGF file with the game to extract.",false,"","SGF_FILE");
     cmd.add(sgfArg);
-    TCLAP::ValueArg<int> moveNumberArg("","move-number","Extract the position at this move number, starting at 0.",true,10,"MOVE_NUMBER");
+    TCLAP::ValueArg<string> zipArg("","zip","ZIP file with precomputed trunk to extract.",false,"","ZIP_FILE");
+    cmd.add(zipArg);
+    TCLAP::ValueArg<int> moveNumberArg("","move-number","Extract the position or trunk at this move number/index, starting at 0.",true,10,"MOVE_NUMBER");
     cmd.add(moveNumberArg);
     cmd.addOverrideConfigArg();
     cmd.parseArgs(args);
 
     modelFile = cmd.getModelFile();
     sgfPath = sgfArg.getValue();
+    zipPath = zipArg.getValue();
     moveNumber = moveNumberArg.getValue();
 
     cmd.getConfig(cfg);
@@ -82,113 +74,24 @@ int MainCmds::position_tensor(const vector<string>& args) {
   }
   cfg.applyAlias("numSearchThreadsPerAnalysisThread", "numSearchThreads");
 
-  const int numAnalysisThreads = cfg.getInt("numAnalysisThreads",1,16384);
-  if(numAnalysisThreads <= 0 || numAnalysisThreads > 16384)
-    throw StringError("Invalid value for numAnalysisThreads: " + Global::intToString(numAnalysisThreads));
-
   const bool logToStdoutDefault = false;
   const bool logToStderrDefault = true;
   Logger logger(&cfg, logToStdoutDefault, logToStderrDefault);
-  const bool logToStderr = logger.isLoggingToStderr();
+  theLogger = &logger;
 
   //Check for unused config keys
   cfg.warnUnusedKeys(cerr,&logger);
 
   logger.write("Loaded config "+ cfg.getFileName());
-
-  // LOAD NN MODEL
-  SearchParams searchParams;
-  Player defaultPerspective;
-  loadParams(cfg, searchParams, defaultPerspective, C_EMPTY);
-  NNEvaluator* nnEval;
-  {
-    Setup::initializeSession(cfg);
-    const int maxConcurrentEvals = numAnalysisThreads * searchParams.numThreads * 2 + 16; // * 2 + 16 just to give plenty of headroom
-    const int expectedConcurrentEvals = numAnalysisThreads * searchParams.numThreads;
-    const bool defaultRequireExactNNLen = false;
-    const int defaultMaxBatchSize = -1;
-    const bool disableFP16 = true;
-    const string expectedSha256 = "";
-    nnEval = Setup::initializeNNEvaluator(
-      modelFile,modelFile,expectedSha256,cfg,logger,seedRand,maxConcurrentEvals,expectedConcurrentEvals,
-      NNPos::MAX_BOARD_LEN,NNPos::MAX_BOARD_LEN,defaultMaxBatchSize,defaultRequireExactNNLen,disableFP16,
-      Setup::SETUP_FOR_ANALYSIS
-    );
-  }
-
-  logger.write("Loaded model "+ modelFile);
-  cmd.logOverrides(logger);
-
-  logger.write("Starting to extract tensors from move " + Global::intToString(moveNumber) + " in " + sgfPath + "...");
   logger.write(Version::getKataGoVersionForHelp());
-  if(!logToStderr) {
+  if(!logger.isLoggingToStderr())
     cerr << Version::getKataGoVersionForHelp() << endl;
-  }
 
-  auto sgf = std::unique_ptr<CompactSgf>(CompactSgf::loadFile(sgfPath));
-  const auto& moves = sgf->moves;
-  if(moveNumber >= moves.size()) {
-    logger.write(Global::strprintf("Error: Requested move %d, but game only has %d moves.", moveNumber, moves.size()));
-    return 0;
-  }
-  Rules rules = sgf->getRulesOrFailAllowUnspecified(Rules::getTrompTaylorish());
-  Board board;
-  BoardHistory history;
-  Player initialPla;
-  sgf->setupInitialBoardAndHist(rules, board, initialPla, history);
+  if(!sgfPath.empty())
+    readFromSgf(sgfPath, moveNumber, modelFile);
 
-  for(int i = 0; i < moveNumber; i++) {
-    Move move = moves[i];
-    history.makeBoardMoveTolerant(board, move.loc, move.pla);
-  }
-
-  RecentMovesTensor rmt;
-  Move move = moves[moveNumber];
-
-  int nnXLen = 19;
-  int nnYLen = 19;
-  int modelVersion = 14;
-  int numSpatialFeatures = NNModelVersion::getNumSpatialFeatures(modelVersion);
-  int numGlobalFeatures = NNModelVersion::getNumGlobalFeatures(modelVersion);
-  int numTrunkFeatures = 384;  // strength model is limited to this size
-
-  rmt.binaryInputNCHW.reset(new NumpyBuffer<float>(std::vector<int64_t>({1, numSpatialFeatures, nnXLen, nnYLen})));
-  rmt.locInputNCHW.reset(new NumpyBuffer<float>(std::vector<int64_t>({1, 1, nnXLen, nnYLen})));
-  rmt.globalInputNC.reset(new NumpyBuffer<float>(std::vector<int64_t>({1, numGlobalFeatures})));
-  rmt.trunkOutputNCHW.reset(new NumpyBuffer<float>(std::vector<int64_t>({1, numTrunkFeatures, nnXLen, nnYLen})));
-  rmt.pickNC.reset(new NumpyBuffer<float>(std::vector<int64_t>({1, numTrunkFeatures})));
-  rmt.count = 1;
-
-  MiscNNInputParams nnInputParams;
-  nnInputParams.symmetry = 0;
-  nnInputParams.policyOptimism = 0;
-  bool inputsUseNHWC = false;
-  NNInputs::fillRowV7(board, history, move.pla, nnInputParams, nnXLen, nnYLen, inputsUseNHWC, rmt.binaryInputNCHW->data, rmt.globalInputNC->data);
-
-  NNResultBuf nnResultBuf;
-  // evaluate initial board once for initial prev-features
-  nnEval->evaluate(board, history, move.pla, nnInputParams, nnResultBuf, false, false);
-  assert(nnResultBuf.hasResult);
-  const NNOutput* nnout = nnResultBuf.result.get();
-  memcpy(rmt.trunkOutputNCHW->data, nnout->trunkData, nnXLen * nnYLen * numTrunkFeatures * sizeof(float));
-
-  float* pickNC = rmt.pickNC->data;
-  int pos = NNPos::locToPos(move.loc, board.x_size, nnXLen, nnYLen);
-  if(pos >= 0 && pos < nnXLen * nnYLen) {
-    for(int i = 0; i < numTrunkFeatures; i++) {
-      pickNC[i] = rmt.trunkOutputNCHW->data[pos + i * nnXLen * nnYLen];
-    }
-  }
-  else {
-    std::fill(pickNC, pickNC + numTrunkFeatures, 0);
-  }
-
-  string sgfPathWithoutExt = Global::chopSuffix(sgfPath, ".sgf");
-  writeRecentMovesNpz(rmt, sgfPathWithoutExt + "_Inputs.npz");
-  writeTrunkNpz(rmt, sgfPathWithoutExt + "_Trunk.npz");
-  writePickNpz(rmt, sgfPathWithoutExt + "_Pick.npz");
-  dumpTensor(sgfPathWithoutExt + "_Trunk.txt", rmt.trunkOutputNCHW->data, rmt.trunkOutputNCHW->dataLen);
-  dumpTensor(sgfPathWithoutExt + "_Pick.txt", rmt.pickNC->data, rmt.pickNC->dataLen);
+  if(!zipPath.empty())
+    readFromZip(zipPath, moveNumber);
 
   ScoreValue::freeTables();
   logger.write("All cleaned up, quitting");
@@ -197,31 +100,40 @@ int MainCmds::position_tensor(const vector<string>& args) {
 
 namespace {
 
-void writeRecentMovesNpz(const RecentMovesTensor& tensors, const string& filePath) {
-  ZipFile zipFile(filePath);
-  uint64_t numBytes = tensors.binaryInputNCHW->prepareHeaderWithNumRows(tensors.count);
-  zipFile.writeBuffer("binaryInputNCHW", tensors.binaryInputNCHW->dataIncludingHeader, numBytes);
-  numBytes = tensors.locInputNCHW->prepareHeaderWithNumRows(tensors.count);
-  zipFile.writeBuffer("locInputNCHW", tensors.locInputNCHW->dataIncludingHeader, numBytes);
-  numBytes = tensors.globalInputNC->prepareHeaderWithNumRows(tensors.count);
-  zipFile.writeBuffer("globalInputNC", tensors.globalInputNC->dataIncludingHeader, numBytes);
-  zipFile.close();
+unique_ptr<LoadedModel, void(*)(LoadedModel*)> loadModel(string file) {
+  return unique_ptr<LoadedModel, void(*)(LoadedModel*)>(NeuralNet::loadModelFile(file, ""), &NeuralNet::freeLoadedModel);
 }
 
-void writeTrunkNpz(const RecentMovesTensor& tensors, const string& filePath) {
-  ZipFile zipFile(filePath);
-  uint64_t numBytes = tensors.trunkOutputNCHW->prepareHeaderWithNumRows(tensors.count);
-  zipFile.writeBuffer("trunkOutputNCHW", tensors.trunkOutputNCHW->dataIncludingHeader, numBytes);
-  numBytes = tensors.locInputNCHW->prepareHeaderWithNumRows(tensors.count);
-  zipFile.writeBuffer("locInputNCHW", tensors.locInputNCHW->dataIncludingHeader, numBytes);
-  zipFile.close();
+void readFromSgf(const string& sgfPath, int moveNumber, const string& modelFile) {
+  auto model = loadModel(modelFile);
+  theLogger->write("Loaded model "+ modelFile);
+  PrecomputeFeatures extractor(*model, maxMoves);
+
+  theLogger->write("Starting to extract tensors from move " + Global::intToString(moveNumber) + " in " + sgfPath + "...");
+  extractor.readFeaturesFromSgf(sgfPath);
+  extractor.evaluate();
+  extractor.selectIndex(moveNumber);
+
+  string sgfPathWithoutExt = Global::chopSuffix(sgfPath, ".sgf");
+  extractor.writeInputsToNpz(sgfPathWithoutExt + "_Inputs.npz");
+  extractor.writeOutputsToNpz(sgfPathWithoutExt + "_Trunk.npz");
+  extractor.writePicksToNpz(sgfPathWithoutExt + "_Pick.npz");
+  size_t dataLen = extractor.count*PrecomputeFeatures::numTrunkFeatures*PrecomputeFeatures::nnXLen*PrecomputeFeatures::nnYLen;
+  dumpTensor(sgfPathWithoutExt + "_Trunk.txt", extractor.trunkOutputNCHW->data, dataLen);
+  // dumpTensor(sgfPathWithoutExt + "_Pick.txt", pickNC->data, pickNC->dataLen);
 }
 
-void writePickNpz(const RecentMovesTensor& tensors, const string& filePath) {
-  ZipFile zipFile(filePath);
-  uint64_t numBytes = tensors.pickNC->prepareHeaderWithNumRows(tensors.count);
-  zipFile.writeBuffer("pickNC", tensors.pickNC->dataIncludingHeader, numBytes);
-  zipFile.close();
+void readFromZip(const string& zipPath, int moveNumber) {
+  theLogger->write("Starting to extract tensors from move " + Global::intToString(moveNumber) + " in " + zipPath + "...");
+
+  PrecomputeFeatures extractor(maxMoves);
+  extractor.readFeaturesFromZip(zipPath);
+  extractor.selectIndex(moveNumber);
+
+  string zipPathWithoutExt = Global::chopSuffix(zipPath, ".zip");
+  size_t dataLen = extractor.count*PrecomputeFeatures::numTrunkFeatures*PrecomputeFeatures::nnXLen*PrecomputeFeatures::nnYLen;
+  dumpTensor(zipPathWithoutExt + "_TrunkUnzip.txt", extractor.trunkOutputNCHW->data, dataLen);
+  // dumpTensor(zipPathWithoutExt + "_PickUnzip.txt", pickNC->data, pickNC->dataLen);
 }
 
 void dumpTensor(string path, float* data, size_t N) {

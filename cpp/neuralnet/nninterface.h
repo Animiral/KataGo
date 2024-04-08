@@ -96,6 +96,8 @@ namespace NeuralNet {
   //Input Buffers ---------------------------------------------------------------
 
   InputBuffers* createInputBuffers(const LoadedModel* loadedModel, int maxBatchSize, int nnXLen, int nnYLen);
+  float* getSpatialBuffer(InputBuffers* buffers);
+  float* getGlobalBuffer(InputBuffers* buffers);
   void freeInputBuffers(InputBuffers* buffers);
 
   //The neural net takes in 2 tensors as input.
