@@ -12,6 +12,9 @@
 #include "../main.h"
 #include <iomanip>
 #include <memory>
+#include <thread>
+#include <mutex>
+#include <functional>
 #include <zip.h>
 
 using namespace std;
@@ -38,9 +41,19 @@ namespace
     int windowSize; // Extract up to this many recent moves
   };
 
+  // works on a subset of the dataset
+  struct ProcessGamesWorker {
+    std::vector<Dataset::Game>::iterator begin;
+    std::vector<Dataset::Game>::iterator end;
+    LoadedModel* loadedModel;
+    string featureDir;
+    std::function<void(const string&)> progressCallback;
+    void operator()(); // to be called as its own thread
+  };
+
   Parameters parseArgs(const vector<string>& args);
   unique_ptr<LoadedModel, void(*)(LoadedModel*)> loadModel(string file);
-  void evaluateTrunkToFile(const Dataset::Game& game, Player pla, PrecomputeFeatures& extractor, const string& featureDir);
+  void processGame(const Dataset::Game& game, Player pla, PrecomputeFeatures& extractor, const string& featureDir);
 }
 
 int MainCmds::extract_features(const vector<string>& args) {
@@ -50,7 +63,6 @@ int MainCmds::extract_features(const vector<string>& args) {
   Parameters params = parseArgs(args);
   Logger logger(params.cfg.get(), false, true);
   auto loadedModel = loadModel(params.modelFile);
-  PrecomputeFeatures extractor(*loadedModel, maxMoves);
 
   logger.write("Starting to extract features...");
   logger.write(Version::getKataGoVersionForHelp());
@@ -64,15 +76,31 @@ int MainCmds::extract_features(const vector<string>& args) {
   logger.write(Global::intToString(markedGames) + " games marked. Extracting...");
 
   size_t progress = 0;
-  for(size_t i = 0; i < dataset.games.size(); i++) {
-    const Dataset::Game& game = dataset.games[i];
-    if(Dataset::Game::batch == game.set) {
-      evaluateTrunkToFile(game, C_BLACK, extractor, params.featureDir);
-      evaluateTrunkToFile(game, C_WHITE, extractor, params.featureDir);
-      logger.write(Global::strprintf("%d/%d: %s", progress, markedGames, game.sgfPath.c_str()));
-      progress++;
-    }
+  std::mutex progressMutex;
+  auto progressCallback = [&] (const string& sgfPath) {
+    std::lock_guard<std::mutex> lock(progressMutex);
+    progress++;
+    logger.write(Global::strprintf("%d/%d: %s", progress, markedGames, sgfPath.c_str()));
+  };
+
+  int threadCount = 2;
+  vector<ProcessGamesWorker> workers;
+  vector<std::thread> threads;
+  for(int i = 0; i < threadCount; i++) {
+    size_t firstIndex = i * dataset.games.size() / threadCount;
+    size_t lastIndex = (i+1) * dataset.games.size() / threadCount;
+    workers.push_back({
+      dataset.games.begin() + firstIndex,
+      dataset.games.begin() + lastIndex,  
+      loadedModel.get(),
+      params.featureDir,
+      progressCallback
+    });
+    threads.emplace_back(workers[i]);
   }
+
+  for(auto& thread : threads)
+    thread.join();
 
   ScoreValue::freeTables();
   logger.write("All cleaned up, quitting");
@@ -123,7 +151,19 @@ unique_ptr<LoadedModel, void(*)(LoadedModel*)> loadModel(string file) {
   //   std::fill(pickNC, pickNC + numTrunkFeatures, 0);
   // }
 
-void evaluateTrunkToFile(const Dataset::Game& game, Player pla, PrecomputeFeatures& extractor, const string& featureDir) {
+void ProcessGamesWorker::operator()() {
+  PrecomputeFeatures extractor(*loadedModel, maxMoves);
+  for(auto it = begin; it != end; ++it) {
+    Dataset::Game& game = *it;
+    if(Dataset::Game::batch == game.set) {
+      processGame(game, C_BLACK, extractor, featureDir);
+      processGame(game, C_WHITE, extractor, featureDir);
+      progressCallback(game.sgfPath);
+    }
+  }
+}
+
+void processGame(const Dataset::Game& game, Player pla, PrecomputeFeatures& extractor, const string& featureDir) {
   extractor.clear();
   extractor.readFeaturesFromSgf(game.sgfPath, pla);
   extractor.evaluate();
@@ -135,6 +175,8 @@ void evaluateTrunkToFile(const Dataset::Game& game, Player pla, PrecomputeFeatur
   string sgfPathWithoutExt = Global::chopSuffix(game.sgfPath, ".sgf");
   string featuresPath = Global::strprintf("%s/%s_%sTrunk.zip", featureDir.c_str(), sgfPathWithoutExt.c_str(), color.c_str());
   extractor.writeFeaturesToZip(featuresPath);
+  // string inputsPath = Global::strprintf("%s/%s_%sInputs.npz", featureDir.c_str(), sgfPathWithoutExt.c_str(), color.c_str());
+  // extractor.writeInputsToNpz(inputsPath);
 }
 
 

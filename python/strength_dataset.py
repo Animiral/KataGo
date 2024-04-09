@@ -295,7 +295,7 @@ if __name__ == "__main__":
     def dumpTrunkOutput(npzPath, outPath, katamodel):
         with np.load(npzPath) as npz:
             binaryInputNCHW = torch.from_numpy(npz["binaryInputNCHW"]).to(device)
-            locInputNCHW = torch.from_numpy(npz["locInputNCHW"]).to(device)
+            # locInputNCHW = torch.from_numpy(npz["locInputNCHW"]).to(device)
             globalInputNC = torch.from_numpy(npz["globalInputNC"]).to(device)
         del npz
 
@@ -307,6 +307,8 @@ if __name__ == "__main__":
             for value in out.flatten():
                 file.write(f"{value.item():.6f}\n")
 
-    dumpTrunkOutput("stuff/13056-Input.npz", "stuff/13056-PyOutput.txt", katamodel)
-    dumpTrunkOutput("stuff/13788-Input.npz", "stuff/13788-PyOutput.txt", katamodel)
-    dumpTrunkOutput("stuff/13801-Input.npz", "stuff/13801-PyOutput.txt", katamodel)
+
+    dumpTrunkOutput("featurecache/dataset/2006/02/10/13281-DaoLin-udhar_nabresh_BlackInputs.npz", "stuff/13281-PyOutput.txt", katamodel)
+    # dumpTrunkOutput("stuff/13056-Input.npz", "stuff/13056-PyOutput.txt", katamodel)
+    # dumpTrunkOutput("stuff/13788-Input.npz", "stuff/13788-PyOutput.txt", katamodel)
+    # dumpTrunkOutput("stuff/13801-Input.npz", "stuff/13801-PyOutput.txt", katamodel)
