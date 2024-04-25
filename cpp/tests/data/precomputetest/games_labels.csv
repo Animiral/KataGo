@@ -1,0 +1,4 @@
+File,Player White,Player Black,WhiteRating,BlackRating,Score,Set
+sgfs/precomputetests/1-alice-bob.sgf,bob,alice,1280,1540,1,T
+sgfs/precomputetests/2-alice-claire.sgf,claire,alice,1252,1616,1,E
+sgfs/precomputetests/3-bob-alice.sgf,alice,bob,1127,1206,1,V
