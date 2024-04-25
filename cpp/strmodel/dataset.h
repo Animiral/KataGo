@@ -5,7 +5,22 @@
 #include <string>
 #include <vector>
 #include "core/logger.h"
+#include "core/rand.h"
+#include "game/board.h"
 #include "neuralnet/strengthnet.h"
+
+// represents a set of moves, possibly spread over several games
+struct SelectedMoves {
+  struct Move { int index; float* trunk; };
+  struct Moveset {
+    std::vector<Move> moves;
+    void insert(int index);
+  };
+
+  std::map<std::string, Moveset> bygame;
+};
+
+SelectedMoves merge(SelectedMoves&& lhs, SelectedMoves&& rhs);
 
 // The dataset is a chronological sequence of games with move features.
 class Dataset {
@@ -51,6 +66,8 @@ public:
   void store(const std::string& path) const;
   // retrieve up to bufsize moves played by the player in games before the game index, return # retrieved
   size_t getRecentMoves(size_t player, size_t game, MoveFeatures* buffer, size_t bufsize);
+  // identify up to capacity moves played by the player in games before the game index (without attached data)
+  SelectedMoves getRecentMoves(::Player player, size_t game, size_t capacity);
   // randomly assign the `set` member of every game; *Part in [0.0, 1.0], testPart = 1-trainingPart-validationPart
   void randomSplit(Rand& rand, float trainingPart, float validationPart);
   // randomly assign set=batch to the given nr of training games (and reset previous batch to set=training)

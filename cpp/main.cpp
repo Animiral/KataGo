@@ -71,6 +71,7 @@ runsearchtestsv9 : Run a bunch more things using a neural net and dump details t
 runselfplayinittests : Run some tests involving selfplay training init using a neural net and dump details to stdout
 runsekitrainwritetests : Run some tests involving seki train output
 runstrengthmodeltests: Run strength model related tests
+runprecomputetests: Run tests of precomputation for strength model
 
 )%%" << endl;
 }
@@ -143,6 +144,8 @@ static int handleSubcommand(const string& subcommand, const vector<string>& args
     return MainCmds::runnnbatchingtest(subArgs);
   else if(subcommand == "runstrengthmodeltests")
     return MainCmds::runstrengthmodeltests(subArgs);
+  else if(subcommand == "runprecomputetests")
+    return MainCmds::runprecomputetests(subArgs);
   else if(subcommand == "runtinynntests")
     return MainCmds::runtinynntests(subArgs);
   else if(subcommand == "runnnevalcanarytests")

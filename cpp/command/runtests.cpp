@@ -325,6 +325,17 @@ int MainCmds::runstrengthmodeltests(const vector<string>& args) {
   return 0;
 }
 
+int MainCmds::runprecomputetests(const vector<string>& args) {
+  if(args.size() != 1) {
+    cerr << "precomputetests takes no arguments" << endl;
+    return 1;
+  }
+
+  Tests::runPrecomputeTests();
+
+  return 0;
+}
+
 int MainCmds::runnnbatchingtest(const vector<string>& args) {
   if(args.size() != 5) {
     cerr << "Must supply exactly four arguments: MODEL_FILE INPUTSNHWC CUDANHWC FP16" << endl;

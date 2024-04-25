@@ -42,6 +42,7 @@ namespace MainCmds {
   int runsleeptest(const std::vector<std::string>& args);
   int runconfigtests(const std::vector<std::string>& args);
   int runstrengthmodeltests(const std::vector<std::string>& args);
+  int runprecomputetests(const std::vector<std::string>& args);
 
   int samplesgfs(const std::vector<std::string>& args);
   int dataminesgfs(const std::vector<std::string>& args);

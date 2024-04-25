@@ -262,6 +262,7 @@ add_executable(katago
   tests/testsearchmisc.cpp
   tests/teststrengthmodel.cpp
   tests/teststrengthnet.cu
+  tests/testprecompute.cpp
   tests/testtime.cpp
   tests/testtrainingwrite.cpp
   tests/testnn.cpp

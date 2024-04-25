@@ -65,6 +65,8 @@ namespace Tests {
   void runStrengthNetTests();
   //teststrengthmodel.cpp
   void runStrengthModelTests(const std::string& modelFile, const std::string& listFile, const std::string& featureDir);
+  // precompute.cpp
+  void runPrecomputeTests();
 
   //testtime.cpp
   void runTimeControlsTests();

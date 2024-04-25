@@ -64,7 +64,6 @@ struct MoveFeatures {
 
 namespace Tests {
   void runStrengthNetTests();
-  void runStrengthModelTests();
 }
 
 // Implements the strength network.
@@ -117,7 +116,6 @@ private:
   void freeTensors() noexcept;
 
   friend void Tests::runStrengthNetTests();
-  friend void Tests::runStrengthModelTests();
 
 };
 

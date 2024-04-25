@@ -8,6 +8,13 @@
 
 using std::map;
 
+void SelectedMoves::Moveset::insert(int index) {
+  for(auto& m : moves)
+    if(m.index == index)
+      return;
+  moves.push_back({index, nullptr});
+}
+
 void Dataset::load(const string& path, const string& featureDir) {
   std::ifstream istrm(path);
   if (!istrm.is_open())
@@ -140,6 +147,49 @@ void Dataset::store(const string& path) const {
   ostrm.close();
 }
 
+namespace {
+
+int countMovesOfColor(const string& sgfPath, Player pla) {
+  auto sgf = std::unique_ptr<CompactSgf>(CompactSgf::loadFile(sgfPath));
+  const auto& moves = sgf->moves;
+  Rules rules = sgf->getRulesOrFailAllowUnspecified(Rules::getTrompTaylorish());
+  Board board;
+  BoardHistory history;
+  Player initialPla;
+  sgf->setupInitialBoardAndHist(rules, board, initialPla, history);
+
+  return std::count_if(moves.begin(), moves.end(), [pla](Move m) { return pla == m.pla; });
+}
+
+int findMovesOfColor(const string& sgfPath, Player pla, SelectedMoves& selectedMoves, size_t capacity) {
+  auto sgf = std::unique_ptr<CompactSgf>(CompactSgf::loadFile(sgfPath));
+  const auto& moves = sgf->moves;
+  Rules rules = sgf->getRulesOrFailAllowUnspecified(Rules::getTrompTaylorish());
+  Board board;
+  BoardHistory history;
+  Player initialPla;
+  sgf->setupInitialBoardAndHist(rules, board, initialPla, history);
+  vector<int> foundMoves;
+
+  for(int i = 0; i < moves.size(); i++) {
+    if(pla == moves[i].pla) {
+      foundMoves.push_back(i);
+    }
+  }
+
+  // insert only up to capacity, with preference for later moves
+  auto& gameMoves = selectedMoves.bygame[sgfPath];
+  size_t start = capacity > foundMoves.size() ? 0 : foundMoves.size() - capacity;
+
+  for(size_t i = start; i < foundMoves.size(); i++) {
+    gameMoves.insert(foundMoves[i]);
+  }
+
+  return foundMoves.size() - start;
+}
+
+}
+
 size_t Dataset::getRecentMoves(size_t player, size_t game, MoveFeatures* buffer, size_t bufsize) {
   assert(player < players.size());
   assert(game <= games.size());
@@ -181,6 +231,34 @@ size_t Dataset::getRecentMoves(size_t player, size_t game, MoveFeatures* buffer,
   return count;
 }
 
+SelectedMoves Dataset::getRecentMoves(::Player player, size_t game, size_t capacity) {
+  SelectedMoves selectedMoves;
+  const Game& gameData = games[game];
+  auto& info = P_BLACK == player ? gameData.black : gameData.white;
+  // Traverse game history
+  size_t playerId = info.player;
+  int historic = info.prevGame; // index of prev game
+
+  while(0 < capacity && historic >= 0) {
+    const Dataset::Game& historicGame = games[historic];
+
+    ::Player pla;
+    if(playerId == historicGame.black.player) {
+      pla = P_BLACK;
+      historic = historicGame.black.prevGame;
+    } else if(playerId == historicGame.white.player) {
+      pla = P_WHITE;
+      historic = historicGame.white.prevGame;
+    } else {
+      throw StringError(Global::strprintf("Game %s does not contain player %d (name=%s)",
+        historicGame.sgfPath.c_str(), playerId, players[playerId].name.c_str()));
+    }
+    capacity -= findMovesOfColor(historicGame.sgfPath, pla, selectedMoves, capacity);
+  }
+
+  return selectedMoves;
+}
+
 void Dataset::randomSplit(Rand& rand, float trainingPart, float validationPart) {
   assert(trainingPart >= 0);
   assert(validationPart >= 0);
@@ -210,22 +288,6 @@ void Dataset::randomBatch(Rand& rand, size_t batchSize) {
     games[trainingIdxs[batchIdxs[i]]].set = Game::batch;
   for(size_t i = batchSize; i < batchIdxs.size(); i++)
     games[trainingIdxs[batchIdxs[i]]].set = Game::training;
-}
-
-namespace {
-
-int countMovesOfColor(const string& sgfPath, Player pla) {
-  auto sgf = std::unique_ptr<CompactSgf>(CompactSgf::loadFile(sgfPath));
-  const auto& moves = sgf->moves;
-  Rules rules = sgf->getRulesOrFailAllowUnspecified(Rules::getTrompTaylorish());
-  Board board;
-  BoardHistory history;
-  Player initialPla;
-  sgf->setupInitialBoardAndHist(rules, board, initialPla, history);
-
-  return std::count_if(moves.begin(), moves.end(), [pla](Move m) { return pla == m.pla; });
-}
-
 }
 
 void Dataset::markRecentGames(int windowSize, Logger* logger) {
