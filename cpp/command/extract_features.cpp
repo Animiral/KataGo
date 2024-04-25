@@ -16,13 +16,15 @@
 #include <mutex>
 #include <functional>
 #include <zip.h>
-
-using namespace std;
+#include "../core/using.h"
 
 namespace
 {
 
-  constexpr int maxMoves = 1000; // capacity for moves
+  using std::unique_ptr;
+  using std::make_unique;
+
+  constexpr int maxMoves = 200; // capacity for moves
 
   void loadParams(ConfigParser& config, SearchParams& params, Player& perspective, Player defaultPerspective) {
     params = Setup::loadSingleParams(config,Setup::SETUP_FOR_ANALYSIS);
@@ -43,17 +45,31 @@ namespace
 
   // works on a subset of the dataset
   struct ProcessGamesWorker {
-    std::vector<Dataset::Game>::iterator begin;
-    std::vector<Dataset::Game>::iterator end;
+    ProcessGamesWorker() = default;
+    ProcessGamesWorker(
+      vector<Dataset::Game>::iterator begin_,
+      vector<Dataset::Game>::iterator end_,
+      LoadedModel* loadedModel_,
+      const string& featureDir_,
+      std::function<void(const string&)> progressCallback
+    );
+
+    vector<Dataset::Game>::iterator begin;
+    vector<Dataset::Game>::iterator end;
     LoadedModel* loadedModel;
     string featureDir;
     std::function<void(const string&)> progressCallback;
+
     void operator()(); // to be called as its own thread
+    void processGame(const Dataset::Game& game);
+    void processResults();
+    void outputZip(PrecomputeFeatures::Result result, const char* player);
+
+    unique_ptr<PrecomputeFeatures> extractor;
   };
 
   Parameters parseArgs(const vector<string>& args);
   unique_ptr<LoadedModel, void(*)(LoadedModel*)> loadModel(string file);
-  void processGame(const Dataset::Game& game, Player pla, PrecomputeFeatures& extractor, const string& featureDir);
 }
 
 int MainCmds::extract_features(const vector<string>& args) {
@@ -96,7 +112,7 @@ int MainCmds::extract_features(const vector<string>& args) {
       params.featureDir,
       progressCallback
     });
-    threads.emplace_back(workers[i]);
+    threads.emplace_back([&workers,i](){workers[i]();});
   }
 
   for(auto& thread : threads)
@@ -151,33 +167,74 @@ unique_ptr<LoadedModel, void(*)(LoadedModel*)> loadModel(string file) {
   //   std::fill(pickNC, pickNC + numTrunkFeatures, 0);
   // }
 
+ProcessGamesWorker::ProcessGamesWorker(
+  vector<Dataset::Game>::iterator begin_,
+  vector<Dataset::Game>::iterator end_,
+  LoadedModel* loadedModel_,
+  const string& featureDir_,
+  std::function<void(const string&)> progressCallback_
+)
+: begin(begin_),
+  end(end_),
+  loadedModel(loadedModel_),
+  featureDir(featureDir_),
+  progressCallback(progressCallback_),
+  extractor(nullptr)
+{}
+
 void ProcessGamesWorker::operator()() {
-  PrecomputeFeatures extractor(*loadedModel, maxMoves);
+  extractor.reset(new PrecomputeFeatures(*loadedModel, maxMoves));
   for(auto it = begin; it != end; ++it) {
     Dataset::Game& game = *it;
     if(Dataset::Game::batch == game.set) {
-      processGame(game, C_BLACK, extractor, featureDir);
-      processGame(game, C_WHITE, extractor, featureDir);
+      processGame(game);
       progressCallback(game.sgfPath);
     }
   }
+  processResults();
 }
 
-void processGame(const Dataset::Game& game, Player pla, PrecomputeFeatures& extractor, const string& featureDir) {
-  extractor.clear();
-  extractor.readFeaturesFromSgf(game.sgfPath, pla);
-  extractor.evaluate();
+void ProcessGamesWorker::processGame(const Dataset::Game& game) {
+  auto sgf = std::unique_ptr<CompactSgf>(CompactSgf::loadFile(game.sgfPath));
+  const auto& moves = sgf->moves;
+  Rules rules = sgf->getRulesOrFailAllowUnspecified(Rules::getTrompTaylorish());
+  Board board;
+  BoardHistory history;
+  Player initialPla;
+  sgf->setupInitialBoardAndHist(rules, board, initialPla, history);
 
-  string color;
-  if(C_BLACK == pla) color = "Black";
-  if(C_WHITE == pla) color = "White";
+  for(int turnIdx = 0; turnIdx < moves.size(); turnIdx++) {
+    Move move = moves[turnIdx];
+    extractor->addBoard(board, history, move);
+    if(extractor->count >= extractor->capacity) {
+      processResults();
+      extractor->flip();
+    }
 
-  string sgfPathWithoutExt = Global::chopSuffix(game.sgfPath, ".sgf");
-  string featuresPath = Global::strprintf("%s/%s_%sTrunk.zip", featureDir.c_str(), sgfPathWithoutExt.c_str(), color.c_str());
-  extractor.writeFeaturesToZip(featuresPath);
-  // string inputsPath = Global::strprintf("%s/%s_%sInputs.npz", featureDir.c_str(), sgfPathWithoutExt.c_str(), color.c_str());
-  // extractor.writeInputsToNpz(inputsPath);
+    // apply move
+    bool suc = history.makeBoardMoveTolerant(board, move.loc, move.pla);
+    if(!suc)
+      throw StringError(Global::strprintf("Illegal move %s at %s", PlayerIO::playerToString(move.pla), Location::toString(move.loc, sgf->xSize, sgf->ySize)));
+  }
+  extractor->endGame(game.sgfPath);
 }
 
+void ProcessGamesWorker::processResults() {
+  extractor->evaluate();
+  while(extractor->hasResult()) {
+    PrecomputeFeatures::Result result = extractor->nextResult();
+    PrecomputeFeatures::Result blackResult, whiteResult;
+    std::tie(blackResult, whiteResult) = extractor->splitBlackWhite(result);
+    outputZip(blackResult, "Black");
+    outputZip(whiteResult, "White");
+  }
+}
+
+void ProcessGamesWorker::outputZip(PrecomputeFeatures::Result result, const char* player)
+{
+  string sgfPathWithoutExt = Global::chopSuffix(result.sgfPath, ".sgf");
+  string featuresPath = Global::strprintf("%s/%s_%sTrunk.zip", featureDir.c_str(), sgfPathWithoutExt.c_str(), player);
+  PrecomputeFeatures::writeResultToZip(result, featuresPath);
+}
 
 }

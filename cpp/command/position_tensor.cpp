@@ -110,7 +110,23 @@ void readFromSgf(const string& sgfPath, int moveNumber, const string& modelFile)
   PrecomputeFeatures extractor(*model, maxMoves);
 
   theLogger->write("Starting to extract tensors from move " + Global::intToString(moveNumber) + " in " + sgfPath + "...");
-  extractor.readFeaturesFromSgf(sgfPath);
+
+  auto sgf = std::unique_ptr<CompactSgf>(CompactSgf::loadFile(sgfPath));
+  const auto& moves = sgf->moves;
+  Rules rules = sgf->getRulesOrFailAllowUnspecified(Rules::getTrompTaylorish());
+  Board board;
+  BoardHistory history;
+  Player initialPla;
+  sgf->setupInitialBoardAndHist(rules, board, initialPla, history);
+
+  for(int turnIdx = 0; turnIdx < moves.size(); turnIdx++) {
+    Move move = moves[turnIdx];
+    extractor.addBoard(board, history, move);
+    // apply move
+    bool suc = history.makeBoardMoveTolerant(board, move.loc, move.pla);
+    if(!suc)
+      throw StringError(Global::strprintf("Illegal move %s at %s", PlayerIO::playerToString(move.pla), Location::toString(move.loc, sgf->xSize, sgf->ySize)));
+  }
   extractor.evaluate();
   extractor.selectIndex(moveNumber);
 
@@ -118,8 +134,8 @@ void readFromSgf(const string& sgfPath, int moveNumber, const string& modelFile)
   extractor.writeInputsToNpz(sgfPathWithoutExt + "_Inputs.npz");
   extractor.writeOutputsToNpz(sgfPathWithoutExt + "_Trunk.npz");
   extractor.writePicksToNpz(sgfPathWithoutExt + "_Pick.npz");
-  size_t dataLen = extractor.count*PrecomputeFeatures::numTrunkFeatures*PrecomputeFeatures::nnXLen*PrecomputeFeatures::nnYLen;
-  dumpTensor(sgfPathWithoutExt + "_Trunk.txt", extractor.trunkOutputNCHW->data, dataLen);
+  size_t dataLen = extractor.count*PrecomputeFeatures::trunkSize;
+  dumpTensor(sgfPathWithoutExt + "_Trunk.txt", extractor.trunk.data(), dataLen);
   // dumpTensor(sgfPathWithoutExt + "_Pick.txt", pickNC->data, pickNC->dataLen);
 }
 
@@ -131,8 +147,8 @@ void readFromZip(const string& zipPath, int moveNumber) {
   extractor.selectIndex(moveNumber);
 
   string zipPathWithoutExt = Global::chopSuffix(zipPath, ".zip");
-  size_t dataLen = extractor.count*PrecomputeFeatures::numTrunkFeatures*PrecomputeFeatures::nnXLen*PrecomputeFeatures::nnYLen;
-  dumpTensor(zipPathWithoutExt + "_TrunkUnzip.txt", extractor.trunkOutputNCHW->data, dataLen);
+  size_t dataLen = extractor.count*PrecomputeFeatures::trunkSize;
+  dumpTensor(zipPathWithoutExt + "_TrunkUnzip.txt", extractor.trunk.data(), dataLen);
   // dumpTensor(zipPathWithoutExt + "_PickUnzip.txt", pickNC->data, pickNC->dataLen);
 }
 
