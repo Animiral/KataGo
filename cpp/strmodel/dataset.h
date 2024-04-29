@@ -4,23 +4,34 @@
 #include <map>
 #include <string>
 #include <vector>
+#include <memory>
 #include "core/logger.h"
 #include "core/rand.h"
 #include "game/board.h"
 #include "neuralnet/strengthnet.h"
 
+using TrunkOutput = std::vector<float>;
+
 // represents a set of moves, possibly spread over several games
 struct SelectedMoves {
-  struct Move { int index; float* trunk; };
+  struct Move {
+    int index; // 0-based move number in the game
+    Player pla;
+    // output values: filled later
+    std::shared_ptr<TrunkOutput> trunk; // trunk output data
+    int pos; // index into trunk data of move chosen by player
+  };
   struct Moveset {
-    std::vector<Move> moves;
-    void insert(int index);
+    std::vector<Move> moves; // in ascending order
+    void insert(int index, Player pla); // preserves order
+    std::pair<Moveset, Moveset> splitBlackWhite() const;
+    void writeToZip(const std::string& filePath) const;
   };
 
   std::map<std::string, Moveset> bygame;
-};
 
-SelectedMoves merge(SelectedMoves&& lhs, SelectedMoves&& rhs);
+  void merge(const SelectedMoves& rhs); // merge rhs entries into this
+};
 
 // The dataset is a chronological sequence of games with move features.
 class Dataset {
@@ -65,9 +76,9 @@ public:
   void load(const std::string& path, const std::string& featureDir = "");
   void store(const std::string& path) const;
   // retrieve up to bufsize moves played by the player in games before the game index, return # retrieved
-  size_t getRecentMoves(size_t player, size_t game, MoveFeatures* buffer, size_t bufsize);
+  size_t getRecentMoves(size_t player, size_t game, MoveFeatures* buffer, size_t bufsize) const;
   // identify up to capacity moves played by the player in games before the game index (without attached data)
-  SelectedMoves getRecentMoves(::Player player, size_t game, size_t capacity);
+  SelectedMoves getRecentMoves(::Player player, size_t game, size_t capacity) const;
   // randomly assign the `set` member of every game; *Part in [0.0, 1.0], testPart = 1-trainingPart-validationPart
   void randomSplit(Rand& rand, float trainingPart, float validationPart);
   // randomly assign set=batch to the given nr of training games (and reset previous batch to set=training)

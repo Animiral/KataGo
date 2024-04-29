@@ -3,6 +3,7 @@
 #include <vector>
 #include <queue>
 #include "neuralnet/nninterface.h"
+#include "strmodel/dataset.h"
 
 #ifndef STRMODEL_PRECOMPUTE_H
 #define STRMODEL_PRECOMPUTE_H
@@ -57,6 +58,8 @@ public:
 
   void readFeaturesFromZip(const std::string& filePath);
 
+  // copy trunk data to moveset; sizes must match
+  static void writeResultToMoveset(Result result, SelectedMoves::Moveset& moveset);
   // write trunk & loc features in binary format
   static void writeResultToZip(Result result, const std::string& filePath);
   void writeInputsToNpz(const std::string& filePath);

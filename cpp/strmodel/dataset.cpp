@@ -1,18 +1,122 @@
 #include <fstream>
 #include <sstream>
+#include <memory>
+#include <zip.h>
 #include "strmodel/dataset.h"
 #include "game/board.h"
 #include "dataio/sgf.h"
 #include "core/global.h"
 #include "core/using.h"
 
+using std::unique_ptr;
 using std::map;
+using std::move;
+using namespace std::literals;
 
-void SelectedMoves::Moveset::insert(int index) {
+void SelectedMoves::Moveset::insert(int index, Player pla) {
   for(auto& m : moves)
     if(m.index == index)
       return;
-  moves.push_back({index, nullptr});
+  moves.push_back({index, pla, nullptr, -1});
+}
+
+pair<SelectedMoves::Moveset, SelectedMoves::Moveset> SelectedMoves::Moveset::splitBlackWhite() const {
+  vector<Move> blackMoves, whiteMoves;
+  std::copy_if(moves.begin(), moves.end(), std::back_inserter(blackMoves), [](const Move& m){ return P_BLACK == m.pla; });
+  std::copy_if(moves.begin(), moves.end(), std::back_inserter(whiteMoves), [](const Move& m){ return P_WHITE == m.pla; });
+  return { { blackMoves }, { whiteMoves } };
+}
+
+void SelectedMoves::Moveset::writeToZip(const string& filePath) const {
+  int err;
+  unique_ptr<zip_t, decltype(&zip_close)> archive{
+    zip_open(filePath.c_str(), ZIP_CREATE | ZIP_TRUNCATE, &err),
+    &zip_close
+  };
+  if(!archive) {
+    zip_error_t error;
+    zip_error_init_with_code(&error, err);
+    string errstr = zip_error_strerror(&error);
+    zip_error_fini(&error);
+    throw StringError("Error opening zip archive: "s + errstr);
+  }
+
+  // merge individual moves data into contiguous buffers
+  constexpr static int nnXLen = 19;
+  constexpr static int nnYLen = 19;
+  constexpr static int numTrunkFeatures = 384;  // strength model is limited to this size
+  constexpr static int trunkSize = nnXLen*nnYLen*numTrunkFeatures;
+  vector<int> indexBuffer(moves.size());
+  vector<float> trunkBuffer(moves.size() * trunkSize);
+  vector<int> posBuffer(moves.size());
+  for(size_t i = 0; i < moves.size(); i++) {
+    const Move& move = moves[i];
+    assert(move.trunk->size() == trunkSize);
+    indexBuffer[i] = move.index;
+    std::copy(move.trunk->begin(), move.trunk->end(), &trunkBuffer[i*trunkSize]);
+    posBuffer[i] = move.pos;
+  }
+
+  // add index data
+  {
+    unique_ptr<zip_source_t, decltype(&zip_source_free)> source{
+      zip_source_buffer(archive.get(), indexBuffer.data(), indexBuffer.size()*sizeof(int), 0),
+      &zip_source_free
+    };
+    if(!source)
+      throw StringError("Error creating zip source: "s + zip_strerror(archive.get()));
+
+    if(zip_add(archive.get(), "index.bin", source.get()) < 0)
+      throw StringError("Error adding index.bin to zip archive: "s + zip_strerror(archive.get()));
+    source.release(); // after zip_add, source is managed by libzip
+  }
+
+  // add trunk data
+  {
+    unique_ptr<zip_source_t, decltype(&zip_source_free)> source{
+      zip_source_buffer(archive.get(), trunkBuffer.data(), trunkBuffer.size()*sizeof(float), 0),
+      &zip_source_free
+    };
+    if(!source)
+      throw StringError("Error creating zip source: "s + zip_strerror(archive.get()));
+
+    if(zip_add(archive.get(), "trunk.bin", source.get()) < 0)
+      throw StringError("Error adding trunk.bin to zip archive: "s + zip_strerror(archive.get()));
+    source.release(); // after zip_add, source is managed by libzip
+  }
+
+  // add movepos data
+  {
+    unique_ptr<zip_source_t, decltype(&zip_source_free)> source{
+      zip_source_buffer(archive.get(), posBuffer.data(), posBuffer.size()*sizeof(int), 0),
+      &zip_source_free
+    };
+    if(!source)
+      throw StringError("Error creating zip source: "s + zip_strerror(archive.get()));
+
+    if(zip_add(archive.get(), "movepos.bin", source.get()) < 0)
+      throw StringError("Error adding movepos.bin to zip archive: "s + zip_strerror(archive.get()));
+    source.release(); // after zip_add, source is managed by libzip
+  }
+
+  zip_t* archivep = archive.release();
+  if (zip_close(archivep) != 0)
+    throw StringError("Error writing zip archive: "s + zip_strerror(archivep));
+}
+
+void SelectedMoves::merge(const SelectedMoves& rhs) {
+  for(auto kv : rhs.bygame) {
+    Moveset& mset = bygame[kv.first];
+    auto before = mset.moves.begin();
+    for(Move& m : kv.second.moves) {
+      while(before < mset.moves.end() && before->index < m.index)
+        before++; // find next place to insert move in ascending order
+
+      if(mset.moves.end() == before || before->index != m.index) { // no duplicate inserts
+        before = ++mset.moves.insert(before, m);
+      }
+    }
+  }
 }
 
 void Dataset::load(const string& path, const string& featureDir) {
@@ -182,7 +286,7 @@ int findMovesOfColor(const string& sgfPath, Player pla, SelectedMoves& selectedM
   size_t start = capacity > foundMoves.size() ? 0 : foundMoves.size() - capacity;
 
   for(size_t i = start; i < foundMoves.size(); i++) {
-    gameMoves.insert(foundMoves[i]);
+    gameMoves.insert(foundMoves[i], pla);
   }
 
   return foundMoves.size() - start;
@@ -190,7 +294,7 @@ int findMovesOfColor(const string& sgfPath, Player pla, SelectedMoves& selectedM
 
 }
 
-size_t Dataset::getRecentMoves(size_t player, size_t game, MoveFeatures* buffer, size_t bufsize) {
+size_t Dataset::getRecentMoves(size_t player, size_t game, MoveFeatures* buffer, size_t bufsize) const {
   assert(player < players.size());
   assert(game <= games.size());
 
@@ -200,7 +304,7 @@ size_t Dataset::getRecentMoves(size_t player, size_t game, MoveFeatures* buffer,
       gameIndex = players[player].lastOccurrence;
   }
   else {
-    Game* gm = &games[game];
+    const Game* gm = &games[game];
     if(player == gm->black.player)
       gameIndex = gm->black.prevGame;
     else if(player == gm->white.player)
@@ -216,7 +320,7 @@ size_t Dataset::getRecentMoves(size_t player, size_t game, MoveFeatures* buffer,
       gameIndex--; // this is just defense to ensure that we find a game which the player occurs in
     if(gameIndex < 0)
       break;
-    Game* gm = &games[gameIndex];
+    const Game* gm = &games[gameIndex];
     bool isBlack = player == gm->black.player;
     const auto& features = isBlack ? gm->black.features : gm->white.features;
     for(int i = features.size(); i > 0 && outptr > buffer;)
@@ -231,7 +335,7 @@ size_t Dataset::getRecentMoves(size_t player, size_t game, MoveFeatures* buffer,
   return count;
 }
 
-SelectedMoves Dataset::getRecentMoves(::Player player, size_t game, size_t capacity) {
+SelectedMoves Dataset::getRecentMoves(::Player player, size_t game, size_t capacity) const {
   SelectedMoves selectedMoves;
   const Game& gameData = games[game];
   auto& info = P_BLACK == player ? gameData.black : gameData.white;
