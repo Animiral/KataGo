@@ -31,6 +31,7 @@ struct SelectedMoves {
   std::map<std::string, Moveset> bygame;
 
   void merge(const SelectedMoves& rhs); // merge rhs entries into this
+  void copyTrunkFrom(const SelectedMoves& rhs); // get trunk/pos data into this
 };
 
 // The dataset is a chronological sequence of games with move features.

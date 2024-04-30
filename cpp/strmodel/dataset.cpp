@@ -119,6 +119,24 @@ void SelectedMoves::merge(const SelectedMoves& rhs) {
   }
 }
 
+void SelectedMoves::copyTrunkFrom(const SelectedMoves& rhs) {
+  for(auto& kv : bygame) {
+    vector<Move>& mymoves = kv.second.moves;
+    const vector<Move>& rmoves = rhs.bygame.at(kv.first).moves;
+    // both mymoves and rmoves are ordered by move index
+    size_t rindex = 0;
+    for(size_t i = 0; i < mymoves.size(); i++) {
+      while(rindex < rmoves.size() && rmoves[rindex].index != mymoves[i].index)
+        rindex++;
+      if(rindex >= rmoves.size())
+        throw StringError(Global::strprintf("Game %s move %d missing from precomputed data.", kv.first.c_str(), mymoves[i].index));
+
+      mymoves[i].trunk = rmoves[rindex].trunk;
+      mymoves[i].pos = rmoves[rindex].pos;
+    }
+  }
+}
+
 void Dataset::load(const string& path, const string& featureDir) {
   std::ifstream istrm(path);
   if (!istrm.is_open())

@@ -26,14 +26,6 @@ using std::make_unique;
 
 constexpr int maxMoves = 1000; // capacity for moves
 
-void loadParams(ConfigParser& config, SearchParams& params, Player& perspective, Player defaultPerspective) {
-  params = Setup::loadSingleParams(config,Setup::SETUP_FOR_ANALYSIS);
-  perspective = Setup::parseReportAnalysisWinrates(config,defaultPerspective);
-  //Set a default for conservativePass that differs from matches or selfplay
-  if(!config.contains("conservativePass") && !config.contains("conservativePass0"))
-    params.conservativePass = true;
-}
-
 // params of this command
 struct Parameters {
   unique_ptr<ConfigParser> cfg;
@@ -43,12 +35,31 @@ struct Parameters {
   int windowSize; // Extract up to this many recent moves
 };
 
+Parameters parseArgs(const vector<string>& args);
+unique_ptr<LoadedModel, void(*)(LoadedModel*)> loadModel(string file);
+// output one specific moveset
+void outputZip(
+  const SelectedMoves::Moveset& result,
+  const string& sgfPath,
+  const string& featureDir,
+  const char* player,
+  const char* title
+);
+// output all movesets in selected moves into one combined zip
+void outputZip(
+  const SelectedMoves& selectedMoves,
+  const string& sgfPath,
+  const string& featureDir,
+  const char* player,
+  const char* title
+);
+
 // takes a subset of the dataset games, feeds them into NN and prepares the results
 class Worker {
  public:
   Worker() = default;
   Worker(
-    SelectedMoves moves_,
+    SelectedMoves& allMoves_, // shared lookup structure for all workers
     LoadedModel* loadedModel_,
     const string& featureDir_,
     std::function<void(const string&)> progressCallback
@@ -56,9 +67,10 @@ class Worker {
 
   void operator()(); // to be called as its own thread
 
+  SelectedMoves* allMoves; // get trunks on all these
+
  private:
 
-  SelectedMoves moves; // get trunks on all these
   LoadedModel* loadedModel;
   string featureDir;
   std::function<void(const string&)> progressCallback;
@@ -66,12 +78,8 @@ class Worker {
 
   void processGame(const string& sgfPath, SelectedMoves::Moveset& moveset);
   void processResults();
-  void outputZip(const SelectedMoves::Moveset& result, const string& sgfPath, const char* player) const;
 
 };
-
-Parameters parseArgs(const vector<string>& args);
-unique_ptr<LoadedModel, void(*)(LoadedModel*)> loadModel(string file);
 
 }
 
@@ -119,14 +127,14 @@ int MainCmds::extract_features(const vector<string>& args) {
     logger.write(Global::strprintf("%d/%d: %s", progress, total, sgfPath.c_str()));
   };
 
-  int threadCount = 1;
+  int threadCount = 1; // TODO: support more threads
   vector<Worker> workers;
   vector<std::thread> threads;
   for(int i = 0; i < threadCount; i++) {
     // size_t firstIndex = i * recentAll.bygame.size() / threadCount;
     // size_t lastIndex = (i+1) * recentAll.bygame.size() / threadCount;
     workers.push_back({
-      recentAll,
+      recentAll, // TODO: divide jobs between workers
       // recentAll.bygame.begin() + firstIndex,
       // recentAll.bygame.begin() + lastIndex,  
       loadedModel.get(),
@@ -138,6 +146,14 @@ int MainCmds::extract_features(const vector<string>& args) {
 
   for(auto& thread : threads)
     thread.join();
+
+  // all trunks are now precomputed; piece them back together into recent move sets and output ZIPs
+  for(RecentMoves& moves : recentByGame) {
+    moves.sel.copyTrunkFrom(recentAll);
+    assert(P_BLACK == moves.pla || P_WHITE == moves.pla);
+    const char* player = P_BLACK == moves.pla ? "Black" : "White";
+    outputZip(moves.sel, dataset.games[moves.game].sgfPath, params.featureDir, player, "Recent");
+  }
 
   ScoreValue::freeTables();
   logger.write("All cleaned up, quitting");
@@ -177,6 +193,32 @@ unique_ptr<LoadedModel, void(*)(LoadedModel*)> loadModel(string file) {
   return unique_ptr<LoadedModel, void(*)(LoadedModel*)>(NeuralNet::loadModelFile(file, ""), &NeuralNet::freeLoadedModel);
 }
 
+void outputZip(
+  const SelectedMoves::Moveset& result,
+  const string& sgfPath,
+  const string& featureDir,
+  const char* player,
+  const char* title
+) {
+  string sgfPathWithoutExt = Global::chopSuffix(sgfPath, ".sgf");
+  string featuresPath = Global::strprintf("%s/%s_%s%s.zip", featureDir.c_str(), sgfPathWithoutExt.c_str(), player, title);
+  result.writeToZip(featuresPath);
+}
+
+void outputZip(
+  const SelectedMoves& selectedMoves,
+  const string& sgfPath,
+  const string& featureDir,
+  const char* player,
+  const char* title
+) {
+  SelectedMoves::Moveset combined;
+  for(auto& kv : selectedMoves.bygame) {
+    combined.moves.insert(combined.moves.end(), kv.second.moves.begin(), kv.second.moves.end());
+  }
+  outputZip(combined, sgfPath, featureDir, player, title);
+}
+
   // float* pickNC = rmt.pickNC->data + idx * numTrunkFeatures;
   // int pos = NNPos::locToPos(move.loc, board.x_size, nnXLen, nnYLen);
   // if(pos >= 0 && pos < nnXLen * nnYLen) {
@@ -189,12 +231,12 @@ unique_ptr<LoadedModel, void(*)(LoadedModel*)> loadModel(string file) {
   // }
 
 Worker::Worker(
-  SelectedMoves moves_,
+  SelectedMoves& allMoves_,
   LoadedModel* loadedModel_,
   const string& featureDir_,
   std::function<void(const string&)> progressCallback_
 )
-: moves(std::move(moves_)),
+: allMoves(&allMoves_),
   loadedModel(loadedModel_),
   featureDir(featureDir_),
   progressCallback(progressCallback_),
@@ -203,7 +245,7 @@ Worker::Worker(
 
 void Worker::operator()() {
   extractor.reset(new PrecomputeFeatures(*loadedModel, maxMoves));
-  for(auto& gm : moves.bygame) {
+  for(auto& gm : allMoves->bygame) {
     const string& sgfPath = gm.first;
     SelectedMoves::Moveset& moveset = gm.second;
     processGame(sgfPath, moveset);
@@ -248,19 +290,12 @@ void Worker::processResults() {
   extractor->evaluate();
   while(extractor->hasResult()) {
     PrecomputeFeatures::Result result = extractor->nextResult();
-    SelectedMoves::Moveset& moveset = moves.bygame[result.sgfPath];
+    SelectedMoves::Moveset& moveset = allMoves->bygame[result.sgfPath];
     PrecomputeFeatures::writeResultToMoveset(result, moveset);
     auto splitSet = moveset.splitBlackWhite();
-    outputZip(splitSet.first, result.sgfPath, "Black");
-    outputZip(splitSet.second, result.sgfPath, "White");
+    outputZip(splitSet.first, result.sgfPath, featureDir, "Black", "Trunk");
+    outputZip(splitSet.second, result.sgfPath, featureDir, "White", "Trunk");
   }
-}
-
-void Worker::outputZip(const SelectedMoves::Moveset& result, const string& sgfPath, const char* player) const
-{
-  string sgfPathWithoutExt = Global::chopSuffix(sgfPath, ".sgf");
-  string featuresPath = Global::strprintf("%s/%s_%sTrunk.zip", featureDir.c_str(), sgfPathWithoutExt.c_str(), player);
-  result.writeToZip(featuresPath);
 }
 
 }
