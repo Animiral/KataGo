@@ -56,8 +56,6 @@ public:
 
   std::pair<Result, Result> splitBlackWhite(Result result);
 
-  void readFeaturesFromZip(const std::string& filePath);
-
   // copy trunk data to moveset; sizes must match
   static void writeResultToMoveset(Result result, SelectedMoves::Moveset& moveset);
   // write trunk & loc features in binary format

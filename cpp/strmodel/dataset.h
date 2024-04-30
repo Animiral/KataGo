@@ -26,6 +26,13 @@ struct SelectedMoves {
     void insert(int index, Player pla); // preserves order
     std::pair<Moveset, Moveset> splitBlackWhite() const;
     void writeToZip(const std::string& filePath) const;
+    static Moveset readFromZip(const std::string& filePath);
+
+   private:
+    constexpr static int nnXLen = 19;
+    constexpr static int nnYLen = 19;
+    constexpr static int numTrunkFeatures = 384;  // strength model is limited to this size
+    constexpr static int trunkSize = nnXLen*nnYLen*numTrunkFeatures;
   };
 
   std::map<std::string, Moveset> bygame;

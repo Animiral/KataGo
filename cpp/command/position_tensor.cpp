@@ -119,36 +119,33 @@ void readFromSgf(const string& sgfPath, int moveNumber, const string& modelFile)
   Player initialPla;
   sgf->setupInitialBoardAndHist(rules, board, initialPla, history);
 
-  for(int turnIdx = 0; turnIdx < moves.size(); turnIdx++) {
+  for(int turnIdx = 0; turnIdx < moveNumber; turnIdx++) {
     Move move = moves[turnIdx];
-    extractor.addBoard(board, history, move);
     // apply move
     bool suc = history.makeBoardMoveTolerant(board, move.loc, move.pla);
     if(!suc)
       throw StringError(Global::strprintf("Illegal move %s at %s", PlayerIO::playerToString(move.pla), Location::toString(move.loc, sgf->xSize, sgf->ySize)));
   }
+  Move move = moves[moveNumber];
+  extractor.addBoard(board, history, move);
+  extractor.endGame(sgfPath);
   extractor.evaluate();
-  extractor.selectIndex(moveNumber);
+  assert(extractor.hasResult());
+  PrecomputeFeatures::Result result = extractor.nextResult();
 
   string sgfPathWithoutExt = Global::chopSuffix(sgfPath, ".sgf");
-  extractor.writeInputsToNpz(sgfPathWithoutExt + "_Inputs.npz");
-  extractor.writeOutputsToNpz(sgfPathWithoutExt + "_Trunk.npz");
-  extractor.writePicksToNpz(sgfPathWithoutExt + "_Pick.npz");
-  size_t dataLen = extractor.count*PrecomputeFeatures::trunkSize;
-  dumpTensor(sgfPathWithoutExt + "_Trunk.txt", extractor.trunk.data(), dataLen);
+  // extractor.writeInputsToNpz(sgfPathWithoutExt + "_Inputs.npz");
+  // extractor.writeOutputsToNpz(sgfPathWithoutExt + "_Trunk.npz");
+  // extractor.writePicksToNpz(sgfPathWithoutExt + "_Pick.npz");
+  dumpTensor(sgfPathWithoutExt + "_Trunk.txt", result.trunk, PrecomputeFeatures::trunkSize);
   // dumpTensor(sgfPathWithoutExt + "_Pick.txt", pickNC->data, pickNC->dataLen);
 }
 
 void readFromZip(const string& zipPath, int moveNumber) {
   theLogger->write("Starting to extract tensors from move " + Global::intToString(moveNumber) + " in " + zipPath + "...");
-
-  PrecomputeFeatures extractor(maxMoves);
-  extractor.readFeaturesFromZip(zipPath);
-  extractor.selectIndex(moveNumber);
-
+  auto moveset = SelectedMoves::Moveset::readFromZip(zipPath);
   string zipPathWithoutExt = Global::chopSuffix(zipPath, ".zip");
-  size_t dataLen = extractor.count*PrecomputeFeatures::trunkSize;
-  dumpTensor(zipPathWithoutExt + "_TrunkUnzip.txt", extractor.trunk.data(), dataLen);
+  dumpTensor(zipPathWithoutExt + "_TrunkUnzip.txt", moveset.moves.at(moveNumber).trunk->data(), PrecomputeFeatures::trunkSize);
   // dumpTensor(zipPathWithoutExt + "_PickUnzip.txt", pickNC->data, pickNC->dataLen);
 }
 

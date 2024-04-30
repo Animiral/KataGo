@@ -12,6 +12,7 @@ using std::unique_ptr;
 using std::map;
 using std::move;
 using namespace std::literals;
+using Global::strprintf;
 
 void SelectedMoves::Moveset::insert(int index, Player pla) {
   for(auto& m : moves)
@@ -42,10 +43,6 @@ void SelectedMoves::Moveset::writeToZip(const string& filePath) const {
   }
 
   // merge individual moves data into contiguous buffers
-  constexpr static int nnXLen = 19;
-  constexpr static int nnYLen = 19;
-  constexpr static int numTrunkFeatures = 384;  // strength model is limited to this size
-  constexpr static int trunkSize = nnXLen*nnYLen*numTrunkFeatures;
   vector<int> indexBuffer(moves.size());
   vector<float> trunkBuffer(moves.size() * trunkSize);
   vector<int> posBuffer(moves.size());
@@ -104,6 +101,76 @@ void SelectedMoves::Moveset::writeToZip(const string& filePath) const {
     throw StringError("Error writing zip archive: "s + zip_strerror(archivep));
 }
 
+namespace {
+
+// extract one file in the zip, run checks, and extract each stored element with the readSingle handler
+template<typename ReadSingle>
+void readFromZipPart(zip_t& archive, uint64_t index, const char* expectedName, uint64_t expectedSize, uint64_t count, ReadSingle&& readSingle) {
+  string name = zip_get_name(&archive, index, ZIP_FL_ENC_RAW);
+  if(expectedName != name)
+      throw StringError(strprintf("Name of file %d in archive is unexpectedly not %s, but %s", index, expectedName, name.c_str()));
+
+  zip_stat_t stat;
+  if(0 != zip_stat_index(&archive, index, 0, &stat))
+    throw StringError(strprintf("Error getting %s file information: %s", name.c_str(), zip_strerror(&archive)));
+  if(stat.size != expectedSize)
+    throw StringError(strprintf("%s data has %d bytes, but expected %d bytes", name.c_str(), stat.size, expectedSize));
+
+  unique_ptr<zip_file_t, decltype(&zip_fclose)> file{
+    zip_fopen_index(&archive, index, ZIP_RDONLY),
+    &zip_fclose
+  };
+  if(!file)
+    throw StringError(strprintf("Error opening %s in zip archive: %s", name.c_str(), zip_strerror(&archive)));
+
+  for(uint64_t i = 0; i < count; i++) {
+    if(!readSingle(*file, i))
+      throw StringError(strprintf("Error reading zipped data of %s, index %d: %s", name.c_str(), i, zip_strerror(&archive)));
+  }
+}
+
+}
+
+SelectedMoves::Moveset SelectedMoves::Moveset::readFromZip(const string& filePath) {
+  int err;
+  unique_ptr<zip_t, decltype(&zip_close)> archive{
+    zip_open(filePath.c_str(), ZIP_RDONLY, &err),
+    &zip_close
+  };
+  if(!archive) {
+    zip_error_t error;
+    zip_error_init_with_code(&error, err);
+    string errstr = zip_error_strerror(&error);
+    zip_error_fini(&error);
+    throw StringError("Error opening zip archive: "s + errstr);
+  }
+
+  int countEntries = zip_get_num_entries(archive.get(), 0);
+  if(3 != countEntries)
+    throw StringError(strprintf("Expected exactly three files in the archive, got %d.", countEntries));
+
+  // find out how many positions/trunks are present in the archive
+  zip_stat_t stat;
+  if(0 != zip_stat_index(archive.get(), 0, 0, &stat))
+    throw StringError("Error getting stat of first file in archive: "s + zip_strerror(archive.get()));
+  uint64_t expectedCount = stat.size / sizeof(int);
+  Moveset moveset{vector<Move>(expectedCount)};
+
+  readFromZipPart(*archive, 0, "index.bin", expectedCount*sizeof(int), expectedCount, [&moveset](zip_file_t& file, uint64_t i) {
+    return sizeof(int) == zip_fread(&file, &moveset.moves.at(i).index, sizeof(int));
+  });
+  readFromZipPart(*archive, 1, "trunk.bin", expectedCount*trunkSize*sizeof(float), expectedCount, [&moveset](zip_file_t& file, uint64_t i) {
+    std::shared_ptr<TrunkOutput>& trunk = moveset.moves.at(i).trunk;
+    trunk.reset(new TrunkOutput(trunkSize));
+    return trunkSize*sizeof(float) == zip_fread(&file, trunk->data(), trunkSize*sizeof(float));
+  });
+  readFromZipPart(*archive, 2, "movepos.bin", expectedCount*sizeof(int), expectedCount, [&moveset](zip_file_t& file, uint64_t i) {
+    return sizeof(int) == zip_fread(&file, &moveset.moves.at(i).pos, sizeof(int));
+  });
+
+  return moveset;
+}
+
 void SelectedMoves::merge(const SelectedMoves& rhs) {
   for(auto kv : rhs.bygame) {
     Moveset& mset = bygame[kv.first];
@@ -129,7 +196,7 @@ void SelectedMoves::copyTrunkFrom(const SelectedMoves& rhs) {
       while(rindex < rmoves.size() && rmoves[rindex].index != mymoves[i].index)
         rindex++;
       if(rindex >= rmoves.size())
-        throw StringError(Global::strprintf("Game %s move %d missing from precomputed data.", kv.first.c_str(), mymoves[i].index));
+        throw StringError(strprintf("Game %s move %d missing from precomputed data.", kv.first.c_str(), mymoves[i].index));
 
       mymoves[i].trunk = rmoves[rindex].trunk;
       mymoves[i].pos = rmoves[rindex].pos;
@@ -372,7 +439,7 @@ SelectedMoves Dataset::getRecentMoves(::Player player, size_t game, size_t capac
       pla = P_WHITE;
       historic = historicGame.white.prevGame;
     } else {
-      throw StringError(Global::strprintf("Game %s does not contain player %d (name=%s)",
+      throw StringError(strprintf("Game %s does not contain player %d (name=%s)",
         historicGame.sgfPath.c_str(), playerId, players[playerId].name.c_str()));
     }
     capacity -= findMovesOfColor(historicGame.sgfPath, pla, selectedMoves, capacity);
@@ -439,7 +506,7 @@ void Dataset::markRecentGames(int windowSize, Logger* logger) {
           pla = P_WHITE;
           historic = historicGame.white.prevGame;
         } else {
-          throw StringError(Global::strprintf("Game %s does not contain player %d (name=%s)",
+          throw StringError(strprintf("Game %s does not contain player %d (name=%s)",
             historicGame.sgfPath.c_str(), playerId, players[playerId].name.c_str()));
         }
         idx += countMovesOfColor(historicGame.sgfPath, pla);
@@ -469,8 +536,8 @@ size_t Dataset::getOrInsertNameIndex(const std::string& name) {
 void Dataset::loadPocFeatures(const std::string& featureDir) {
   for(Game& game : games) {
     string sgfPathWithoutExt = Global::chopSuffix(game.sgfPath, ".sgf");
-    string blackFeaturesPath = Global::strprintf("%s/%s_BlackFeatures.bin", featureDir.c_str(), sgfPathWithoutExt.c_str());
-    string whiteFeaturesPath = Global::strprintf("%s/%s_WhiteFeatures.bin", featureDir.c_str(), sgfPathWithoutExt.c_str());
+    string blackFeaturesPath = strprintf("%s/%s_BlackFeatures.bin", featureDir.c_str(), sgfPathWithoutExt.c_str());
+    string whiteFeaturesPath = strprintf("%s/%s_WhiteFeatures.bin", featureDir.c_str(), sgfPathWithoutExt.c_str());
     game.black.features = readPocFeaturesFromFile(blackFeaturesPath);
     game.white.features = readPocFeaturesFromFile(whiteFeaturesPath);
   }
