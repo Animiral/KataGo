@@ -21,6 +21,21 @@ void SelectedMoves::Moveset::insert(int index, Player pla) {
   moves.push_back({index, pla, nullptr, -1});
 }
 
+void SelectedMoves::Moveset::merge(const SelectedMoves::Moveset& rhs) {
+  auto before = moves.begin();
+  for(const Move& m : rhs.moves) {
+    while(before < moves.end() && before->index < m.index)
+      before++; // find next place to insert move in ascending order
+
+    if(moves.end() == before || before->index != m.index) { // no duplicate inserts
+      before = ++moves.insert(before, m);
+    }
+    if(moves.end() != before && before->index == m.index) { // in doubt, pick rhs data
+      *before = m;
+    }
+  }
+}
+
 pair<SelectedMoves::Moveset, SelectedMoves::Moveset> SelectedMoves::Moveset::splitBlackWhite() const {
   vector<Move> blackMoves, whiteMoves;
   std::copy_if(moves.begin(), moves.end(), std::back_inserter(blackMoves), [](const Move& m){ return P_BLACK == m.pla; });
@@ -131,7 +146,7 @@ void readFromZipPart(zip_t& archive, uint64_t index, const char* expectedName, u
 
 }
 
-SelectedMoves::Moveset SelectedMoves::Moveset::readFromZip(const string& filePath) {
+SelectedMoves::Moveset SelectedMoves::Moveset::readFromZip(const string& filePath, Player pla) {
   int err;
   unique_ptr<zip_t, decltype(&zip_close)> archive{
     zip_open(filePath.c_str(), ZIP_RDONLY, &err),
@@ -168,6 +183,7 @@ SelectedMoves::Moveset SelectedMoves::Moveset::readFromZip(const string& filePat
     return sizeof(int) == zip_fread(&file, &moveset.moves.at(i).pos, sizeof(int));
   });
 
+  std::for_each(moveset.moves.begin(), moveset.moves.end(), [pla](Move& m) { m.pla = pla; });
   return moveset;
 }
 
@@ -179,15 +195,7 @@ size_t SelectedMoves::size() const {
 void SelectedMoves::merge(const SelectedMoves& rhs) {
   for(auto kv : rhs.bygame) {
     Moveset& mset = bygame[kv.first];
-    auto before = mset.moves.begin();
-    for(Move& m : kv.second.moves) {
-      while(before < mset.moves.end() && before->index < m.index)
-        before++; // find next place to insert move in ascending order
-
-      if(mset.moves.end() == before || before->index != m.index) { // no duplicate inserts
-        before = ++mset.moves.insert(before, m);
-      }
-    }
+    mset.merge(kv.second);
   }
 }
 
