@@ -171,6 +171,11 @@ SelectedMoves::Moveset SelectedMoves::Moveset::readFromZip(const string& filePat
   return moveset;
 }
 
+size_t SelectedMoves::size() const {
+  auto addSize = [](size_t a, const std::pair<string, Moveset>& kv) { return a + kv.second.moves.size(); };
+  return std::accumulate(bygame.begin(), bygame.end(), size_t(0), addSize);
+}
+
 void SelectedMoves::merge(const SelectedMoves& rhs) {
   for(auto kv : rhs.bygame) {
     Moveset& mset = bygame[kv.first];

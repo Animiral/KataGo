@@ -18,8 +18,11 @@
 #include <cstdlib>
 #include <cmath>
 #include <string>
+#include <sstream>
 #include <vector>
 #include <memory>
+#include <chrono>
+#include <type_traits>
 
 //GLOBAL DEFINES AND FLAGS----------------------------------------------------
 #ifdef __GNUG__  //On g++ only
@@ -77,6 +80,16 @@ namespace Global
   std::string uint64ToString(uint64_t x);
   std::string uint32ToHexString(uint32_t x);
   std::string uint64ToHexString(uint64_t x);
+  template<class D, typename = std::enable_if_t<std::is_same<D, std::chrono::duration<typename D::rep, typename D::period>>::value>>
+  std::string longDurationToString(D duration) {
+    std::ostringstream s;
+    auto ds = std::chrono::duration_cast<std::chrono::hours>(duration) / 24;
+    auto hrs = std::chrono::duration_cast<std::chrono::hours>(duration) - (ds * 24);
+    auto mins = std::chrono::duration_cast<std::chrono::minutes>(duration) - hrs;
+    auto secs = std::chrono::duration_cast<std::chrono::seconds>(duration) - mins;
+    s << ds.count() << "d " << hrs.count() << "h " << mins.count() << "m " << secs.count() << "s";
+    return s.str();
+  }
 
   //String to conversions using the standard library parsing
   int stringToInt(const std::string& str);

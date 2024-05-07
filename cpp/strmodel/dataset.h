@@ -37,6 +37,7 @@ struct SelectedMoves {
 
   std::map<std::string, Moveset> bygame;
 
+  size_t size() const; // count selected moves
   void merge(const SelectedMoves& rhs); // merge rhs entries into this
   void copyTrunkFrom(const SelectedMoves& rhs); // get trunk/pos data into this
 };
