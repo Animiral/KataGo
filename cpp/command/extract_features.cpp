@@ -35,7 +35,7 @@ struct Parameters {
   string listFile; // CSV file listing all SGFs to be fed into the rating system
   string featureDir; // Directory for move feature cache
   int windowSize; // Extract up to this many recent moves
-  bool resume; // Reuse existing ZIPs, do not overwrite them
+  bool recompute; // Overwrite existing ZIPs, do not reuse them
 };
 
 // stores recent moves of one player in one game in a Dataset
@@ -48,7 +48,7 @@ struct RecentMoves {
 Parameters parseArgs(const vector<string>& args);
 unique_ptr<LoadedModel, void(*)(LoadedModel*)> loadModel(string file);
 string movesetToString(const SelectedMoves::Moveset& moveset);
-vector<RecentMoves> getRecentMovesOfEveryGame(const Dataset& dataset, int windowSize, const string& featureDir, bool resume, Logger& logger);
+vector<RecentMoves> getRecentMovesOfEveryGame(const Dataset& dataset, int windowSize, const string& featureDir, bool recompute, Logger& logger);
 string zipPath(const string& sgfPath, const string& featureDir, Player player, const char* title);
 // output all movesets in selected moves into one combined zip
 void outputZip(const SelectedMoves& selectedMoves, const string& path);
@@ -61,7 +61,7 @@ class Worker {
     SelectedMoves& allMoves_, // shared lookup structure for all workers
     LoadedModel& loadedModel_,
     const string& featureDir_,
-    bool resume_,
+    bool recompute_,
     std::function<void(const string&)> progressCallback
   );
 
@@ -73,7 +73,7 @@ class Worker {
 
   LoadedModel* loadedModel;
   string featureDir;
-  bool resume;
+  bool recompute;
   std::function<void(const string&)> progressCallback;
   unique_ptr<PrecomputeFeatures> extractor;
 
@@ -99,7 +99,7 @@ int MainCmds::extract_features(const vector<string>& args) {
   dataset.load(params.listFile); // deliberately omit passing featureDir; we want to compute features, not load them
   logger.write("Find recent moves of all train/eval/test games using window size " + Global::intToString(params.windowSize) + "...");
 
-  vector<RecentMoves> recentByGame = getRecentMovesOfEveryGame(dataset, params.windowSize, params.featureDir, params.resume, logger);
+  vector<RecentMoves> recentByGame = getRecentMovesOfEveryGame(dataset, params.windowSize, params.featureDir, params.recompute, logger);
   SelectedMoves recentAll;
   for(auto& recent : recentByGame) {
     recentAll.merge(recent.sel);
@@ -131,7 +131,7 @@ int MainCmds::extract_features(const vector<string>& args) {
       // recentAll.bygame.begin() + lastIndex,  
       *loadedModel,
       params.featureDir,
-      params.resume,
+      params.recompute,
       progressCallback
     });
     threads.emplace_back([&workers,i](){workers[i]();});
@@ -153,7 +153,10 @@ int MainCmds::extract_features(const vector<string>& args) {
     auto elapsedTime = std::chrono::system_clock::now() - startTime;
     auto remainingTime = elapsedTime * (total - progress) / progress;
     string remainingString = Global::longDurationToString(remainingTime);
-    logger.write(strprintf("%d/%d (%s remaining): %s", progress, total, remainingString.c_str(), dataset.games[moves.game].sgfPath.c_str()));
+    logger.write(strprintf("%d/%d (%s remaining): %s (%s)",
+      progress, total, remainingString.c_str(),
+      dataset.games[moves.game].sgfPath.c_str(),
+      PlayerIO::playerToString(moves.pla).c_str()));
   }
 
   ScoreValue::freeTables();
@@ -175,7 +178,7 @@ Parameters parseArgs(const vector<string>& args) {
   TCLAP::ValueArg<string> listArg("l","list","CSV file listing all SGFs to be fed into the rating system.",true,"","LIST_FILE",cmd);
   TCLAP::ValueArg<string> featureDirArg("d","featuredir","Directory for move feature cache.",true,"","FEATURE_DIR",cmd);
   TCLAP::ValueArg<int> windowSizeArg("s","window-size","Extract up to this many recent moves.",true,1000,"WINDOW_SIZE",cmd);
-  TCLAP::SwitchArg resumeArg("r","resume","Reuse existing ZIPs, do not overwrite them.",cmd,true);
+  TCLAP::SwitchArg recomputeArg("r","recompute","Overwrite existing ZIPs, do not reuse them.",cmd,false);
   cmd.addOverrideConfigArg();
   cmd.parseArgs(args);
 
@@ -183,7 +186,7 @@ Parameters parseArgs(const vector<string>& args) {
   params.listFile = listArg.getValue();
   params.featureDir = featureDirArg.getValue();
   params.windowSize = windowSizeArg.getValue();
-  params.resume = resumeArg.getValue();
+  params.recompute = recomputeArg.getValue();
   cmd.getConfig(*params.cfg);
 
   return params;
@@ -204,11 +207,11 @@ string movesetToString(const SelectedMoves::Moveset& moveset) {
   return oss.str();
 }
 
-vector<RecentMoves> getRecentMovesOfEveryGame(const Dataset& dataset, int windowSize, const string& featureDir, bool resume, Logger& logger) {
+vector<RecentMoves> getRecentMovesOfEveryGame(const Dataset& dataset, int windowSize, const string& featureDir, bool recompute, Logger& logger) {
   vector<RecentMoves> recentByGame;
   for(size_t i = 0; i < dataset.games.size(); i++) {
     if(Dataset::Game::none != dataset.games[i].set) {
-      if(resume) {
+      if(!recompute) {
         string blackZipPath = zipPath(dataset.games[i].sgfPath, featureDir, P_BLACK, "Recent");
         string whiteZipPath = zipPath(dataset.games[i].sgfPath, featureDir, P_WHITE, "Recent");
         if(FileUtils::exists(blackZipPath) && FileUtils::exists(whiteZipPath))
@@ -230,9 +233,8 @@ vector<RecentMoves> getRecentMovesOfEveryGame(const Dataset& dataset, int window
 
 string zipPath(const string& sgfPath, const string& featureDir, Player player, const char* title) {
   string sgfPathWithoutExt = Global::chopSuffix(sgfPath, ".sgf");
-  assert(P_BLACK == player || P_WHITE == player);
-  const char* playerString = P_BLACK == player ? "Black" : "White";
-  return strprintf("%s/%s_%s%s.zip", featureDir.c_str(), sgfPathWithoutExt.c_str(), playerString, title);
+  string playerString = PlayerIO::playerToString(player);
+  return strprintf("%s/%s_%s%s.zip", featureDir.c_str(), sgfPathWithoutExt.c_str(), playerString.c_str(), title);
 }
 
 void outputZip(const SelectedMoves& selectedMoves, const string& path) {
@@ -258,13 +260,13 @@ Worker::Worker(
   SelectedMoves& allMoves_,
   LoadedModel& loadedModel_,
   const string& featureDir_,
-  bool resume_,
+  bool recompute_,
   std::function<void(const string&)> progressCallback_
 )
 : allMoves(&allMoves_),
   loadedModel(&loadedModel_),
   featureDir(featureDir_),
-  resume(resume_),
+  recompute(recompute_),
   progressCallback(progressCallback_),
   extractor(nullptr)
 {}
@@ -276,12 +278,11 @@ void Worker::operator()() {
     SelectedMoves::Moveset& moveset = gm.second;
 
     // try to get already computed data, if we are resuming and it is available
-    SelectedMoves gmResume;
     string blackPath = zipPath(sgfPath, featureDir, P_BLACK, "Trunk");
-    if(resume && FileUtils::exists(blackPath))
+    if(!recompute && FileUtils::exists(blackPath))
       moveset.merge(SelectedMoves::Moveset::readFromZip(blackPath, P_BLACK));
     string whitePath = zipPath(sgfPath, featureDir, P_WHITE, "Trunk");
-    if(resume && FileUtils::exists(whitePath))
+    if(!recompute && FileUtils::exists(whitePath))
       moveset.merge(SelectedMoves::Moveset::readFromZip(whitePath, P_WHITE));
 
     // trunks loaded from existing ZIPs are automatically excluded from processing
@@ -316,7 +317,7 @@ void Worker::processGame(const string& sgfPath, SelectedMoves::Moveset& moveset)
       }
       do {
         moveIt++;
-      } while(!needsTrunk(*moveIt));
+      } while(moveIt != moveEnd && !needsTrunk(*moveIt));
     }
 
     // apply move
@@ -335,10 +336,10 @@ void Worker::processResults() {
     PrecomputeFeatures::writeResultToMoveset(result, moveset);
     auto splitSet = moveset.splitBlackWhite();
     string blackPath = zipPath(result.sgfPath, featureDir, P_BLACK, "Trunk");
-    if(!resume || !FileUtils::exists(blackPath))
+    if(recompute || !FileUtils::exists(blackPath))
       splitSet.first.writeToZip(blackPath);
     string whitePath = zipPath(result.sgfPath, featureDir, P_WHITE, "Trunk");
-    if(!resume || !FileUtils::exists(whitePath))
+    if(recompute || !FileUtils::exists(whitePath))
       splitSet.second.writeToZip(whitePath);
   }
 }

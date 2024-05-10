@@ -73,8 +73,10 @@ void PrecomputeFeatures::endGame(const std::string& sgfPath) {
 }
 
 void PrecomputeFeatures::evaluate() {
-  float* trunkResultArea = trunk.data() + carrySize*trunkSize;
-  NeuralNet::getOutputTrunk(handle.get(), inputBuffers.get(), count, trunkResultArea);
+  if(count > 0) {
+    float* trunkResultArea = trunk.data() + carrySize*trunkSize;
+    NeuralNet::getOutputTrunk(handle.get(), inputBuffers.get(), count, trunkResultArea);
+  }
 }
 
 PrecomputeFeatures::Result PrecomputeFeatures::nextResult() {
