@@ -12,6 +12,7 @@
 #include "../main.h"
 #include <iomanip>
 #include <memory>
+#include <span>
 #include <thread>
 #include <mutex>
 #include <chrono>
@@ -26,7 +27,7 @@ using std::unique_ptr;
 using std::make_unique;
 using Global::strprintf;
 
-constexpr int maxMoves = 1000; // capacity for moves
+constexpr int maxMoves = 400; // capacity for moves
 
 // params of this command
 struct Parameters {
@@ -58,11 +59,12 @@ class Worker {
  public:
   Worker() = default;
   Worker(
-    SelectedMoves& allMoves_, // shared lookup structure for all workers
     LoadedModel& loadedModel_,
     const string& featureDir_,
     bool recompute_,
-    std::function<void(const string&)> progressCallback
+    std::function<bool(const string*&, SelectedMoves::Moveset*&)> fetchWork_, // get pointers to new work or return false
+    std::function<void(const string&)> progressCallback_,
+    std::function<void(const PrecomputeFeatures::Result&)> resultCallback_
   );
 
   void operator()(); // to be called as its own thread
@@ -74,7 +76,9 @@ class Worker {
   LoadedModel* loadedModel;
   string featureDir;
   bool recompute;
+  std::function<bool(const string*&, SelectedMoves::Moveset*&)> fetchWork;
   std::function<void(const string&)> progressCallback;
+  std::function<void(const PrecomputeFeatures::Result&)> resultCallback;
   unique_ptr<PrecomputeFeatures> extractor;
 
   void processGame(const string& sgfPath, SelectedMoves::Moveset& moveset);
@@ -107,9 +111,24 @@ int MainCmds::extract_features(const vector<string>& args) {
   size_t total = recentAll.bygame.size();
   logger.write(Global::intToString(total) + " games found. Extracting...");
 
+  auto workIterator = recentAll.bygame.begin();
+  std::mutex workMutex;
+  // workers call this to obtain a new item to work on
+  auto fetchWork = [&] (const string*& sgfPath, SelectedMoves::Moveset*& moveset) -> bool {
+    if(recentAll.bygame.end() == workIterator)
+      return false;
+
+    std::lock_guard<std::mutex> lock(workMutex);
+    sgfPath = &workIterator->first;
+    moveset = &workIterator->second;
+    ++workIterator;
+    return true;
+  };
+
   auto startTime = std::chrono::system_clock::now();
   size_t progress = 0;
   std::mutex progressMutex;
+  // workers call this after processing a game has finished
   auto progressCallback = [&] (const string& sgfPath) {
     std::lock_guard<std::mutex> lock(progressMutex);
     progress++;
@@ -119,21 +138,32 @@ int MainCmds::extract_features(const vector<string>& args) {
     logger.write(strprintf("%d/%d (%s remaining): %s", progress, total, remainingString.c_str(), sgfPath.c_str()));
   };
 
-  int threadCount = 1; // TODO: support more threads
+  // workers call this for every result out of the neural net
+  auto resultCallback = [&] (const PrecomputeFeatures::Result& result) {
+    SelectedMoves::Moveset& moveset = recentAll.bygame[result.sgfPath];
+    PrecomputeFeatures::writeResultToMoveset(result, moveset);
+    auto splitSet = moveset.splitBlackWhite();
+    string blackPath = zipPath(result.sgfPath, params.featureDir, P_BLACK, "Trunk");
+    if(params.recompute || !FileUtils::exists(blackPath))
+      splitSet.first.writeToZip(blackPath);
+    string whitePath = zipPath(result.sgfPath, params.featureDir, P_WHITE, "Trunk");
+    if(params.recompute || !FileUtils::exists(whitePath))
+      splitSet.second.writeToZip(whitePath);
+  };
+
+  int threadCount = 4;
   vector<Worker> workers;
+  workers.reserve(threadCount);
   vector<std::thread> threads;
   for(int i = 0; i < threadCount; i++) {
-    // size_t firstIndex = i * recentAll.bygame.size() / threadCount;
-    // size_t lastIndex = (i+1) * recentAll.bygame.size() / threadCount;
-    workers.push_back(Worker{
-      recentAll, // TODO: divide jobs between workers
-      // recentAll.bygame.begin() + firstIndex,
-      // recentAll.bygame.begin() + lastIndex,  
+    workers.emplace_back(
       *loadedModel,
       params.featureDir,
       params.recompute,
-      progressCallback
-    });
+      fetchWork,
+      progressCallback,
+      resultCallback
+    );
     threads.emplace_back([&workers,i](){workers[i]();});
   }
 
@@ -256,38 +286,40 @@ void outputZip(const SelectedMoves& selectedMoves, const string& path) {
   //   std::fill(pickNC, pickNC + numTrunkFeatures, 0);
   // }
 
+
 Worker::Worker(
-  SelectedMoves& allMoves_,
   LoadedModel& loadedModel_,
   const string& featureDir_,
   bool recompute_,
-  std::function<void(const string&)> progressCallback_
+  std::function<bool(const string*&, SelectedMoves::Moveset*&)> fetchWork_,
+  std::function<void(const string&)> progressCallback_,
+  std::function<void(const PrecomputeFeatures::Result&)> resultCallback_
 )
-: allMoves(&allMoves_),
-  loadedModel(&loadedModel_),
+: loadedModel(&loadedModel_),
   featureDir(featureDir_),
   recompute(recompute_),
+  fetchWork(fetchWork_),
   progressCallback(progressCallback_),
+  resultCallback(resultCallback_),
   extractor(nullptr)
 {}
 
 void Worker::operator()() {
   extractor.reset(new PrecomputeFeatures(*loadedModel, maxMoves));
-  for(auto& gm : allMoves->bygame) {
-    const string& sgfPath = gm.first;
-    SelectedMoves::Moveset& moveset = gm.second;
-
+  const string* sgfPath;
+  SelectedMoves::Moveset* moveset;
+  while(fetchWork(sgfPath, moveset)) {
     // try to get already computed data, if we are resuming and it is available
-    string blackPath = zipPath(sgfPath, featureDir, P_BLACK, "Trunk");
+    string blackPath = zipPath(*sgfPath, featureDir, P_BLACK, "Trunk");
     if(!recompute && FileUtils::exists(blackPath))
-      moveset.merge(SelectedMoves::Moveset::readFromZip(blackPath, P_BLACK));
-    string whitePath = zipPath(sgfPath, featureDir, P_WHITE, "Trunk");
+      moveset->merge(SelectedMoves::Moveset::readFromZip(blackPath, P_BLACK));
+    string whitePath = zipPath(*sgfPath, featureDir, P_WHITE, "Trunk");
     if(!recompute && FileUtils::exists(whitePath))
-      moveset.merge(SelectedMoves::Moveset::readFromZip(whitePath, P_WHITE));
+      moveset->merge(SelectedMoves::Moveset::readFromZip(whitePath, P_WHITE));
 
     // trunks loaded from existing ZIPs are automatically excluded from processing
-    processGame(sgfPath, moveset);
-    progressCallback(sgfPath);
+    processGame(*sgfPath, *moveset);
+    progressCallback(*sgfPath);
   }
   processResults();
 }
@@ -331,16 +363,7 @@ void Worker::processGame(const string& sgfPath, SelectedMoves::Moveset& moveset)
 void Worker::processResults() {
   extractor->evaluate();
   while(extractor->hasResult()) {
-    PrecomputeFeatures::Result result = extractor->nextResult();
-    SelectedMoves::Moveset& moveset = allMoves->bygame[result.sgfPath];
-    PrecomputeFeatures::writeResultToMoveset(result, moveset);
-    auto splitSet = moveset.splitBlackWhite();
-    string blackPath = zipPath(result.sgfPath, featureDir, P_BLACK, "Trunk");
-    if(recompute || !FileUtils::exists(blackPath))
-      splitSet.first.writeToZip(blackPath);
-    string whitePath = zipPath(result.sgfPath, featureDir, P_WHITE, "Trunk");
-    if(recompute || !FileUtils::exists(whitePath))
-      splitSet.second.writeToZip(whitePath);
+    resultCallback(extractor->nextResult());
   }
 }
 
