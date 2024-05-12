@@ -12,7 +12,7 @@
 #include "../main.h"
 #include <iomanip>
 #include <memory>
-#include <span>
+#include <atomic>
 #include <thread>
 #include <mutex>
 #include <chrono>
@@ -25,6 +25,7 @@ namespace
 
 using std::unique_ptr;
 using std::make_unique;
+using std::ref;
 using Global::strprintf;
 
 constexpr int maxMoves = 400; // capacity for moves
@@ -86,6 +87,18 @@ class Worker {
 
 };
 
+void copyAndDumpRecentMoves(
+  RecentMoves* workBegin,       // workload for this thread as begin/end pair,
+  RecentMoves* workEnd,         // specifies which moves are recent to which games
+  const Dataset& dataset,       // games SGF path lookup
+  SelectedMoves& recentAll,     // holds trunk data associated with the games containing their moves
+  const string& featureDir,     // where to put the zip files
+  Logger& logger,               // progress report sink
+  std::atomic<size_t>& counter, // shared counter to report common progress
+  size_t total,                 // overall number of items, 100% progress
+  std::chrono::time_point<std::chrono::system_clock> startTime // common start time of all workers
+);
+
 }
 
 int MainCmds::extract_features(const vector<string>& args) {
@@ -126,16 +139,16 @@ int MainCmds::extract_features(const vector<string>& args) {
   };
 
   auto startTime = std::chrono::system_clock::now();
-  size_t progress = 0;
+  std::atomic<size_t> progress(0);
   std::mutex progressMutex;
   // workers call this after processing a game has finished
   auto progressCallback = [&] (const string& sgfPath) {
     std::lock_guard<std::mutex> lock(progressMutex);
-    progress++;
+    size_t p = ++progress;
     auto elapsedTime = std::chrono::system_clock::now() - startTime;
-    auto remainingTime = elapsedTime * (total - progress) / progress;
+    auto remainingTime = elapsedTime * (total - p) / p;
     string remainingString = Global::longDurationToString(remainingTime);
-    logger.write(strprintf("%d/%d (%s remaining): %s", progress, total, remainingString.c_str(), sgfPath.c_str()));
+    logger.write(strprintf("%d/%d (%s remaining): %s", p, total, remainingString.c_str(), sgfPath.c_str()));
   };
 
   // workers call this for every result out of the neural net
@@ -164,30 +177,28 @@ int MainCmds::extract_features(const vector<string>& args) {
       progressCallback,
       resultCallback
     );
-    threads.emplace_back([&workers,i](){workers[i]();});
+    threads.emplace_back(ref(workers[i]));
   }
 
   for(auto& thread : threads)
     thread.join();
 
   // all trunks are now precomputed; piece them back together into recent move sets and output ZIPs
-  logger.write("Accumulating recent moves...");
+  constexpr int accumulateThreadCount = 16;
+  logger.write(strprintf("Accumulating recent moves using %d threads...", accumulateThreadCount));
   startTime = std::chrono::system_clock::now();
   total = recentByGame.size();
   progress = 0;
-  for(RecentMoves& moves : recentByGame) {
-    moves.sel.copyTrunkFrom(recentAll);
-    string path = zipPath(dataset.games[moves.game].sgfPath, params.featureDir, moves.pla, "Recent");
-    outputZip(moves.sel, path);
-    progress++;
-    auto elapsedTime = std::chrono::system_clock::now() - startTime;
-    auto remainingTime = elapsedTime * (total - progress) / progress;
-    string remainingString = Global::longDurationToString(remainingTime);
-    logger.write(strprintf("%d/%d (%s remaining): %s (%s)",
-      progress, total, remainingString.c_str(),
-      dataset.games[moves.game].sgfPath.c_str(),
-      PlayerIO::playerToString(moves.pla).c_str()));
+  threads.clear();
+  for(int i = 0; i < accumulateThreadCount; i++) {
+    RecentMoves* workBegin = &recentByGame[total*i/accumulateThreadCount];
+    RecentMoves* workEnd = &recentByGame[total*(i+1)/accumulateThreadCount];
+    threads.emplace_back(&copyAndDumpRecentMoves, workBegin, workEnd, ref(dataset), ref(recentAll),
+                         ref(params.featureDir), ref(logger), ref(progress), total, startTime);
   }
+
+  for(auto& thread : threads)
+    thread.join();
 
   ScoreValue::freeTables();
   logger.write("All cleaned up, quitting");
@@ -364,6 +375,33 @@ void Worker::processResults() {
   extractor->evaluate();
   while(extractor->hasResult()) {
     resultCallback(extractor->nextResult());
+  }
+}
+
+// thread worker function for a subset of recent moves
+void copyAndDumpRecentMoves(
+  RecentMoves* workBegin,       // workload for this thread as begin/end pair,
+  RecentMoves* workEnd,         // specifies which moves are recent to which games
+  const Dataset& dataset,       // games SGF path lookup
+  SelectedMoves& recentAll,     // holds trunk data associated with the games containing their moves
+  const string& featureDir,     // where to put the zip files
+  Logger& logger,               // progress report sink
+  std::atomic<size_t>& counter, // shared counter to report common progress
+  size_t total,                 // overall number of items, 100% progress
+  std::chrono::time_point<std::chrono::system_clock> startTime // common start time of all workers
+) {
+  for(RecentMoves* moves = workBegin; moves != workEnd; ++moves) {
+    moves->sel.copyTrunkFrom(recentAll);
+    string path = zipPath(dataset.games[moves->game].sgfPath, featureDir, moves->pla, "Recent");
+    outputZip(moves->sel, path);
+    size_t p = ++counter;
+    auto elapsedTime = std::chrono::system_clock::now() - startTime;
+    auto remainingTime = elapsedTime * (total - p) / p;
+    string remainingString = Global::longDurationToString(remainingTime);
+    logger.write(strprintf("%d/%d (%s remaining): %s (%s)",
+      p, total, remainingString.c_str(),
+      dataset.games[moves->game].sgfPath.c_str(),
+      PlayerIO::playerToString(moves->pla).c_str()));
   }
 }
 
