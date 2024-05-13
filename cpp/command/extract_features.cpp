@@ -59,31 +59,31 @@ void outputZip(const SelectedMoves& selectedMoves, const string& path);
 class Worker {
  public:
   Worker() = default;
-  Worker(
-    LoadedModel& loadedModel_,
-    const string& featureDir_,
-    bool recompute_,
-    std::function<bool(const string*&, SelectedMoves::Moveset*&)> fetchWork_, // get pointers to new work or return false
-    std::function<void(const string&)> progressCallback_,
-    std::function<void(const PrecomputeFeatures::Result&)> resultCallback_
-  );
+  explicit Worker(LoadedModel& loadedModel_);
 
+  static void setWork(SelectedMoves& work_); // assign shared workload for all workers
   void operator()(); // to be called as its own thread
 
-  SelectedMoves* allMoves; // get trunks on all these
+  static Logger* logger; // shared logger for all workers
+  static string featureDir; // shared configuration: directory for zip output
+  static bool recompute; // shared configuration: set true to disregard existing zips
 
  private:
 
+  static SelectedMoves* work;
+  static std::map<string, SelectedMoves::Moveset>::iterator workIterator; // points to next work item
+  static std::mutex workMutex; // synchronizes access to workIterator
+  static size_t progress; // shared counter for finished work
+  static std::chrono::time_point<std::chrono::system_clock> startTime; // time when work was assigned
+  static std::mutex reportMutex; // synchronizes access to logger
+
   LoadedModel* loadedModel;
-  string featureDir;
-  bool recompute;
-  std::function<bool(const string*&, SelectedMoves::Moveset*&)> fetchWork;
-  std::function<void(const string&)> progressCallback;
-  std::function<void(const PrecomputeFeatures::Result&)> resultCallback;
   unique_ptr<PrecomputeFeatures> extractor;
 
+  bool fetchWork(const string*& sgfPath, SelectedMoves::Moveset*& moveset);
   void processGame(const string& sgfPath, SelectedMoves::Moveset& moveset);
   void processResults();
+  void reportProgress(const string& sgfPath);
 
 };
 
@@ -124,71 +124,27 @@ int MainCmds::extract_features(const vector<string>& args) {
   size_t total = recentAll.bygame.size();
   logger.write(Global::intToString(total) + " games found. Extracting...");
 
-  auto workIterator = recentAll.bygame.begin();
-  std::mutex workMutex;
-  // workers call this to obtain a new item to work on
-  auto fetchWork = [&] (const string*& sgfPath, SelectedMoves::Moveset*& moveset) -> bool {
-    if(recentAll.bygame.end() == workIterator)
-      return false;
-
-    std::lock_guard<std::mutex> lock(workMutex);
-    sgfPath = &workIterator->first;
-    moveset = &workIterator->second;
-    ++workIterator;
-    return true;
-  };
-
-  auto startTime = std::chrono::system_clock::now();
-  std::atomic<size_t> progress(0);
-  std::mutex progressMutex;
-  // workers call this after processing a game has finished
-  auto progressCallback = [&] (const string& sgfPath) {
-    std::lock_guard<std::mutex> lock(progressMutex);
-    size_t p = ++progress;
-    auto elapsedTime = std::chrono::system_clock::now() - startTime;
-    auto remainingTime = elapsedTime * (total - p) / p;
-    string remainingString = Global::longDurationToString(remainingTime);
-    logger.write(strprintf("%d/%d (%s remaining): %s", p, total, remainingString.c_str(), sgfPath.c_str()));
-  };
-
-  // workers call this for every result out of the neural net
-  auto resultCallback = [&] (const PrecomputeFeatures::Result& result) {
-    SelectedMoves::Moveset& moveset = recentAll.bygame[result.sgfPath];
-    PrecomputeFeatures::writeResultToMoveset(result, moveset);
-    auto splitSet = moveset.splitBlackWhite();
-    string blackPath = zipPath(result.sgfPath, params.featureDir, P_BLACK, "Trunk");
-    if(params.recompute || !FileUtils::exists(blackPath))
-      splitSet.first.writeToZip(blackPath);
-    string whitePath = zipPath(result.sgfPath, params.featureDir, P_WHITE, "Trunk");
-    if(params.recompute || !FileUtils::exists(whitePath))
-      splitSet.second.writeToZip(whitePath);
-  };
+  Worker::logger = &logger;
+  Worker::featureDir = params.featureDir;
+  Worker::recompute = params.recompute;
+  Worker::setWork(recentAll);
 
   int threadCount = 4;
   vector<Worker> workers;
-  workers.reserve(threadCount);
   vector<std::thread> threads;
-  for(int i = 0; i < threadCount; i++) {
-    workers.emplace_back(
-      *loadedModel,
-      params.featureDir,
-      params.recompute,
-      fetchWork,
-      progressCallback,
-      resultCallback
-    );
+  for(int i = 0; i < threadCount; i++)
+    workers.emplace_back(*loadedModel);
+  for(int i = 0; i < threadCount; i++)
     threads.emplace_back(ref(workers[i]));
-  }
-
   for(auto& thread : threads)
     thread.join();
 
   // all trunks are now precomputed; piece them back together into recent move sets and output ZIPs
   constexpr int accumulateThreadCount = 16;
   logger.write(strprintf("Accumulating recent moves using %d threads...", accumulateThreadCount));
-  startTime = std::chrono::system_clock::now();
+  auto startTime = std::chrono::system_clock::now();
   total = recentByGame.size();
-  progress = 0;
+  std::atomic<size_t> progress(0);
   threads.clear();
   for(int i = 0; i < accumulateThreadCount; i++) {
     RecentMoves* workBegin = &recentByGame[total*i/accumulateThreadCount];
@@ -297,23 +253,26 @@ void outputZip(const SelectedMoves& selectedMoves, const string& path) {
   //   std::fill(pickNC, pickNC + numTrunkFeatures, 0);
   // }
 
+Logger* Worker::logger;
+string Worker::featureDir;
+bool Worker::recompute;
+SelectedMoves* Worker::work;
+std::map<string, SelectedMoves::Moveset>::iterator Worker::workIterator;
+std::mutex Worker::workMutex;
+size_t Worker::progress;
+std::chrono::time_point<std::chrono::system_clock> Worker::startTime;
+std::mutex Worker::reportMutex;
 
-Worker::Worker(
-  LoadedModel& loadedModel_,
-  const string& featureDir_,
-  bool recompute_,
-  std::function<bool(const string*&, SelectedMoves::Moveset*&)> fetchWork_,
-  std::function<void(const string&)> progressCallback_,
-  std::function<void(const PrecomputeFeatures::Result&)> resultCallback_
-)
-: loadedModel(&loadedModel_),
-  featureDir(featureDir_),
-  recompute(recompute_),
-  fetchWork(fetchWork_),
-  progressCallback(progressCallback_),
-  resultCallback(resultCallback_),
-  extractor(nullptr)
+Worker::Worker(LoadedModel& loadedModel_)
+: loadedModel(&loadedModel_), extractor(nullptr)
 {}
+
+void Worker::setWork(SelectedMoves& work_) {
+  work = &work_;
+  workIterator = work->bygame.begin();
+  progress = 0;
+  startTime = std::chrono::system_clock::now();
+}
 
 void Worker::operator()() {
   extractor.reset(new PrecomputeFeatures(*loadedModel, maxMoves));
@@ -330,9 +289,20 @@ void Worker::operator()() {
 
     // trunks loaded from existing ZIPs are automatically excluded from processing
     processGame(*sgfPath, *moveset);
-    progressCallback(*sgfPath);
+    reportProgress(*sgfPath);
   }
   processResults();
+}
+
+bool Worker::fetchWork(const string*& sgfPath, SelectedMoves::Moveset*& moveset) {
+  if(work->bygame.end() == workIterator)
+    return false;
+
+  std::lock_guard<std::mutex> lock(workMutex);
+  sgfPath = &workIterator->first;
+  moveset = &workIterator->second;
+  ++workIterator;
+  return true;
 }
 
 void Worker::processGame(const string& sgfPath, SelectedMoves::Moveset& moveset) {
@@ -374,8 +344,27 @@ void Worker::processGame(const string& sgfPath, SelectedMoves::Moveset& moveset)
 void Worker::processResults() {
   extractor->evaluate();
   while(extractor->hasResult()) {
-    resultCallback(extractor->nextResult());
+    PrecomputeFeatures::Result result = extractor->nextResult();
+    SelectedMoves::Moveset& moveset = work->bygame[result.sgfPath];
+    PrecomputeFeatures::writeResultToMoveset(result, moveset);
+    auto splitSet = moveset.splitBlackWhite();
+    string blackPath = zipPath(result.sgfPath, featureDir, P_BLACK, "Trunk");
+    if(recompute || !FileUtils::exists(blackPath))
+      splitSet.first.writeToZip(blackPath);
+    string whitePath = zipPath(result.sgfPath, featureDir, P_WHITE, "Trunk");
+    if(recompute || !FileUtils::exists(whitePath))
+      splitSet.second.writeToZip(whitePath);
   }
+}
+
+void Worker::reportProgress(const string& sgfPath) {
+  std::lock_guard<std::mutex> lock(reportMutex);
+  size_t p = ++progress;
+  size_t total = work->bygame.size();
+  auto elapsedTime = std::chrono::system_clock::now() - startTime;
+  auto remainingTime = elapsedTime * (total - p) / p;
+  string remainingString = Global::longDurationToString(remainingTime);
+  logger->write(strprintf("%d/%d (%s remaining): %s", p, total, remainingString.c_str(), sgfPath.c_str()));
 }
 
 // thread worker function for a subset of recent moves
