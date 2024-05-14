@@ -28,8 +28,6 @@ using std::make_unique;
 using std::ref;
 using Global::strprintf;
 
-constexpr int maxMoves = 400; // capacity for moves
-
 // params of this command
 struct Parameters {
   unique_ptr<ConfigParser> cfg;
@@ -37,6 +35,8 @@ struct Parameters {
   string listFile; // CSV file listing all SGFs to be fed into the rating system
   string featureDir; // Directory for move feature cache
   int windowSize; // Extract up to this many recent moves
+  int batchSize; // Send this many moves to the GPU at once in a worker thread
+  int batchThreads; // Number of concurrent workers feeding positions to GPU
   bool recompute; // Overwrite existing ZIPs, do not reuse them
 };
 
@@ -59,7 +59,7 @@ void outputZip(const SelectedMoves& selectedMoves, const string& path);
 class Worker {
  public:
   Worker() = default;
-  explicit Worker(LoadedModel& loadedModel_);
+  explicit Worker(PrecomputeFeatures&& precompute_);
 
   static void setWork(SelectedMoves& work_); // assign shared workload for all workers
   void operator()(); // to be called as its own thread
@@ -77,8 +77,7 @@ class Worker {
   static std::chrono::time_point<std::chrono::system_clock> startTime; // time when work was assigned
   static std::mutex reportMutex; // synchronizes access to logger
 
-  LoadedModel* loadedModel;
-  unique_ptr<PrecomputeFeatures> extractor;
+  PrecomputeFeatures precompute;
 
   bool fetchWork(const string*& sgfPath, SelectedMoves::Moveset*& moveset);
   void processGame(const string& sgfPath, SelectedMoves::Moveset& moveset);
@@ -129,12 +128,11 @@ int MainCmds::extract_features(const vector<string>& args) {
   Worker::recompute = params.recompute;
   Worker::setWork(recentAll);
 
-  int threadCount = 4;
   vector<Worker> workers;
   vector<std::thread> threads;
-  for(int i = 0; i < threadCount; i++)
-    workers.emplace_back(*loadedModel);
-  for(int i = 0; i < threadCount; i++)
+  for(int i = 0; i < params.batchThreads; i++)
+    workers.emplace_back(PrecomputeFeatures(*loadedModel, params.batchSize));
+  for(int i = 0; i < params.batchThreads; i++)
     threads.emplace_back(ref(workers[i]));
   for(auto& thread : threads)
     thread.join();
@@ -172,9 +170,11 @@ Parameters parseArgs(const vector<string>& args) {
   cmd.addModelFileArg();
   cmd.setShortUsageArgLimit();
 
-  TCLAP::ValueArg<string> listArg("l","list","CSV file listing all SGFs to be fed into the rating system.",true,"","LIST_FILE",cmd);
-  TCLAP::ValueArg<string> featureDirArg("d","featuredir","Directory for move feature cache.",true,"","FEATURE_DIR",cmd);
-  TCLAP::ValueArg<int> windowSizeArg("s","window-size","Extract up to this many recent moves.",true,1000,"WINDOW_SIZE",cmd);
+  TCLAP::ValueArg<string> listArg("l","list","CSV file listing all SGFs to be fed into the rating system.",true,"","FILE",cmd);
+  TCLAP::ValueArg<string> featureDirArg("d","featuredir","Directory for move feature cache.",true,"","DIR",cmd);
+  TCLAP::ValueArg<int> windowSizeArg("s","window-size","Extract up to this many recent moves.",false,1000,"SIZE",cmd);
+  TCLAP::ValueArg<int> batchSizeArg("b","batch-size","Send this many moves to the GPU at once in a worker thread.",false,400,"SIZE",cmd);
+  TCLAP::ValueArg<int> batchThreadsArg("t","batch-threads","Number of concurrent workers feeding positions to GPU.",false,4,"COUNT",cmd);
   TCLAP::SwitchArg recomputeArg("r","recompute","Overwrite existing ZIPs, do not reuse them.",cmd,false);
   cmd.addOverrideConfigArg();
   cmd.parseArgs(args);
@@ -183,7 +183,9 @@ Parameters parseArgs(const vector<string>& args) {
   params.listFile = listArg.getValue();
   params.featureDir = featureDirArg.getValue();
   params.windowSize = windowSizeArg.getValue();
-  params.recompute = recomputeArg.getValue();
+  params.batchSize = batchSizeArg.getValue();
+  params.batchThreads = batchThreadsArg.getValue();
+  params.recompute = batchThreadsArg.getValue();
   cmd.getConfig(*params.cfg);
 
   return params;
@@ -263,8 +265,8 @@ size_t Worker::progress;
 std::chrono::time_point<std::chrono::system_clock> Worker::startTime;
 std::mutex Worker::reportMutex;
 
-Worker::Worker(LoadedModel& loadedModel_)
-: loadedModel(&loadedModel_), extractor(nullptr)
+Worker::Worker(PrecomputeFeatures&& precompute_)
+: precompute(std::move(precompute_))
 {}
 
 void Worker::setWork(SelectedMoves& work_) {
@@ -275,7 +277,6 @@ void Worker::setWork(SelectedMoves& work_) {
 }
 
 void Worker::operator()() {
-  extractor.reset(new PrecomputeFeatures(*loadedModel, maxMoves));
   const string* sgfPath;
   SelectedMoves::Moveset* moveset;
   while(fetchWork(sgfPath, moveset)) {
@@ -323,10 +324,10 @@ void Worker::processGame(const string& sgfPath, SelectedMoves::Moveset& moveset)
     Move move = moves[turnIdx];
 
     if(turnIdx == moveIt->index) {
-      extractor->addBoard(board, history, move);
-      if(extractor->count >= extractor->capacity) {
+      precompute.addBoard(board, history, move);
+      if(precompute.count >= precompute.capacity) {
         processResults();
-        extractor->flip();
+        precompute.flip();
       }
       do {
         moveIt++;
@@ -338,13 +339,13 @@ void Worker::processGame(const string& sgfPath, SelectedMoves::Moveset& moveset)
     if(!suc)
       throw StringError(strprintf("Illegal move %s at %s", PlayerIO::playerToString(move.pla), Location::toString(move.loc, sgf->xSize, sgf->ySize)));
   }
-  extractor->endGame(sgfPath);
+  precompute.endGame(sgfPath);
 }
 
 void Worker::processResults() {
-  extractor->evaluate();
-  while(extractor->hasResult()) {
-    PrecomputeFeatures::Result result = extractor->nextResult();
+  precompute.evaluate();
+  while(precompute.hasResult()) {
+    PrecomputeFeatures::Result result = precompute.nextResult();
     SelectedMoves::Moveset& moveset = work->bygame[result.sgfPath];
     PrecomputeFeatures::writeResultToMoveset(result, moveset);
     auto splitSet = moveset.splitBlackWhite();
