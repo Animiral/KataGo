@@ -86,7 +86,7 @@ class Worker {
 
 };
 
-void copyAndDumpRecentMoves(
+void combineAndDumpRecentMoves(
   RecentMoves* workBegin,       // workload for this thread as begin/end pair,
   RecentMoves* workEnd,         // specifies which moves are recent to which games
   const Dataset& dataset,       // games SGF path lookup
@@ -137,7 +137,8 @@ int MainCmds::extract_features(const vector<string>& args) {
   for(auto& thread : threads)
     thread.join();
 
-  // all trunks are now precomputed; piece them back together into recent move sets and output ZIPs
+  // all trunks are now available as precomputed trunk ZIPs;
+  // piece them back together into recent move sets and output recent ZIPs
   constexpr int accumulateThreadCount = 16;
   logger.write(strprintf("Accumulating recent moves using %d threads...", accumulateThreadCount));
   auto startTime = std::chrono::system_clock::now();
@@ -147,7 +148,7 @@ int MainCmds::extract_features(const vector<string>& args) {
   for(int i = 0; i < accumulateThreadCount; i++) {
     RecentMoves* workBegin = &recentByGame[total*i/accumulateThreadCount];
     RecentMoves* workEnd = &recentByGame[total*(i+1)/accumulateThreadCount];
-    threads.emplace_back(&copyAndDumpRecentMoves, workBegin, workEnd, ref(dataset), ref(recentAll),
+    threads.emplace_back(&combineAndDumpRecentMoves, workBegin, workEnd, ref(dataset), ref(recentAll),
                          ref(params.featureDir), ref(logger), ref(progress), total, startTime);
   }
 
@@ -355,6 +356,7 @@ void Worker::processResults() {
     string whitePath = zipPath(result.sgfPath, featureDir, P_WHITE, "Trunk");
     if(recompute || !FileUtils::exists(whitePath))
       splitSet.second.writeToZip(whitePath);
+    moveset.releaseTrunks(); // keeping this in memory for every file would be too much
   }
 }
 
@@ -369,7 +371,7 @@ void Worker::reportProgress(const string& sgfPath) {
 }
 
 // thread worker function for a subset of recent moves
-void copyAndDumpRecentMoves(
+void combineAndDumpRecentMoves(
   RecentMoves* workBegin,       // workload for this thread as begin/end pair,
   RecentMoves* workEnd,         // specifies which moves are recent to which games
   const Dataset& dataset,       // games SGF path lookup
@@ -381,7 +383,15 @@ void copyAndDumpRecentMoves(
   std::chrono::time_point<std::chrono::system_clock> startTime // common start time of all workers
 ) {
   for(RecentMoves* moves = workBegin; moves != workEnd; ++moves) {
-    moves->sel.copyTrunkFrom(recentAll);
+    // get relevant precomputations from disk
+    SelectedMoves precomputed;
+    for(auto& kv : moves->sel.bygame) {
+      Player pla = kv.second.moves[0].pla; // players never play against themselves, therefore we can just pick color of first move
+      string path = zipPath(kv.first, featureDir, pla, "Trunk");
+      precomputed.bygame[kv.first] = SelectedMoves::Moveset::readFromZip(path, moves->pla);
+    }
+    // adopt precomputated sets into recent move set
+    moves->sel.copyTrunkFrom(precomputed);
     string path = zipPath(dataset.games[moves->game].sgfPath, featureDir, moves->pla, "Recent");
     outputZip(moves->sel, path);
     size_t p = ++counter;

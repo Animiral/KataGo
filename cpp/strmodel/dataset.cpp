@@ -37,6 +37,11 @@ void SelectedMoves::Moveset::merge(const SelectedMoves::Moveset& rhs) {
   }
 }
 
+void SelectedMoves::Moveset::releaseTrunks() {
+  for(Move& move : moves)
+    move.trunk.reset();
+}
+
 pair<SelectedMoves::Moveset, SelectedMoves::Moveset> SelectedMoves::Moveset::splitBlackWhite() const {
   vector<Move> blackMoves, whiteMoves;
   std::copy_if(moves.begin(), moves.end(), std::back_inserter(blackMoves), [](const Move& m){ return P_BLACK == m.pla; });

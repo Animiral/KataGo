@@ -25,6 +25,7 @@ struct SelectedMoves {
     std::vector<Move> moves; // in ascending order
     void insert(int index, Player pla); // preserves order
     void merge(const Moveset& rhs); // merge rhs entries into this
+    void releaseTrunks(); // free memory by letting go of TrunkOutputs (can be re-read from zip later)
     std::pair<Moveset, Moveset> splitBlackWhite() const;
     void writeToZip(const std::string& filePath) const;
     static Moveset readFromZip(const std::string& filePath, Player pla = 0);
