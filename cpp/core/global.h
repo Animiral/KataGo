@@ -85,8 +85,8 @@ namespace Global
     std::ostringstream s;
     auto ds = std::chrono::duration_cast<std::chrono::hours>(duration) / 24;
     auto hrs = std::chrono::duration_cast<std::chrono::hours>(duration) - (ds * 24);
-    auto mins = std::chrono::duration_cast<std::chrono::minutes>(duration) - hrs;
-    auto secs = std::chrono::duration_cast<std::chrono::seconds>(duration) - mins;
+    auto mins = std::chrono::duration_cast<std::chrono::minutes>(duration) - (ds * 24) - hrs;
+    auto secs = std::chrono::duration_cast<std::chrono::seconds>(duration) - (ds * 24) - hrs - mins;
     s << ds.count() << "d " << hrs.count() << "h " << mins.count() << "m " << secs.count() << "s";
     return s.str();
   }
