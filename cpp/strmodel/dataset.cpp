@@ -6,6 +6,7 @@
 #include "game/board.h"
 #include "dataio/sgf.h"
 #include "core/global.h"
+#include "core/fileutils.h"
 #include "core/using.h"
 
 using std::unique_ptr;
@@ -44,10 +45,14 @@ pair<SelectedMoves::Moveset, SelectedMoves::Moveset> SelectedMoves::Moveset::spl
 }
 
 void SelectedMoves::Moveset::writeToZip(const string& filePath) const {
+  string containingDir = FileUtils::dirname(filePath);
+  if(!FileUtils::create_directories(containingDir))
+    throw IOError("Failed to create directory " + containingDir);
+
   int err;
-  unique_ptr<zip_t, decltype(&zip_close)> archive{
+  unique_ptr<zip_t, decltype(&zip_discard)> archive{
     zip_open(filePath.c_str(), ZIP_CREATE | ZIP_TRUNCATE, &err),
-    &zip_close
+    &zip_discard
   };
   if(!archive) {
     zip_error_t error;
@@ -112,8 +117,11 @@ void SelectedMoves::Moveset::writeToZip(const string& filePath) const {
   }
 
   zip_t* archivep = archive.release();
-  if (zip_close(archivep) != 0)
-    throw StringError("Error writing zip archive: "s + zip_strerror(archivep));
+  if(zip_close(archivep) != 0) {
+    StringError error("Error writing zip archive: "s + zip_strerror(archivep));
+    zip_discard(archivep);
+    throw error;
+  }
 }
 
 namespace {
