@@ -5,6 +5,7 @@
 #include <string>
 #include <vector>
 #include <memory>
+#include <ostream>
 #include "core/logger.h"
 #include "core/rand.h"
 #include "game/board.h"
@@ -29,6 +30,7 @@ struct SelectedMoves {
     void releaseTrunks(); // free memory by letting go of TrunkOutputs (can be re-read from zip later)
     std::pair<Moveset, Moveset> splitBlackWhite() const;
     void writeToZip(const std::string& filePath) const;
+    void printSummary(std::ostream& stream) const; // list contained moves in readable format for debugging
     static Moveset readFromZip(const std::string& filePath, Player pla = 0);
 
    private:

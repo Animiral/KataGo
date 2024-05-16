@@ -223,11 +223,7 @@ vector<RecentMoves> getRecentMovesOfEveryGame(const Dataset& dataset, int window
       }
       logger.write(strprintf("Find recent moves of %s", dataset.games[i].sgfPath.c_str()));
       RecentMoves blackRecentMoves{i, P_BLACK, dataset.getRecentMoves(P_BLACK, i, windowSize)};
-      // for(auto& kv : blackRecentMoves.sel.bygame)
-        // logger.write(strprintf("\t(BLACK) %d moves in %s: %s", kv.second.moves.size(), kv.first.c_str(), movesetToString(kv.second).c_str()));
       RecentMoves whiteRecentMoves{i, P_WHITE, dataset.getRecentMoves(P_WHITE, i, windowSize)};
-      // for(auto& kv : whiteRecentMoves.sel.bygame)
-        // logger.write(strprintf("\t(WHITE) %d moves in %s: %s", kv.second.moves.size(), kv.first.c_str(), movesetToString(kv.second).c_str()));
       recentByGame.push_back(std::move(blackRecentMoves));
       recentByGame.push_back(std::move(whiteRecentMoves));
     }

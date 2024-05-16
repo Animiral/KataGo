@@ -1,6 +1,7 @@
 #include <fstream>
 #include <sstream>
 #include <memory>
+#include <functional>
 #include <zip.h>
 #include "strmodel/dataset.h"
 #include "game/board.h"
@@ -130,6 +131,22 @@ void SelectedMoves::Moveset::writeToZip(const string& filePath) const {
     StringError error("Error writing zip archive: "s + zip_strerror(archivep));
     zip_discard(archivep);
     throw error;
+  }
+}
+
+namespace {
+
+// condense trunk to a single printable number, likely different from trunks of other positions
+float trunkChecksum(const TrunkOutput& trunk) {
+  auto combine = [](float a, float b) { return a + std::exp(b); };
+  return std::accumulate(trunk.begin(), trunk.end(), 0.f, combine);
+}
+
+}
+
+void SelectedMoves::Moveset::printSummary(std::ostream& stream) const {
+  for(const Move& m : moves) {
+    stream << strprintf("%d: pos %d, trunk %f\n", m.index, m.pos, trunkChecksum(*m.trunk));
   }
 }
 

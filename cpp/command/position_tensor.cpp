@@ -28,8 +28,8 @@ namespace
   constexpr int maxMoves = 1000; // capacity for moves
 
   unique_ptr<LoadedModel, void(*)(LoadedModel*)> loadModel(string file);
-  void readFromSgf(const string& sgfPath, int moveNumber, const string& modelFile);
-  void readFromZip(const string& zipPath, int moveNumber);
+  SelectedMoves::Moveset readFromSgf(const string& sgfPath, const string& modelFile);
+  SelectedMoves::Moveset readFromZip(const string& zipPath);
   void dumpTensor(string path, float* data, size_t N);
 
   ConfigParser cfg;
@@ -45,6 +45,7 @@ int MainCmds::position_tensor(const vector<string>& args) {
   string sgfPath;
   string zipPath;
   int moveNumber;
+  bool summary;
 
   KataGoCommandLine cmd("Precompute move features for all games in the dataset.");
   try {
@@ -52,12 +53,10 @@ int MainCmds::position_tensor(const vector<string>& args) {
     cmd.addModelFileArg();
     cmd.setShortUsageArgLimit();
 
-    TCLAP::ValueArg<string> sgfArg("","sgf","SGF file with the game to extract.",false,"","SGF_FILE");
-    cmd.add(sgfArg);
-    TCLAP::ValueArg<string> zipArg("","zip","ZIP file with precomputed trunk to extract.",false,"","ZIP_FILE");
-    cmd.add(zipArg);
-    TCLAP::ValueArg<int> moveNumberArg("","move-number","Extract the position or trunk at this move number/index, starting at 0.",true,10,"MOVE_NUMBER");
-    cmd.add(moveNumberArg);
+    TCLAP::ValueArg<string> sgfArg("","sgf","SGF file with the game to extract.",false,"","SGF_FILE",cmd);
+    TCLAP::ValueArg<string> zipArg("","zip","ZIP file with precomputed trunk to extract.",false,"","ZIP_FILE", cmd);
+    TCLAP::ValueArg<int> moveNumberArg("","move-number","Extract the position or trunk at this move number/index, starting at 0.",false,10,"MOVE_NUMBER", cmd);
+    TCLAP::SwitchArg summaryArg("s","summary","Print general info on all moves in the SGF or ZIP.",cmd,false);
     cmd.addOverrideConfigArg();
     cmd.parseArgs(args);
 
@@ -65,6 +64,7 @@ int MainCmds::position_tensor(const vector<string>& args) {
     sgfPath = sgfArg.getValue();
     zipPath = zipArg.getValue();
     moveNumber = moveNumberArg.getValue();
+    summary = summaryArg.getValue();
 
     cmd.getConfig(cfg);
   }
@@ -87,11 +87,32 @@ int MainCmds::position_tensor(const vector<string>& args) {
   if(!logger.isLoggingToStderr())
     cerr << Version::getKataGoVersionForHelp() << endl;
 
-  if(!sgfPath.empty())
-    readFromSgf(sgfPath, moveNumber, modelFile);
+  if(!sgfPath.empty()) {
+    auto moveset = readFromSgf(sgfPath, modelFile);
+    if(summary) {
+      moveset.printSummary(std::cout);
+    }
+    else {
+      string sgfPathWithoutExt = Global::chopSuffix(sgfPath, ".sgf");
+      // precompute.writeInputsToNpz(sgfPathWithoutExt + "_Inputs.npz");
+      // precompute.writeOutputsToNpz(sgfPathWithoutExt + "_Trunk.npz");
+      // precompute.writePicksToNpz(sgfPathWithoutExt + "_Pick.npz");
+      dumpTensor(sgfPathWithoutExt + "_Trunk.txt", moveset.moves.at(moveNumber).trunk->data(), PrecomputeFeatures::trunkSize);
+      // dumpTensor(sgfPathWithoutExt + "_Pick.txt", pickNC->data, pickNC->dataLen);
+    }
+  }
 
-  if(!zipPath.empty())
-    readFromZip(zipPath, moveNumber);
+  if(!zipPath.empty()) {
+    auto moveset = readFromZip(zipPath);
+    if(summary) {
+      moveset.printSummary(std::cout);
+    }
+    else {
+      string zipPathWithoutExt = Global::chopSuffix(zipPath, ".zip");
+      dumpTensor(zipPathWithoutExt + "_TrunkUnzip.txt", moveset.moves.at(moveNumber).trunk->data(), PrecomputeFeatures::trunkSize);
+      // dumpTensor(zipPathWithoutExt + "_PickUnzip.txt", pickNC->data, pickNC->dataLen);
+    }
+  }
 
   ScoreValue::freeTables();
   logger.write("All cleaned up, quitting");
@@ -104,12 +125,12 @@ unique_ptr<LoadedModel, void(*)(LoadedModel*)> loadModel(string file) {
   return unique_ptr<LoadedModel, void(*)(LoadedModel*)>(NeuralNet::loadModelFile(file, ""), &NeuralNet::freeLoadedModel);
 }
 
-void readFromSgf(const string& sgfPath, int moveNumber, const string& modelFile) {
+SelectedMoves::Moveset readFromSgf(const string& sgfPath, const string& modelFile) {
   auto model = loadModel(modelFile);
   theLogger->write("Loaded model "+ modelFile);
-  PrecomputeFeatures extractor(*model, maxMoves);
+  PrecomputeFeatures precompute(*model, maxMoves);
 
-  theLogger->write("Starting to extract tensors from move " + Global::intToString(moveNumber) + " in " + sgfPath + "...");
+  theLogger->write("Starting to extract tensors from " + sgfPath + "...");
 
   auto sgf = std::unique_ptr<CompactSgf>(CompactSgf::loadFile(sgfPath));
   const auto& moves = sgf->moves;
@@ -117,37 +138,31 @@ void readFromSgf(const string& sgfPath, int moveNumber, const string& modelFile)
   Board board;
   BoardHistory history;
   Player initialPla;
+  SelectedMoves::Moveset moveset;
   sgf->setupInitialBoardAndHist(rules, board, initialPla, history);
 
-  for(int turnIdx = 0; turnIdx < moveNumber; turnIdx++) {
+  precompute.startGame(sgfPath);
+  for(int turnIdx = 0; turnIdx < moves.size(); turnIdx++) {
     Move move = moves[turnIdx];
+    moveset.insert(turnIdx, move.pla);
+    if(precompute.isFull())
+      throw StringError("Partial game results not implemented");
+    precompute.addBoard(board, history, move);
     // apply move
     bool suc = history.makeBoardMoveTolerant(board, move.loc, move.pla);
     if(!suc)
       throw StringError(Global::strprintf("Illegal move %s at %s", PlayerIO::playerToString(move.pla), Location::toString(move.loc, sgf->xSize, sgf->ySize)));
   }
-  Move move = moves[moveNumber];
-  extractor.startGame(sgfPath);
-  extractor.addBoard(board, history, move);
-  extractor.endGame();
-  vector<PrecomputeFeatures::Result> results = extractor.evaluate();
-  assert(!results.empty());
-  PrecomputeFeatures::Result& result = results.front();
-
-  string sgfPathWithoutExt = Global::chopSuffix(sgfPath, ".sgf");
-  // extractor.writeInputsToNpz(sgfPathWithoutExt + "_Inputs.npz");
-  // extractor.writeOutputsToNpz(sgfPathWithoutExt + "_Trunk.npz");
-  // extractor.writePicksToNpz(sgfPathWithoutExt + "_Pick.npz");
-  dumpTensor(sgfPathWithoutExt + "_Trunk.txt", result.trunk, PrecomputeFeatures::trunkSize);
-  // dumpTensor(sgfPathWithoutExt + "_Pick.txt", pickNC->data, pickNC->dataLen);
+  precompute.endGame();
+  vector<PrecomputeFeatures::Result> results = precompute.evaluate();
+  assert(1 == results.size());
+  PrecomputeFeatures::writeResultToMoveset(results.front(), moveset);
+  return moveset;
 }
 
-void readFromZip(const string& zipPath, int moveNumber) {
-  theLogger->write("Starting to extract tensors from move " + Global::intToString(moveNumber) + " in " + zipPath + "...");
-  auto moveset = SelectedMoves::Moveset::readFromZip(zipPath);
-  string zipPathWithoutExt = Global::chopSuffix(zipPath, ".zip");
-  dumpTensor(zipPathWithoutExt + "_TrunkUnzip.txt", moveset.moves.at(moveNumber).trunk->data(), PrecomputeFeatures::trunkSize);
-  // dumpTensor(zipPathWithoutExt + "_PickUnzip.txt", pickNC->data, pickNC->dataLen);
+SelectedMoves::Moveset readFromZip(const string& zipPath) {
+  theLogger->write("Starting to extract tensors from " + zipPath + "...");
+  return SelectedMoves::Moveset::readFromZip(zipPath);
 }
 
 void dumpTensor(string path, float* data, size_t N) {
