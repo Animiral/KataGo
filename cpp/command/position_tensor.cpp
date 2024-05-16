@@ -127,11 +127,12 @@ void readFromSgf(const string& sgfPath, int moveNumber, const string& modelFile)
       throw StringError(Global::strprintf("Illegal move %s at %s", PlayerIO::playerToString(move.pla), Location::toString(move.loc, sgf->xSize, sgf->ySize)));
   }
   Move move = moves[moveNumber];
+  extractor.startGame(sgfPath);
   extractor.addBoard(board, history, move);
-  extractor.endGame(sgfPath);
-  extractor.evaluate();
-  assert(extractor.hasResult());
-  PrecomputeFeatures::Result result = extractor.nextResult();
+  extractor.endGame();
+  vector<PrecomputeFeatures::Result> results = extractor.evaluate();
+  assert(!results.empty());
+  PrecomputeFeatures::Result& result = results.front();
 
   string sgfPathWithoutExt = Global::chopSuffix(sgfPath, ".sgf");
   // extractor.writeInputsToNpz(sgfPathWithoutExt + "_Inputs.npz");

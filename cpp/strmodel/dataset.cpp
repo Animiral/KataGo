@@ -37,6 +37,10 @@ void SelectedMoves::Moveset::merge(const SelectedMoves::Moveset& rhs) {
   }
 }
 
+bool SelectedMoves::Moveset::hasAllTrunks() const {
+  return moves.end() == std::find_if(moves.begin(), moves.end(), [](const Move& m) { return nullptr == m.trunk; });
+}
+
 void SelectedMoves::Moveset::releaseTrunks() {
   for(Move& move : moves)
     move.trunk.reset();

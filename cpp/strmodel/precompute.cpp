@@ -21,30 +21,36 @@ unique_ptr<ComputeHandle, ComputeHandleDeleter> createComputeHandle(LoadedModel&
 }
 
 PrecomputeFeatures::PrecomputeFeatures(LoadedModel& loadedModel, int cap)
-: handle(createComputeHandle(loadedModel, cap)),
-  inputBuffers(nullptr, {})
+: PrecomputeFeatures(cap)
 {
+  handle = createComputeHandle(loadedModel, cap);
   int modelVersion = NeuralNet::getModelVersion(&loadedModel);
   numSpatialFeatures = NNModelVersion::getNumSpatialFeatures(modelVersion);
   numGlobalFeatures = NNModelVersion::getNumGlobalFeatures(modelVersion);
-  capacity = carrySize = cap;
   inputBuffers.reset(NeuralNet::createInputBuffers(&loadedModel, capacity, PrecomputeFeatures::nnXLen, PrecomputeFeatures::nnYLen));
   allocateBuffers();
 }
 
 PrecomputeFeatures::PrecomputeFeatures(int cap)
-: handle(nullptr, {}), inputBuffers(nullptr, {})
+: handle(nullptr, {}), inputBuffers(nullptr, {}),
+  count(0),
+  capacity(cap)
 {
   numSpatialFeatures = NNModelVersion::getNumSpatialFeatures(NNModelVersion::defaultModelVersion); // 22 features
   numGlobalFeatures = NNModelVersion::getNumGlobalFeatures(NNModelVersion::defaultModelVersion); // 19 features
-  capacity = carrySize = cap;
   allocateBuffers();
 }
 
-void PrecomputeFeatures::addBoard(Board& board, const BoardHistory& history, Move move) {
-  if(count >= capacity)
-    throw StringError("Precompute capacity exhausted: cannot add another board to this batch.");
+void PrecomputeFeatures::startGame(const std::string& sgfPath) {
+  nextResult.sgfPath = sgfPath;
+  nextResult.startIndex = 0;
+  nextResult.trunk = trunk.data() + count * trunkSize;
+  nextResult.movepos = movepos.data() + count;
+  nextResult.player = plas.data() + count;
+}
 
+void PrecomputeFeatures::addBoard(Board& board, const BoardHistory& history, Move move) {
+  assert(!isFull());
   MiscNNInputParams nnInputParams;
   nnInputParams.symmetry = 0;
   nnInputParams.policyOptimism = 0;
@@ -53,124 +59,44 @@ void PrecomputeFeatures::addBoard(Board& board, const BoardHistory& history, Mov
   float* binaryInput = NeuralNet::getSpatialBuffer(inputBuffers.get()) + count * nnXLen * nnYLen * numSpatialFeatures;
   float* globalInput = NeuralNet::getGlobalBuffer(inputBuffers.get()) + count * numGlobalFeatures;
   NNInputs::fillRowV7(board, history, move.pla, nnInputParams, nnXLen, nnYLen, inputsUseNHWC, binaryInput, globalInput);
-  size_t resultIndex = carrySize + count;
-  movepos[resultIndex] = NNPos::locToPos(move.loc, board.x_size, nnXLen, nnYLen);
-  plas[resultIndex] = move.pla;
+  movepos[count] = NNPos::locToPos(move.loc, board.x_size, nnXLen, nnYLen);
+  plas[count] = move.pla;
   count++;
 }
 
-void PrecomputeFeatures::endGame(const std::string& sgfPath) {
-  int moves = carrySize + count - resultTip;
-  Result result {
-    sgfPath,
-    moves,
-    trunk.data() + resultTip * trunkSize,
-    movepos.data() + resultTip,
-    plas.data() + resultTip
-  };
-  results.push(result);
-  resultTip += moves;
+void PrecomputeFeatures::endGame() {
+  nextResult.endIndex = nextResult.startIndex + count - resultTip;
+  results.push_back(nextResult);
+  resultTip = count;
+  nextResult = {};
 }
 
-void PrecomputeFeatures::evaluate() {
+bool PrecomputeFeatures::isFull() const {
+  return count >= capacity;
+}
+
+std::vector<PrecomputeFeatures::Result> PrecomputeFeatures::evaluate() {
   if(count > 0) {
-    float* trunkResultArea = trunk.data() + carrySize*trunkSize;
-    NeuralNet::getOutputTrunk(handle.get(), inputBuffers.get(), count, trunkResultArea);
-  }
-}
-
-PrecomputeFeatures::Result PrecomputeFeatures::nextResult() {
-  Result result = results.front();
-  results.pop();
-  return result;
-}
-
-bool PrecomputeFeatures::hasResult() {
-  return !results.empty();
-}
-
-void PrecomputeFeatures::flip() {
-  if(hasResult())
-    throw StringError("Precomputed results are unused and would be discarded on flip.");
-
-  // move buffers contents from output area to carry area
-  size_t carryCount = carrySize + count - resultTip;
-  if(carryCount >= carrySize)
-    throw StringError("Precompute capacity too small: partial game results would be discarded.");
-
-  size_t newResultTip = carrySize - carryCount;
-  std::copy_n(trunk.data() + resultTip*trunkSize, carryCount*trunkSize, trunk.data() + newResultTip*trunkSize);
-  std::copy_n(movepos.data() + resultTip, carryCount, movepos.data() + newResultTip);
-  std::copy_n(plas.data() + resultTip, carryCount, plas.data() + newResultTip);
-  resultTip = newResultTip;
-  count = 0;
-}
-
-void PrecomputeFeatures::selectIndex(int index) {
-  assert(index < count);
-
-  size_t bufferIndex = carrySize + index;
-  std::copy_n(trunk.data() + bufferIndex*trunkSize, trunkSize, trunk.data() + carrySize*trunkSize);
-  movepos[carrySize] = movepos[bufferIndex];
-  plas[carrySize] = plas[bufferIndex];
-  count = 1;
-}
-
-std::pair<PrecomputeFeatures::Result, PrecomputeFeatures::Result>
-PrecomputeFeatures::splitBlackWhite(Result result) {
-  // temp space for swapping things around
-  vector<float> whiteTrunk(result.moves * trunkSize);
-  vector<int> whiteMovepos(result.moves);
-
-  // move white data to temp space
-  int target = 0; // index to fill next
-  for(int i = 0; i < result.moves; i++) {
-    if(P_WHITE == result.player[i]) {
-      std::copy_n(result.trunk + i*trunkSize, trunkSize, whiteTrunk.begin() + target*trunkSize);
-      whiteMovepos[target] = result.movepos[i];
-      target++;
+    NeuralNet::getOutputTrunk(handle.get(), inputBuffers.get(), count, trunk.data());
+    // if there is an open game, it becomes a partial result; the process resembles endGame(), then startGame()
+    if(count > resultTip) {
+      nextResult.endIndex = nextResult.startIndex + count - resultTip;
+      results.push_back(nextResult);
+      nextResult.startIndex = nextResult.endIndex;
+      nextResult.trunk = trunk.data();
+      nextResult.movepos = movepos.data();
+      nextResult.player = plas.data();
     }
   }
-  int whiteCount = target;
-
-  // move black data to start of result
-  target = 0; // index to fill next
-  for(int i = 0; i < result.moves; i++) {
-    if(P_BLACK == result.player[i]) {
-      std::copy_n(result.trunk + i*trunkSize, trunkSize, result.trunk + target*trunkSize);
-      result.movepos[target] = result.movepos[i];
-      target++;
-    }
-  }
-
-  assert(whiteCount + target == result.moves); // sanity check
-
-  // append white temp data to fill result
-  std::copy_n(whiteTrunk.begin(), whiteCount*trunkSize, result.trunk + target*trunkSize);
-  std::copy_n(whiteMovepos.begin(), whiteCount, result.movepos + target);
-
-  return {
-    Result { // black
-      result.sgfPath,
-      target,
-      result.trunk,
-      result.movepos,
-      nullptr // no player data
-    },
-    Result { // white
-      result.sgfPath,
-      whiteCount,
-      result.trunk + target*trunkSize,
-      result.movepos + target,
-      nullptr // no player data
-    }
-  };
+  count = resultTip = 0;
+  return move(results);
 }
 
 void PrecomputeFeatures::writeResultToMoveset(Result result, SelectedMoves::Moveset& moveset) {
-  assert(result.moves == moveset.moves.size());
+  assert(result.startIndex <= result.endIndex);
+  assert(result.endIndex <= moveset.moves.size());
 
-  for(size_t i = 0; i < result.moves; i++) {
+  for(size_t i = result.startIndex; i < result.endIndex; i++) {
     float* trunkBegin = result.trunk + i*trunkSize;
     float* trunkEnd = result.trunk + (i+1)*trunkSize;
     moveset.moves[i].trunk.reset(new vector<float>(trunkBegin, trunkEnd));
@@ -178,93 +104,49 @@ void PrecomputeFeatures::writeResultToMoveset(Result result, SelectedMoves::Move
   }
 }
 
-void PrecomputeFeatures::writeResultToZip(Result result, const string& filePath) {
-  int err;
-  unique_ptr<zip_t, decltype(&zip_close)> archive{
-    zip_open(filePath.c_str(), ZIP_CREATE | ZIP_TRUNCATE, &err),
-    &zip_close
-  };
-  if(!archive) {
-    zip_error_t error;
-    zip_error_init_with_code(&error, err);
-    string errstr = zip_error_strerror(&error);
-    zip_error_fini(&error);
-    throw StringError("Error opening zip archive: "s + errstr);
-  }
-
-  // add trunk data
-  {
-    unique_ptr<zip_source_t, decltype(&zip_source_free)> source{
-      zip_source_buffer(archive.get(), result.trunk, result.moves*trunkSize*sizeof(float), 0),
-      &zip_source_free
-    };
-    if(!source)
-      throw StringError("Error creating zip source: "s + zip_strerror(archive.get()));
-
-    if(zip_add(archive.get(), "trunk.bin", source.get()) < 0)
-      throw StringError("Error adding trunk.bin to zip archive: "s + zip_strerror(archive.get()));
-    source.release(); // after zip_add, source is managed by libzip
-  }
-
-  // add movepos data
-  {
-    unique_ptr<zip_source_t, decltype(&zip_source_free)> source{
-      zip_source_buffer(archive.get(), result.movepos, result.moves*sizeof(int), 0),
-      &zip_source_free
-    };
-    if(!source)
-      throw StringError("Error creating zip source: "s + zip_strerror(archive.get()));
-
-    if(zip_add(archive.get(), "movepos.bin", source.get()) < 0)
-      throw StringError("Error adding movepos.bin to zip archive: "s + zip_strerror(archive.get()));
-    source.release(); // after zip_add, source is managed by libzip
-  }
-
-  zip_t* archivep = archive.release();
-  if (zip_close(archivep) != 0)
-    throw StringError("Error writing zip archive: "s + zip_strerror(archivep));
-}
-
 void PrecomputeFeatures::writeInputsToNpz(const string& filePath) {
-  auto binaryInputNCHW = std::make_unique<NumpyBuffer<float>>(vector<int64_t>{count, numSpatialFeatures, nnXLen, nnYLen});
-  auto globalInputNC = std::make_unique<NumpyBuffer<float>>(vector<int64_t>{count, numGlobalFeatures});
-  std::copy_n(NeuralNet::getSpatialBuffer(inputBuffers.get()), count*nnXLen*nnYLen*numSpatialFeatures, binaryInputNCHW->data);
-  std::copy_n(NeuralNet::getGlobalBuffer(inputBuffers.get()), count*numGlobalFeatures, globalInputNC->data);
-  auto moveposN = std::make_unique<NumpyBuffer<float>>(vector<int64_t>{count});
-  std::copy_n(movepos.begin() + carrySize, count, moveposN->data);
+  int rows = count;
+  auto binaryInputNCHW = std::make_unique<NumpyBuffer<float>>(vector<int64_t>{rows, numSpatialFeatures, nnXLen, nnYLen});
+  auto globalInputNC = std::make_unique<NumpyBuffer<float>>(vector<int64_t>{rows, numGlobalFeatures});
+  std::copy_n(NeuralNet::getSpatialBuffer(inputBuffers.get()), rows*nnXLen*nnYLen*numSpatialFeatures, binaryInputNCHW->data);
+  std::copy_n(NeuralNet::getGlobalBuffer(inputBuffers.get()), rows*numGlobalFeatures, globalInputNC->data);
+  auto moveposN = std::make_unique<NumpyBuffer<float>>(vector<int64_t>{rows});
+  std::copy_n(movepos.begin(), rows, moveposN->data);
 
   ZipFile zipFile(filePath);
-  uint64_t numBytes = binaryInputNCHW->prepareHeaderWithNumRows(count);
+  uint64_t numBytes = binaryInputNCHW->prepareHeaderWithNumRows(rows);
   zipFile.writeBuffer("binaryInputNCHW", binaryInputNCHW->dataIncludingHeader, numBytes);
-  numBytes = moveposN->prepareHeaderWithNumRows(count);
+  numBytes = moveposN->prepareHeaderWithNumRows(rows);
   zipFile.writeBuffer("movepos", moveposN->dataIncludingHeader, numBytes);
-  numBytes = globalInputNC->prepareHeaderWithNumRows(count);
+  numBytes = globalInputNC->prepareHeaderWithNumRows(rows);
   zipFile.writeBuffer("globalInputNC", globalInputNC->dataIncludingHeader, numBytes);
   zipFile.close();
 }
 
 void PrecomputeFeatures::writeOutputsToNpz(const string& filePath) {
-  auto trunkOutputNCHW = std::make_unique<NumpyBuffer<float>>(vector<int64_t>{count, numTrunkFeatures, nnXLen, nnYLen});
-  std::copy_n(trunk.begin() + carrySize*trunkSize, count*trunkSize, trunkOutputNCHW->data);
-  auto moveposN = std::make_unique<NumpyBuffer<float>>(vector<int64_t>{count});
-  std::copy_n(movepos.begin() + carrySize, count, moveposN->data);
+  int rows = count;
+  auto trunkOutputNCHW = std::make_unique<NumpyBuffer<float>>(vector<int64_t>{rows, numTrunkFeatures, nnXLen, nnYLen});
+  std::copy_n(trunk.begin(), rows*trunkSize, trunkOutputNCHW->data);
+  auto moveposN = std::make_unique<NumpyBuffer<float>>(vector<int64_t>{rows});
+  std::copy_n(movepos.begin(), rows, moveposN->data);
 
   ZipFile zipFile(filePath);
-  uint64_t numBytes = trunkOutputNCHW->prepareHeaderWithNumRows(count);
+  uint64_t numBytes = trunkOutputNCHW->prepareHeaderWithNumRows(rows);
   zipFile.writeBuffer("trunkOutputNCHW", trunkOutputNCHW->dataIncludingHeader, numBytes);
-  numBytes = moveposN->prepareHeaderWithNumRows(count);
+  numBytes = moveposN->prepareHeaderWithNumRows(rows);
   zipFile.writeBuffer("movepos", moveposN->dataIncludingHeader, numBytes);
   zipFile.close();
 }
 
 void PrecomputeFeatures::writePicksToNpz(const string& filePath) {
-  NumpyBuffer<float> pickNC({count, numTrunkFeatures});
+  int rows = count;
+  NumpyBuffer<float> pickNC({rows, numTrunkFeatures});
 
-  for(int i = 0; i < count; i++) {
-    int pos = movepos[carrySize+i];
+  for(int i = 0; i < rows; i++) {
+    int pos = movepos[i];
     if(pos >= 0 && pos < nnXLen * nnYLen) {
       for(int j = 0; j < numTrunkFeatures; j++) {
-        pickNC.data[i*numTrunkFeatures + j] = trunk[(carrySize+i)*trunkSize + j*nnXLen*nnYLen + pos];
+        pickNC.data[i*numTrunkFeatures + j] = trunk[i*trunkSize + j*nnXLen*nnYLen + pos];
       }
     }
     else {
@@ -273,21 +155,16 @@ void PrecomputeFeatures::writePicksToNpz(const string& filePath) {
   }
 
   ZipFile zipFile(filePath);
-  uint64_t numBytes = pickNC.prepareHeaderWithNumRows(count);
+  uint64_t numBytes = pickNC.prepareHeaderWithNumRows(rows);
   zipFile.writeBuffer("pickNC", pickNC.dataIncludingHeader, numBytes);
   zipFile.close();
 }
 
 void PrecomputeFeatures::allocateBuffers() {
-  // The following buffers are part "carry area", part "result area", sized for carrySize/capacity moves.
-  // Results are evaluated into result area and picked up from there via nextResult().
-  // Any leftover evaluated moves that have not been finalized into a result (because there are more moves in the game)
-  // move to the carry area before overwriting the result area and later pieced together into a whole result.
-  trunk.resize((carrySize + capacity) * trunkSize);
-  movepos.resize(carrySize + capacity);
-  plas.resize(carrySize + capacity);
-  resultTip = carrySize; // results start at beginning of result area
-  count = 0;
+  trunk.resize(capacity * trunkSize);
+  movepos.resize(capacity);
+  plas.resize(capacity);
+  count = resultTip = 0;
 }
 
 void ComputeHandleDeleter::operator()(ComputeHandle* handle) noexcept {

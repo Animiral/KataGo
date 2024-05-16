@@ -38,6 +38,7 @@ struct Parameters {
   int batchSize; // Send this many moves to the GPU at once in a worker thread
   int batchThreads; // Number of concurrent workers feeding positions to GPU
   bool recompute; // Overwrite existing ZIPs, do not reuse them
+  bool printRecentMoves; // Output information on which moves are recent moves for which game
 };
 
 // stores recent moves of one player in one game in a Dataset
@@ -51,6 +52,7 @@ Parameters parseArgs(const vector<string>& args);
 unique_ptr<LoadedModel, void(*)(LoadedModel*)> loadModel(string file);
 string movesetToString(const SelectedMoves::Moveset& moveset);
 vector<RecentMoves> getRecentMovesOfEveryGame(const Dataset& dataset, int windowSize, const string& featureDir, bool recompute, Logger& logger);
+void printRecentMoves(const vector<RecentMoves>& recentMoves, const Dataset& dataset);
 string zipPath(const string& sgfPath, const string& featureDir, Player player, const char* title);
 // output all movesets in selected moves into one combined zip
 void outputZip(const SelectedMoves& selectedMoves, const string& path);
@@ -90,7 +92,6 @@ void combineAndDumpRecentMoves(
   RecentMoves* workBegin,       // workload for this thread as begin/end pair,
   RecentMoves* workEnd,         // specifies which moves are recent to which games
   const Dataset& dataset,       // games SGF path lookup
-  SelectedMoves& recentAll,     // holds trunk data associated with the games containing their moves
   const string& featureDir,     // where to put the zip files
   Logger& logger,               // progress report sink
   std::atomic<size_t>& counter, // shared counter to report common progress
@@ -116,10 +117,11 @@ int MainCmds::extract_features(const vector<string>& args) {
   logger.write("Find recent moves of all train/eval/test games using window size " + Global::intToString(params.windowSize) + "...");
 
   vector<RecentMoves> recentByGame = getRecentMovesOfEveryGame(dataset, params.windowSize, params.featureDir, params.recompute, logger);
+  if(params.printRecentMoves)
+    printRecentMoves(recentByGame, dataset);
   SelectedMoves recentAll;
-  for(auto& recent : recentByGame) {
+  for(auto& recent : recentByGame)
     recentAll.merge(recent.sel);
-  }
   size_t total = recentAll.bygame.size();
   logger.write(Global::intToString(total) + " games found. Extracting...");
 
@@ -148,7 +150,7 @@ int MainCmds::extract_features(const vector<string>& args) {
   for(int i = 0; i < accumulateThreadCount; i++) {
     RecentMoves* workBegin = &recentByGame[total*i/accumulateThreadCount];
     RecentMoves* workEnd = &recentByGame[total*(i+1)/accumulateThreadCount];
-    threads.emplace_back(&combineAndDumpRecentMoves, workBegin, workEnd, ref(dataset), ref(recentAll),
+    threads.emplace_back(&combineAndDumpRecentMoves, workBegin, workEnd, ref(dataset),
                          ref(params.featureDir), ref(logger), ref(progress), total, startTime);
   }
 
@@ -177,6 +179,7 @@ Parameters parseArgs(const vector<string>& args) {
   TCLAP::ValueArg<int> batchSizeArg("b","batch-size","Send this many moves to the GPU at once in a worker thread.",false,400,"SIZE",cmd);
   TCLAP::ValueArg<int> batchThreadsArg("t","batch-threads","Number of concurrent workers feeding positions to GPU.",false,4,"COUNT",cmd);
   TCLAP::SwitchArg recomputeArg("r","recompute","Overwrite existing ZIPs, do not reuse them.",cmd,false);
+  TCLAP::SwitchArg printRecentMovesArg("p","print-recent-moves","Output information on which moves are recent moves for which game.",cmd,false);
   cmd.addOverrideConfigArg();
   cmd.parseArgs(args);
 
@@ -186,7 +189,8 @@ Parameters parseArgs(const vector<string>& args) {
   params.windowSize = windowSizeArg.getValue();
   params.batchSize = batchSizeArg.getValue();
   params.batchThreads = batchThreadsArg.getValue();
-  params.recompute = batchThreadsArg.getValue();
+  params.recompute = recomputeArg.getValue();
+  params.printRecentMoves = printRecentMovesArg.getValue();
   cmd.getConfig(*params.cfg);
 
   return params;
@@ -229,6 +233,20 @@ vector<RecentMoves> getRecentMovesOfEveryGame(const Dataset& dataset, int window
     }
   }
   return recentByGame;
+}
+
+void printRecentMoves(const vector<RecentMoves>& recentMoves, const Dataset& dataset) {
+  for(const RecentMoves& rec : recentMoves) {
+    const string& sgfPath = dataset.games[rec.game].sgfPath;
+    std::cout << strprintf("%d recent moves to %s for %s:\n", rec.sel.size(), sgfPath.c_str(), PlayerIO::playerToString(rec.pla).c_str());
+    for(const auto& kv : rec.sel.bygame) {
+      const auto& moves = kv.second.moves;
+      std::cout << strprintf("  %d from %s:", moves.size(), kv.first.c_str());
+      for(const auto& move : moves)
+        std::cout << ' ' << move.index;
+      std::cout << "\n";
+    }
+  }
 }
 
 string zipPath(const string& sgfPath, const string& featureDir, Player player, const char* title) {
@@ -320,15 +338,15 @@ void Worker::processGame(const string& sgfPath, SelectedMoves::Moveset& moveset)
   auto moveIt = std::find_if(moveset.moves.begin(), moveset.moves.end(), needsTrunk);
   auto moveEnd = moveset.moves.end();
 
+  precompute.startGame(sgfPath);
   for(int turnIdx = 0; moveIt != moveEnd; turnIdx++) {
     assert(turnIdx < moves.size()); // moves beyond end of game should never occur in moveset
     Move move = moves[turnIdx];
 
     if(turnIdx == moveIt->index) {
       precompute.addBoard(board, history, move);
-      if(precompute.count >= precompute.capacity) {
+      if(precompute.isFull()) {
         processResults();
-        precompute.flip();
       }
       do {
         moveIt++;
@@ -340,23 +358,24 @@ void Worker::processGame(const string& sgfPath, SelectedMoves::Moveset& moveset)
     if(!suc)
       throw StringError(strprintf("Illegal move %s at %s", PlayerIO::playerToString(move.pla), Location::toString(move.loc, sgf->xSize, sgf->ySize)));
   }
-  precompute.endGame(sgfPath);
+  precompute.endGame();
 }
 
 void Worker::processResults() {
-  precompute.evaluate();
-  while(precompute.hasResult()) {
-    PrecomputeFeatures::Result result = precompute.nextResult();
+  vector<PrecomputeFeatures::Result> results = precompute.evaluate();
+  for(auto& result : results) {
     SelectedMoves::Moveset& moveset = work->bygame[result.sgfPath];
     PrecomputeFeatures::writeResultToMoveset(result, moveset);
-    auto splitSet = moveset.splitBlackWhite();
-    string blackPath = zipPath(result.sgfPath, featureDir, P_BLACK, "Trunk");
-    if(recompute || !FileUtils::exists(blackPath))
-      splitSet.first.writeToZip(blackPath);
-    string whitePath = zipPath(result.sgfPath, featureDir, P_WHITE, "Trunk");
-    if(recompute || !FileUtils::exists(whitePath))
-      splitSet.second.writeToZip(whitePath);
-    moveset.releaseTrunks(); // keeping this in memory for every file would be too much
+    if(moveset.hasAllTrunks()) {
+      auto splitSet = moveset.splitBlackWhite();
+      string blackPath = zipPath(result.sgfPath, featureDir, P_BLACK, "Trunk");
+      if(recompute || !FileUtils::exists(blackPath))
+        splitSet.first.writeToZip(blackPath);
+      string whitePath = zipPath(result.sgfPath, featureDir, P_WHITE, "Trunk");
+      if(recompute || !FileUtils::exists(whitePath))
+        splitSet.second.writeToZip(whitePath);
+      moveset.releaseTrunks(); // keeping this in memory for every file would be too much
+    }
   }
 }
 
@@ -375,7 +394,6 @@ void combineAndDumpRecentMoves(
   RecentMoves* workBegin,       // workload for this thread as begin/end pair,
   RecentMoves* workEnd,         // specifies which moves are recent to which games
   const Dataset& dataset,       // games SGF path lookup
-  SelectedMoves& recentAll,     // holds trunk data associated with the games containing their moves
   const string& featureDir,     // where to put the zip files
   Logger& logger,               // progress report sink
   std::atomic<size_t>& counter, // shared counter to report common progress

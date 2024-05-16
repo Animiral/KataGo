@@ -25,41 +25,25 @@ public:
 
   struct Result {
     std::string sgfPath;
-    int moves; // number of moves evaluated
+    size_t startIndex; // index (in moveset, not in game) of first result move
+    size_t endIndex; // one-past index (in moveset) of last result move
     float* trunk; // output for every position in the game
     int* movepos;
     Player* player; // player to move for every position
   };
 
-  int count; // first dimension size; rows entered
-  int capacity; // first dimension size; max rows
-  int carrySize; // number of rows in partial game
-  // buffers: [0,carrySize) "carry area", [carrySize,carrySize+capacity) "result area"
-  std::vector<float> trunk; // each entry of length trunkSize 
-  std::vector<int> movepos;
-  std::vector<Player> plas;
-
+  // signal the start of input for the specified game
+  void startGame(const std::string& sgfPath);
   // extract input tensor and add it as new row
   void addBoard(Board& board, const BoardHistory& history, Move move);
   // signal the end of input, finalize result for the game with the given path
-  void endGame(const std::string& sgfPath);
-  // run all added boards through the neural net, carry over results for partial games
-  void evaluate();
-  // get evaluated data on one game, valid until next evaluate()
-  Result nextResult();
-  bool hasResult();
-  // prepare the extractor for more input, preserve partial result rows in carry buffers
-  void flip();
-
-  // move the data from the specified index to the first position, then set count=1
-  void selectIndex(int index);
-
-  std::pair<Result, Result> splitBlackWhite(Result result);
+  void endGame();
+  bool isFull() const;
+  // run all added boards through the neural net; invalidate all previous results
+  std::vector<Result> evaluate();
 
   // copy trunk data to moveset; sizes must match
   static void writeResultToMoveset(Result result, SelectedMoves::Moveset& moveset);
-  // write trunk & loc features in binary format
-  static void writeResultToZip(Result result, const std::string& filePath);
   void writeInputsToNpz(const std::string& filePath);
   void writeOutputsToNpz(const std::string& filePath);
   void writePicksToNpz(const std::string& filePath);
@@ -77,8 +61,17 @@ private:
   std::unique_ptr<ComputeHandle, ComputeHandleDeleter> handle;
   std::unique_ptr<InputBuffers, InputBuffersDeleter> inputBuffers;
 
-  std::queue<Result> results;
-  size_t resultTip; // index of next row after finalized results
+  size_t count; // input rows (boards) entered
+  size_t capacity; // max rows
+
+  // capacity-sized buffers
+  std::vector<float> trunk; // each entry of length trunkSize 
+  std::vector<int> movepos;
+  std::vector<Player> plas;
+
+  Result nextResult; // next result in the making by adding boards
+  size_t resultTip; // index of buffer row where nextResult starts
+  std::vector<Result> results;
 
   int numSpatialFeatures;
   int numGlobalFeatures;
