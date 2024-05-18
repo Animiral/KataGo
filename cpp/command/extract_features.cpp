@@ -120,44 +120,51 @@ int MainCmds::extract_features(const vector<string>& args) {
   vector<RecentMoves> recentByGame = getRecentMovesOfEveryGame(dataset, params.windowSize, params.featureDir, params.recompute, logger);
   if(params.printRecentMoves)
     printRecentMoves(recentByGame, dataset);
-  SelectedMoves recentAll;
-  for(auto& recent : recentByGame)
-    recentAll.merge(recent.sel);
-  size_t total = recentAll.bygame.size();
-  logger.write(Global::intToString(total) + " games found. Extracting...");
 
-  Worker::logger = &logger;
-  Worker::featureDir = params.featureDir;
-  Worker::recompute = params.recompute;
-  Worker::printResultsDebug = params.printRecentMoves; // clumsy tie of unrelated debug print options
-  Worker::setWork(recentAll);
-
-  vector<Worker> workers;
-  vector<std::thread> threads;
-  for(int i = 0; i < params.batchThreads; i++)
-    workers.emplace_back(PrecomputeFeatures(*loadedModel, params.batchSize));
-  for(int i = 0; i < params.batchThreads; i++)
-    threads.emplace_back(ref(workers[i]));
-  for(auto& thread : threads)
-    thread.join();
+  // combine exactly what needs to be precomputed for which game
+  // and do it using concurrent GPU workers.
+  size_t total = 0;
+  {
+    SelectedMoves recentAll;
+    for(auto& recent : recentByGame)
+      recentAll.merge(recent.sel);
+    total = recentAll.bygame.size();
+    logger.write(Global::intToString(total) + " games found. Extracting...");
+  
+    Worker::logger = &logger;
+    Worker::featureDir = params.featureDir;
+    Worker::recompute = params.recompute;
+    Worker::printResultsDebug = params.printRecentMoves; // clumsy tie of unrelated debug print options
+    Worker::setWork(recentAll);
+  
+    vector<Worker> workers;
+    vector<std::thread> threads;
+    for(int i = 0; i < params.batchThreads; i++)
+      workers.emplace_back(PrecomputeFeatures(*loadedModel, params.batchSize));
+    for(int i = 0; i < params.batchThreads; i++)
+      threads.emplace_back(ref(workers[i]));
+    for(auto& thread : threads)
+      thread.join();
+  }
 
   // all trunks are now available as precomputed trunk ZIPs;
   // piece them back together into recent move sets and output recent ZIPs
-  constexpr int accumulateThreadCount = 16;
-  logger.write(strprintf("Accumulating recent moves using %d threads...", accumulateThreadCount));
-  auto startTime = std::chrono::system_clock::now();
-  total = recentByGame.size();
-  std::atomic<size_t> progress(0);
-  threads.clear();
-  for(int i = 0; i < accumulateThreadCount; i++) {
-    RecentMoves* workBegin = &recentByGame[total*i/accumulateThreadCount];
-    RecentMoves* workEnd = &recentByGame[total*(i+1)/accumulateThreadCount];
-    threads.emplace_back(&combineAndDumpRecentMoves, workBegin, workEnd, ref(dataset),
-                         ref(params.featureDir), ref(logger), ref(progress), total, startTime);
+  {
+    constexpr int accumulateThreadCount = 16;
+    logger.write(strprintf("Accumulating recent moves using %d threads...", accumulateThreadCount));
+    auto startTime = std::chrono::system_clock::now();
+    total = recentByGame.size();
+    std::atomic<size_t> progress(0);
+    vector<std::thread> threads;
+    for(int i = 0; i < accumulateThreadCount; i++) {
+      RecentMoves* workBegin = &recentByGame[total*i/accumulateThreadCount];
+      RecentMoves* workEnd = &recentByGame[total*(i+1)/accumulateThreadCount];
+      threads.emplace_back(&combineAndDumpRecentMoves, workBegin, workEnd, ref(dataset),
+                           ref(params.featureDir), ref(logger), ref(progress), total, startTime);
+    }
+    for(auto& thread : threads)
+      thread.join();
   }
-
-  for(auto& thread : threads)
-    thread.join();
 
   ScoreValue::freeTables();
   logger.write("All cleaned up, quitting");
@@ -307,8 +314,10 @@ void Worker::operator()() {
       moveset->merge(SelectedMoves::Moveset::readFromZip(whitePath, P_WHITE));
 
     // trunks loaded from existing ZIPs are automatically excluded from processing
-    processGame(*sgfPath, *moveset);
-    reportProgress(*sgfPath);
+    if(moveset->hasAllTrunks())
+      moveset->releaseTrunks(); // throw away and re-read the ZIP later to save memory
+    else
+      processGame(*sgfPath, *moveset);
   }
   processResults();
 }
@@ -367,7 +376,7 @@ void printResultToStdout(const PrecomputeFeatures::Result& result, const Selecte
     int firstMove = moveset.moves.at(result.startIndex).index;
     int lastMove = moveset.moves.at(result.endIndex-1).index;
     std::cout << strprintf("Result %s: move %d-%d\n", result.sgfPath.c_str(), firstMove, lastMove);
-    moveset.printSummary(std::cout);
+    // moveset.printSummary(std::cout);
   }
 }
 
@@ -375,9 +384,9 @@ void Worker::processResults() {
   vector<PrecomputeFeatures::Result> results = precompute.evaluate();
   for(auto& result : results) {
     SelectedMoves::Moveset& moveset = work->bygame[result.sgfPath];
-    PrecomputeFeatures::writeResultToMoveset(result, moveset);
     if(printResultsDebug)
       printResultToStdout(result, moveset);
+    PrecomputeFeatures::writeResultToMoveset(result, moveset);
     if(moveset.hasAllTrunks()) {
       auto splitSet = moveset.splitBlackWhite();
       string blackPath = zipPath(result.sgfPath, featureDir, P_BLACK, "Trunk");
@@ -387,6 +396,7 @@ void Worker::processResults() {
       if(recompute || !FileUtils::exists(whitePath))
         splitSet.second.writeToZip(whitePath);
       moveset.releaseTrunks(); // keeping this in memory for every file would be too much
+      reportProgress(result.sgfPath);
     }
   }
 }
