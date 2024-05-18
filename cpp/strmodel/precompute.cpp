@@ -96,11 +96,13 @@ void PrecomputeFeatures::writeResultToMoveset(Result result, SelectedMoves::Move
   assert(result.startIndex <= result.endIndex);
   assert(result.endIndex <= moveset.moves.size());
 
-  for(size_t i = result.startIndex; i < result.endIndex; i++) {
+  size_t count = result.endIndex - result.startIndex;
+
+  for(size_t i = 0; i < count; i++) {
     float* trunkBegin = result.trunk + i*trunkSize;
     float* trunkEnd = result.trunk + (i+1)*trunkSize;
-    moveset.moves[i].trunk.reset(new vector<float>(trunkBegin, trunkEnd));
-    moveset.moves[i].pos = result.movepos[i];
+    moveset.moves[result.startIndex+i].trunk.reset(new vector<float>(trunkBegin, trunkEnd));
+    moveset.moves[result.startIndex+i].pos = result.movepos[i];
   }
 }
 

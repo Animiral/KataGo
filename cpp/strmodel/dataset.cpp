@@ -146,7 +146,8 @@ float trunkChecksum(const TrunkOutput& trunk) {
 
 void SelectedMoves::Moveset::printSummary(std::ostream& stream) const {
   for(const Move& m : moves) {
-    stream << strprintf("%d: pos %d, trunk %f\n", m.index, m.pos, trunkChecksum(*m.trunk));
+    float trunkSum = m.trunk ? trunkChecksum(*m.trunk) : 0;
+    stream << strprintf("%d: pos %d, trunk %f\n", m.index, m.pos, trunkSum);
   }
 }
 

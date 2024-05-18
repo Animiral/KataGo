@@ -69,6 +69,7 @@ class Worker {
   static Logger* logger; // shared logger for all workers
   static string featureDir; // shared configuration: directory for zip output
   static bool recompute; // shared configuration: set true to disregard existing zips
+  static bool printResultsDebug; // summary of precompute results to stdout
 
  private:
 
@@ -128,6 +129,7 @@ int MainCmds::extract_features(const vector<string>& args) {
   Worker::logger = &logger;
   Worker::featureDir = params.featureDir;
   Worker::recompute = params.recompute;
+  Worker::printResultsDebug = params.printRecentMoves; // clumsy tie of unrelated debug print options
   Worker::setWork(recentAll);
 
   vector<Worker> workers;
@@ -273,6 +275,7 @@ void outputZip(const SelectedMoves& selectedMoves, const string& path) {
 Logger* Worker::logger;
 string Worker::featureDir;
 bool Worker::recompute;
+bool Worker::printResultsDebug;
 SelectedMoves* Worker::work;
 std::map<string, SelectedMoves::Moveset>::iterator Worker::workIterator;
 std::mutex Worker::workMutex;
@@ -344,9 +347,8 @@ void Worker::processGame(const string& sgfPath, SelectedMoves::Moveset& moveset)
       if(precompute.isFull()) {
         processResults();
       }
-      do {
-        moveIt++;
-      } while(moveIt != moveEnd && !needsTrunk(*moveIt));
+      do moveIt++;
+      while(moveIt != moveEnd && !needsTrunk(*moveIt));
     }
 
     // apply move
@@ -357,11 +359,25 @@ void Worker::processGame(const string& sgfPath, SelectedMoves::Moveset& moveset)
   precompute.endGame();
 }
 
+void printResultToStdout(const PrecomputeFeatures::Result& result, const SelectedMoves::Moveset& moveset) {
+  if(result.startIndex >= result.endIndex) {
+    std::cout << strprintf("Result %s: empty result\n", result.sgfPath.c_str());
+  }
+  else {
+    int firstMove = moveset.moves.at(result.startIndex).index;
+    int lastMove = moveset.moves.at(result.endIndex-1).index;
+    std::cout << strprintf("Result %s: move %d-%d\n", result.sgfPath.c_str(), firstMove, lastMove);
+    moveset.printSummary(std::cout);
+  }
+}
+
 void Worker::processResults() {
   vector<PrecomputeFeatures::Result> results = precompute.evaluate();
   for(auto& result : results) {
     SelectedMoves::Moveset& moveset = work->bygame[result.sgfPath];
     PrecomputeFeatures::writeResultToMoveset(result, moveset);
+    if(printResultsDebug)
+      printResultToStdout(result, moveset);
     if(moveset.hasAllTrunks()) {
       auto splitSet = moveset.splitBlackWhite();
       string blackPath = zipPath(result.sgfPath, featureDir, P_BLACK, "Trunk");
