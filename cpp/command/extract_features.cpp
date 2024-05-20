@@ -147,7 +147,7 @@ int MainCmds::extract_features(const vector<string>& args) {
       thread.join();
   }
 
-  // all trunks are now available as precomputed trunk ZIPs;
+  // all picks are now available as precomputed pick ZIPs;
   // piece them back together into recent move sets and output recent ZIPs
   {
     constexpr int accumulateThreadCount = 16;
@@ -306,16 +306,16 @@ void Worker::operator()() {
   SelectedMoves::Moveset* moveset;
   while(fetchWork(sgfPath, moveset)) {
     // try to get already computed data, if we are resuming and it is available
-    string blackPath = zipPath(*sgfPath, featureDir, P_BLACK, "Trunk");
+    string blackPath = zipPath(*sgfPath, featureDir, P_BLACK, "Pick");
     if(!recompute && FileUtils::exists(blackPath))
       moveset->merge(SelectedMoves::Moveset::readFromZip(blackPath, P_BLACK));
-    string whitePath = zipPath(*sgfPath, featureDir, P_WHITE, "Trunk");
+    string whitePath = zipPath(*sgfPath, featureDir, P_WHITE, "Pick");
     if(!recompute && FileUtils::exists(whitePath))
       moveset->merge(SelectedMoves::Moveset::readFromZip(whitePath, P_WHITE));
 
-    // trunks loaded from existing ZIPs are automatically excluded from processing
-    if(moveset->hasAllTrunks())
-      moveset->releaseTrunks(); // throw away and re-read the ZIP later to save memory
+    // picks loaded from existing ZIPs are automatically excluded from processing
+    if(moveset->hasAllPicks())
+      moveset->releaseStorage(); // throw away and re-read the ZIP later to save memory
     else
       processGame(*sgfPath, *moveset);
   }
@@ -341,9 +341,9 @@ void Worker::processGame(const string& sgfPath, SelectedMoves::Moveset& moveset)
   BoardHistory history;
   Player initialPla;
   sgf->setupInitialBoardAndHist(rules, board, initialPla, history);
-  // moveset is always in ascending order; we calculate all moves which do not have trunk data
-  auto needsTrunk = [](SelectedMoves::Move& m) { return nullptr == m.trunk; };
-  auto moveIt = std::find_if(moveset.moves.begin(), moveset.moves.end(), needsTrunk);
+  // moveset is always in ascending order; we calculate all moves which do not have pick data
+  auto needsPick = [](SelectedMoves::Move& m) { return nullptr == m.pick; };
+  auto moveIt = std::find_if(moveset.moves.begin(), moveset.moves.end(), needsPick);
   auto moveEnd = moveset.moves.end();
 
   precompute.startGame(sgfPath);
@@ -357,7 +357,7 @@ void Worker::processGame(const string& sgfPath, SelectedMoves::Moveset& moveset)
         processResults();
       }
       do moveIt++;
-      while(moveIt != moveEnd && !needsTrunk(*moveIt));
+      while(moveIt != moveEnd && !needsPick(*moveIt));
     }
 
     // apply move
@@ -381,21 +381,21 @@ void printResultToStdout(const PrecomputeFeatures::Result& result, const Selecte
 }
 
 void Worker::processResults() {
-  vector<PrecomputeFeatures::Result> results = precompute.evaluate();
+  vector<PrecomputeFeatures::Result> results = precompute.evaluatePicks();
   for(auto& result : results) {
     SelectedMoves::Moveset& moveset = work->bygame[result.sgfPath];
     if(printResultsDebug)
       printResultToStdout(result, moveset);
     PrecomputeFeatures::writeResultToMoveset(result, moveset);
-    if(moveset.hasAllTrunks()) {
+    if(moveset.hasAllPicks()) {
       auto splitSet = moveset.splitBlackWhite();
-      string blackPath = zipPath(result.sgfPath, featureDir, P_BLACK, "Trunk");
+      string blackPath = zipPath(result.sgfPath, featureDir, P_BLACK, "Picks");
       if(recompute || !FileUtils::exists(blackPath))
         splitSet.first.writeToZip(blackPath);
-      string whitePath = zipPath(result.sgfPath, featureDir, P_WHITE, "Trunk");
+      string whitePath = zipPath(result.sgfPath, featureDir, P_WHITE, "Picks");
       if(recompute || !FileUtils::exists(whitePath))
         splitSet.second.writeToZip(whitePath);
-      moveset.releaseTrunks(); // keeping this in memory for every file would be too much
+      moveset.releaseStorage(); // keeping this in memory for every file would be too much
       reportProgress(result.sgfPath);
     }
   }
@@ -427,11 +427,11 @@ void combineAndDumpRecentMoves(
     SelectedMoves precomputed;
     for(auto& kv : moves->sel.bygame) {
       Player pla = kv.second.moves[0].pla; // players never play against themselves, therefore we can just pick color of first move
-      string path = zipPath(kv.first, featureDir, pla, "Trunk");
+      string path = zipPath(kv.first, featureDir, pla, "Pick");
       precomputed.bygame[kv.first] = SelectedMoves::Moveset::readFromZip(path, moves->pla);
     }
     // adopt precomputated sets into recent move set
-    moves->sel.copyTrunkFrom(precomputed);
+    moves->sel.copyFeaturesFrom(precomputed);
     string path = zipPath(dataset.games[moves->game].sgfPath, featureDir, moves->pla, "Recent");
     outputZip(moves->sel, path);
     size_t p = ++counter;

@@ -29,6 +29,7 @@ public:
     size_t endIndex; // one-past index (in moveset) of last result move
     float* trunk; // output for every position in the game
     int* movepos;
+    float* pick; // pos-specific output for every position in the game
     Player* player; // player to move for every position
   };
 
@@ -40,7 +41,8 @@ public:
   void endGame();
   bool isFull() const;
   // run all added boards through the neural net; invalidate all previous results
-  std::vector<Result> evaluate();
+  std::vector<Result> evaluateTrunks();
+  std::vector<Result> evaluatePicks();
 
   // copy trunk data to moveset; sizes must match
   static void writeResultToMoveset(Result result, SelectedMoves::Moveset& moveset);
@@ -67,6 +69,7 @@ private:
   // capacity-sized buffers
   std::vector<float> trunk; // each entry of length trunkSize 
   std::vector<int> movepos;
+  std::vector<float> pick; // each entry of length numTrunkFeatures
   std::vector<Player> plas;
 
   Result nextResult; // next result in the making by adding boards

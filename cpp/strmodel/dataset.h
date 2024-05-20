@@ -12,6 +12,7 @@
 #include "neuralnet/strengthnet.h"
 
 using TrunkOutput = std::vector<float>;
+using PickOutput = std::vector<float>;
 
 // represents a set of moves, possibly spread over several games
 struct SelectedMoves {
@@ -20,14 +21,15 @@ struct SelectedMoves {
     Player pla;
     // output values: filled later
     std::shared_ptr<TrunkOutput> trunk; // trunk output data
+    std::shared_ptr<PickOutput> pick; // pick output data
     int pos; // index into trunk data of move chosen by player
   };
   struct Moveset {
     std::vector<Move> moves; // in ascending order
     void insert(int index, Player pla); // preserves order
     void merge(const Moveset& rhs); // merge rhs entries into this
-    bool hasAllTrunks() const; // true if all moves have trunk data
-    void releaseTrunks(); // free memory by letting go of TrunkOutputs (can be re-read from zip later)
+    bool hasAllPicks() const; // true if all moves have pick data
+    void releaseStorage(); // free memory by letting go of TrunkOutputs/PickOutputs (can be re-read from zip later)
     std::pair<Moveset, Moveset> splitBlackWhite() const;
     void writeToZip(const std::string& filePath) const;
     void printSummary(std::ostream& stream) const; // list contained moves in readable format for debugging
@@ -44,7 +46,7 @@ struct SelectedMoves {
 
   size_t size() const; // count selected moves
   void merge(const SelectedMoves& rhs); // merge rhs entries into this
-  void copyTrunkFrom(const SelectedMoves& rhs); // get trunk/pos data into this
+  void copyFeaturesFrom(const SelectedMoves& rhs); // get trunk/pos data into this
 };
 
 // The dataset is a chronological sequence of games with move features.

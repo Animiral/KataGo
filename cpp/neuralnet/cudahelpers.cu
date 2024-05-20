@@ -1732,3 +1732,21 @@ void customCudaApplyCScaleBiasNHWC(const float* in, float* out, const float* sca
 void customCudaApplyCScaleBiasNHWC(const half* in, half* out, const half* scale, const half* biases, const half* mask, int nSize, int xySize, int cSize, int activation) {
   sharedApplyCScaleBiasNHWC(in,out,scale,biases,mask,nSize,xySize,cSize,true,activation);
 }
+
+__global__
+void customCudaBatchIndexKernel(const float* in, const int* index, float* out, int n, int c, int xy) {
+  int nIdx = blockIdx.x * blockDim.x + threadIdx.x;
+  
+  if(nIdx < n) {
+    int pick = index[nIdx];
+
+    for (int i = 0; i < c; ++i) {
+      out[nIdx * c + i] = in[nIdx * c * xy + i * xy + pick];
+    }
+  }
+}
+
+void customCudaBatchIndex(const float* in, const int* index, float* out, int n, int c, int xy) {
+  int numBlocks = (targetNumThreads+n-1)/targetNumThreads;
+  customCudaBatchIndexKernel<<<numBlocks,targetNumThreads>>>(in,index,out,n,c,xy);
+}

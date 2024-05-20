@@ -2030,10 +2030,12 @@ struct Buffers {
   void* inputBuf;
   float* inputGlobalBufFloat;
   void* inputGlobalBuf;
+  int* posBuf;
   size_t inputBufBytesFloat;
   size_t inputBufBytes;
   size_t inputGlobalBufBytesFloat;
   size_t inputGlobalBufBytes;
+  size_t posBufBytes;
 
   float* trunkBuf;
   size_t trunkBufBytes;
@@ -2041,6 +2043,8 @@ struct Buffers {
   size_t policyPassBufBytes;
   float* policyBuf;
   size_t policyBufBytes;
+  float* pickBuf;
+  size_t pickBufBytes;
 
   float* valueBuf;
   size_t valueBufBytes;
@@ -2066,11 +2070,13 @@ struct Buffers {
     inputBufBytes = m.numInputChannels * batchXYBytes;
     inputGlobalBufBytesFloat = m.numInputGlobalChannels * batchFloatBytes;
     inputGlobalBufBytes = m.numInputGlobalChannels * batchBytes;
+    posBufBytes = m.maxBatchSize * sizeof(int);
 
     CUDA_ERR("Buffers",cudaMalloc(&inputBufFloat, inputBufBytesFloat));
     CUDA_ERR("Buffers",cudaMalloc(&inputBuf, inputBufBytes));
     CUDA_ERR("Buffers",cudaMalloc(&inputGlobalBufFloat, inputGlobalBufBytesFloat));
     CUDA_ERR("Buffers",cudaMalloc(&inputGlobalBuf, inputGlobalBufBytes));
+    CUDA_ERR("Buffers",cudaMalloc(&posBuf, posBufBytes));
 
     assert(m.version >= 12 ? m.policyHead->p2Channels == 2 : m.policyHead->p2Channels == 1);
 
@@ -2080,6 +2086,8 @@ struct Buffers {
     CUDA_ERR("Buffers",cudaMalloc(&policyPassBuf, policyPassBufBytes));
     policyBufBytes = m.policyHead->p2Channels * batchXYFloatBytes;
     CUDA_ERR("Buffers",cudaMalloc(&policyBuf, policyBufBytes));
+    pickBufBytes = m.trunk->trunkNumChannels * batchFloatBytes;
+    CUDA_ERR("Buffers",cudaMalloc(&pickBuf, pickBufBytes));
 
     valueBufBytes = m.valueHead->valueChannels * batchFloatBytes;
     CUDA_ERR("Buffers",cudaMalloc(&valueBuf, valueBufBytes));
@@ -2333,6 +2341,7 @@ struct InputBuffers {
 
   size_t userInputBufferBytes;
   size_t userInputGlobalBufferBytes;
+  size_t userPosBufferBytes;
   size_t policyPassResultBufferBytes;
   size_t policyResultBufferBytes;
   size_t valueResultBufferBytes;
@@ -2341,6 +2350,7 @@ struct InputBuffers {
 
   float* userInputBuffer; //Host pointer
   float* userInputGlobalBuffer; //Host pointer
+  int* userPosBuffer; //Host pointer
 
   float* trunkResults; //Host pointer
   float* policyPassResults; //Host pointer
@@ -2375,6 +2385,7 @@ struct InputBuffers {
 
     userInputBufferBytes = (size_t)m.numInputChannels * maxBatchSize * nnXLen * nnYLen * sizeof(float);
     userInputGlobalBufferBytes = (size_t)m.numInputGlobalChannels * maxBatchSize * sizeof(float);
+    userPosBufferBytes = (size_t)maxBatchSize * sizeof(int);
     policyPassResultBufferBytes = (size_t)maxBatchSize * policyChannels * sizeof(float);
     policyResultBufferBytes = (size_t)maxBatchSize * policyChannels * nnXLen * nnYLen * sizeof(float);
     valueResultBufferBytes = (size_t)maxBatchSize * m.numValueChannels * sizeof(float);
@@ -2383,6 +2394,7 @@ struct InputBuffers {
 
     userInputBuffer = new float[(size_t)m.numInputChannels * maxBatchSize * nnXLen * nnYLen];
     userInputGlobalBuffer = new float[(size_t)m.numInputGlobalChannels * maxBatchSize];
+    userPosBuffer = new int[(size_t)maxBatchSize];
 
     trunkResults = new float[(size_t)m.trunk.trunkNumChannels * maxBatchSize * nnXLen * nnYLen * sizeof(float)];
     policyPassResults = new float[(size_t)maxBatchSize * policyChannels];
@@ -2396,6 +2408,7 @@ struct InputBuffers {
   ~InputBuffers() {
     delete[] userInputBuffer;
     delete[] userInputGlobalBuffer;
+    delete[] userPosBuffer;
     delete[] trunkResults;
     delete[] policyPassResults;
     delete[] policyResults;
@@ -2418,6 +2431,9 @@ float* NeuralNet::getSpatialBuffer(InputBuffers* buffers) {
 }
 float* NeuralNet::getGlobalBuffer(InputBuffers* buffers) {
   return buffers->userInputGlobalBuffer;
+}
+int* NeuralNet::getPosBuffer(InputBuffers* buffers) {
+  return buffers->userPosBuffer;
 }
 void NeuralNet::freeInputBuffers(InputBuffers* inputBuffers) {
   delete inputBuffers;
@@ -2711,6 +2727,76 @@ void NeuralNet::getOutputTrunk(
   );
 
   CUDA_ERR("getOutputTrunk",cudaMemcpy(trunkBuffer, buffers->trunkBuf, inputBuffers->singleTrunkResultBytes*batchSize, cudaMemcpyDeviceToHost));
+}
+
+void NeuralNet::getOutputPick(
+  ComputeHandle* gpuHandle,
+  InputBuffers* inputBuffers,
+  int numBatchEltsFilled,
+  float* pickBuffer
+) {
+  assert(numBatchEltsFilled <= inputBuffers->maxBatchSize);
+  assert(numBatchEltsFilled > 0);
+  const int batchSize = numBatchEltsFilled;
+  const int nnXLen = gpuHandle->nnXLen;
+  const int nnYLen = gpuHandle->nnYLen;
+  const int version = gpuHandle->model->version;
+
+  const int numSpatialFeatures = NNModelVersion::getNumSpatialFeatures(version);
+  const int numGlobalFeatures = NNModelVersion::getNumGlobalFeatures(version);
+  assert(numSpatialFeatures == gpuHandle->model->numInputChannels);
+  assert(numSpatialFeatures * nnXLen * nnYLen == inputBuffers->singleInputElts);
+  assert(numGlobalFeatures == inputBuffers->singleInputGlobalElts);
+
+  Buffers* buffers = gpuHandle->buffers.get();
+  ScratchBuffers* scratch = gpuHandle->scratch.get();
+
+  assert(!gpuHandle->usingFP16); // not implemented here
+  assert(!gpuHandle->inputsUseNHWC); // not implemented here
+  assert(gpuHandle->requireExactNNLen); // only process 19x19 boards
+
+  assert(inputBuffers->userInputBufferBytes == buffers->inputBufBytes);
+  assert(inputBuffers->userInputGlobalBufferBytes == buffers->inputGlobalBufBytes);
+  assert(inputBuffers->singleInputBytes == inputBuffers->singleInputElts*4);
+  assert(inputBuffers->singleInputGlobalBytes == inputBuffers->singleInputGlobalElts*4);
+
+  CUDA_ERR("getOutputPick",cudaMemcpy(buffers->inputBuf, inputBuffers->userInputBuffer, inputBuffers->singleInputBytes*batchSize, cudaMemcpyHostToDevice));
+  CUDA_ERR("getOutputPick",cudaMemcpy(buffers->inputGlobalBuf, inputBuffers->userInputGlobalBuffer, inputBuffers->singleInputGlobalBytes*batchSize, cudaMemcpyHostToDevice));
+
+  // used in pooling layers to normalize for board size
+  SizedBuf<void*> mask(scratch->allocator, scratch->getBufSizeXY(1));
+  SizedBuf<void*> maskFloat(scratch->allocator, scratch->getBufSizeXYFloat(1));
+  SizedBuf<void*> maskSum(scratch->allocator, scratch->getBufSizeFloat(1));
+
+  void* maskBuf = mask.buf;
+  float* maskFloatBuf = (float*)maskFloat.buf;
+  float* maskSumBuf = (float*)maskSum.buf;
+  customCudaChannel0ExtractNCHW((const float*)buffers->inputBuf, (float*)maskBuf, batchSize, gpuHandle->model->numInputChannels, nnXLen*nnYLen);
+  CUDA_ERR("modelExtractMask",cudaPeekAtLastError());
+  fillMaskFloatBufAndMaskSumBuf(maskBuf,maskFloatBuf,maskSumBuf,gpuHandle->usingFP16,batchSize,nnXLen,nnYLen);
+
+  //Set to NULL to signal downstream that this buf doesn't need to be used
+  maskBuf = NULL;
+  maskFloatBuf = NULL;
+
+  Trunk& trunk = *gpuHandle->model->trunk;
+  trunk.apply(
+    gpuHandle->cudaHandles.get(),
+    scratch,
+    batchSize,
+    buffers->inputBuf,
+    buffers->inputGlobalBuf,
+    maskBuf,
+    maskSumBuf,
+    buffers->trunkBuf,
+    buffers->workspaceBuf,
+    buffers->workspaceBytes
+  );
+
+  // Pick cherries from the trunk output
+  CUDA_ERR("getOutputPick",cudaMemcpy(buffers->posBuf, inputBuffers->userPosBuffer, batchSize*sizeof(int), cudaMemcpyHostToDevice));
+  customCudaBatchIndex(buffers->trunkBuf, buffers->posBuf, buffers->pickBuf, batchSize, trunk.trunkNumChannels, nnXLen * nnYLen);
+  CUDA_ERR("getOutputPick",cudaMemcpy(pickBuffer, buffers->pickBuf, trunk.trunkNumChannels*batchSize*sizeof(int), cudaMemcpyDeviceToHost));
 }
 
 //TESTING ----------------------------------------------------------------------------------

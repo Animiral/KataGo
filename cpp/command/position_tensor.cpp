@@ -160,7 +160,7 @@ SelectedMoves::Moveset readFromSgf(const string& sgfPath, const string& modelFil
   PrecomputeFeatures precompute(*model, maxMoves);
   theLogger->write("Starting to extract tensors from " + sgfPath + "...");
   SelectedMoves::Moveset moveset = readSgfToPrecompute(sgfPath, precompute, moveNumber);
-  vector<PrecomputeFeatures::Result> results = precompute.evaluate();
+  vector<PrecomputeFeatures::Result> results = precompute.evaluatePicks();
   assert(1 == results.size());
   PrecomputeFeatures::writeResultToMoveset(results.front(), moveset);
   return moveset;

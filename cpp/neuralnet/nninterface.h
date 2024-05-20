@@ -98,6 +98,7 @@ namespace NeuralNet {
   InputBuffers* createInputBuffers(const LoadedModel* loadedModel, int maxBatchSize, int nnXLen, int nnYLen);
   float* getSpatialBuffer(InputBuffers* buffers);
   float* getGlobalBuffer(InputBuffers* buffers);
+  int* getPosBuffer(InputBuffers* buffers);
   void freeInputBuffers(InputBuffers* buffers);
 
   //The neural net takes in 2 tensors as input.
@@ -124,7 +125,7 @@ namespace NeuralNet {
     std::vector<NNOutput*>& outputs
   );
 
-  //Perform only the trunk part of the Neural Net ---------------------------------------------------------
+  //Perform only the trunk part of the Neural Net -------------------------------------
 
   // Preconditions:
   // buffers have been filled with input data for all batches.
@@ -137,6 +138,21 @@ namespace NeuralNet {
     InputBuffers* buffers,
     int numBatchEltsFilled,
     float* trunkBuffer
+  );
+
+  //Get the trunk output of the Neural Net at the specified locations -----------------
+
+  // Preconditions:
+  // buffers have been filled with input data for all batches.
+  // pickBuffer has enough space allocated to hold outSize * numBatchEltsFilled elements.
+
+  // Result: mutably writes the results of the numBatchEltsFilled many parallel neural net evaluations
+  // into the pickBuffer.
+  void getOutputPick(
+    ComputeHandle* computeHandle,
+    InputBuffers* buffers,
+    int numBatchEltsFilled,
+    float* pickBuffer
   );
 
   //FOR TESTING -----------------------------------------------------------------------

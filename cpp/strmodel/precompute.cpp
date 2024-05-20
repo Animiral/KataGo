@@ -46,6 +46,7 @@ void PrecomputeFeatures::startGame(const std::string& sgfPath) {
   nextResult.startIndex = 0;
   nextResult.trunk = trunk.data() + count * trunkSize;
   nextResult.movepos = movepos.data() + count;
+  nextResult.pick = pick.data() + count * numTrunkFeatures;
   nextResult.player = plas.data() + count;
 }
 
@@ -58,8 +59,9 @@ void PrecomputeFeatures::addBoard(Board& board, const BoardHistory& history, Mov
   // write to row
   float* binaryInput = NeuralNet::getSpatialBuffer(inputBuffers.get()) + count * nnXLen * nnYLen * numSpatialFeatures;
   float* globalInput = NeuralNet::getGlobalBuffer(inputBuffers.get()) + count * numGlobalFeatures;
+  int* posInput = NeuralNet::getPosBuffer(inputBuffers.get()) + count;
   NNInputs::fillRowV7(board, history, move.pla, nnInputParams, nnXLen, nnYLen, inputsUseNHWC, binaryInput, globalInput);
-  movepos[count] = NNPos::locToPos(move.loc, board.x_size, nnXLen, nnYLen);
+  movepos[count] = *posInput = NNPos::locToPos(move.loc, board.x_size, nnXLen, nnYLen);
   plas[count] = move.pla;
   count++;
 }
@@ -75,7 +77,7 @@ bool PrecomputeFeatures::isFull() const {
   return count >= capacity;
 }
 
-std::vector<PrecomputeFeatures::Result> PrecomputeFeatures::evaluate() {
+std::vector<PrecomputeFeatures::Result> PrecomputeFeatures::evaluateTrunks() {
   if(count > 0) {
     NeuralNet::getOutputTrunk(handle.get(), inputBuffers.get(), count, trunk.data());
     // if there is an open game, it becomes a partial result; the process resembles endGame(), then startGame()
@@ -85,6 +87,25 @@ std::vector<PrecomputeFeatures::Result> PrecomputeFeatures::evaluate() {
       nextResult.startIndex = nextResult.endIndex;
       nextResult.trunk = trunk.data();
       nextResult.movepos = movepos.data();
+      nextResult.pick = pick.data();
+      nextResult.player = plas.data();
+    }
+  }
+  count = resultTip = 0;
+  return move(results);
+}
+
+std::vector<PrecomputeFeatures::Result> PrecomputeFeatures::evaluatePicks() {
+  if(count > 0) {
+    NeuralNet::getOutputPick(handle.get(), inputBuffers.get(), count, pick.data());
+    // if there is an open game, it becomes a partial result; the process resembles endGame(), then startGame()
+    if(count > resultTip) {
+      nextResult.endIndex = nextResult.startIndex + count - resultTip;
+      results.push_back(nextResult);
+      nextResult.startIndex = nextResult.endIndex;
+      nextResult.trunk = trunk.data();
+      nextResult.movepos = movepos.data();
+      nextResult.pick = pick.data();
       nextResult.player = plas.data();
     }
   }
@@ -99,10 +120,10 @@ void PrecomputeFeatures::writeResultToMoveset(Result result, SelectedMoves::Move
   size_t count = result.endIndex - result.startIndex;
 
   for(size_t i = 0; i < count; i++) {
-    float* trunkBegin = result.trunk + i*trunkSize;
-    float* trunkEnd = result.trunk + (i+1)*trunkSize;
-    moveset.moves[result.startIndex+i].trunk.reset(new vector<float>(trunkBegin, trunkEnd));
-    moveset.moves[result.startIndex+i].pos = result.movepos[i];
+    SelectedMoves::Move& move = moveset.moves[result.startIndex+i];
+    move.trunk.reset(new TrunkOutput(result.trunk + i*trunkSize, result.trunk + (i+1)*trunkSize));
+    move.pick.reset(new PickOutput(result.pick + i*numTrunkFeatures, result.pick + (i+1)*numTrunkFeatures));
+    move.pos = result.movepos[i];
   }
 }
 
@@ -165,6 +186,7 @@ void PrecomputeFeatures::writePicksToNpz(const string& filePath) {
 void PrecomputeFeatures::allocateBuffers() {
   trunk.resize(capacity * trunkSize);
   movepos.resize(capacity);
+  pick.resize(capacity * numTrunkFeatures);
   plas.resize(capacity);
   count = resultTip = 0;
 }

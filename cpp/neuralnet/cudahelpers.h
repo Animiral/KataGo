@@ -55,5 +55,8 @@ void customCudaApplyCScaleBiasNCHW(const half* in, half* out, const half* scale,
 void customCudaApplyCScaleBiasNHWC(const float* in, float* out, const float* scale, const float* biases, const float* mask, int n, int xy, int c, int activation);
 void customCudaApplyCScaleBiasNHWC(const half* in, half* out, const half* scale, const half* biases, const half* mask, int n, int xy, int c, int activation);
 
+//Given an input tensor shaped [n,c,xy] and [n] pos indexes, write out
+//feature vectors [n,c] taken from the i-th batch element according to the i-th index.
+void customCudaBatchIndex(const float* in, const int* index, float* out, int n, int c, int xy);
 
 #endif  // NEURALNET_CUDAHELPERS_H_
