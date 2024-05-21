@@ -76,7 +76,7 @@ void addFileToZip(zip_t& archive, const vector<T>& buffer, const char* name) {
 
 void SelectedMoves::Moveset::writeToZip(const string& filePath) const {
   string containingDir = FileUtils::dirname(filePath);
-  if(!FileUtils::create_directories(containingDir))
+  if(!containingDir.empty() && !FileUtils::create_directories(containingDir))
     throw IOError("Failed to create directory " + containingDir);
 
   int err;
@@ -244,10 +244,6 @@ SelectedMoves::Moveset SelectedMoves::Moveset::readFromZip(const string& filePat
     throw StringError("Error opening zip archive: "s + errstr);
   }
 
-  int countEntries = zip_get_num_entries(archive.get(), 0);
-  if(3 != countEntries)
-    throw StringError(strprintf("Expected exactly three files in the archive, got %d.", countEntries));
-
   // find out how many positions/trunks are present in the archive
   zip_stat_t stat;
   if(0 != zip_stat_index(archive.get(), 0, 0, &stat))
@@ -256,8 +252,10 @@ SelectedMoves::Moveset SelectedMoves::Moveset::readFromZip(const string& filePat
   Moveset moveset{vector<Move>(expectedCount)};
 
   readFromZipPart(*archive, "index.bin", moveset, &Move::index, 1);
-  readFromZipPart(*archive, "trunk.bin", moveset, &Move::trunk, trunkSize);
-  readFromZipPart(*archive, "pick.bin", moveset, &Move::pick, trunkSize);
+  if(zip_name_locate(archive.get(), "trunk.bin", ZIP_FL_ENC_RAW) >= 0)
+    readFromZipPart(*archive, "trunk.bin", moveset, &Move::trunk, trunkSize);
+  if(zip_name_locate(archive.get(), "pick.bin", ZIP_FL_ENC_RAW) >= 0)
+    readFromZipPart(*archive, "pick.bin", moveset, &Move::pick, numTrunkFeatures);
   readFromZipPart(*archive, "movepos.bin", moveset, &Move::pos, 1);
 
   std::for_each(moveset.moves.begin(), moveset.moves.end(), [pla](Move& m) { m.pla = pla; });

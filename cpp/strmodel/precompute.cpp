@@ -92,6 +92,8 @@ std::vector<PrecomputeFeatures::Result> PrecomputeFeatures::evaluateTrunks() {
     }
   }
   count = resultTip = 0;
+  for(Result& result : results)
+    result.pick = nullptr; // no picks when evaluating trunks
   return move(results);
 }
 
@@ -110,6 +112,8 @@ std::vector<PrecomputeFeatures::Result> PrecomputeFeatures::evaluatePicks() {
     }
   }
   count = resultTip = 0;
+  for(Result& result : results)
+    result.trunk = nullptr; // no trunks when evaluating picks
   return move(results);
 }
 
@@ -121,8 +125,10 @@ void PrecomputeFeatures::writeResultToMoveset(Result result, SelectedMoves::Move
 
   for(size_t i = 0; i < count; i++) {
     SelectedMoves::Move& move = moveset.moves[result.startIndex+i];
-    move.trunk.reset(new TrunkOutput(result.trunk + i*trunkSize, result.trunk + (i+1)*trunkSize));
-    move.pick.reset(new PickOutput(result.pick + i*numTrunkFeatures, result.pick + (i+1)*numTrunkFeatures));
+    if(result.trunk)
+      move.trunk.reset(new TrunkOutput(result.trunk + i*trunkSize, result.trunk + (i+1)*trunkSize));
+    if(result.pick)
+      move.pick.reset(new PickOutput(result.pick + i*numTrunkFeatures, result.pick + (i+1)*numTrunkFeatures));
     move.pos = result.movepos[i];
   }
 }

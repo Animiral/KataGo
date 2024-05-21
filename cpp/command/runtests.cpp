@@ -326,12 +326,12 @@ int MainCmds::runstrengthmodeltests(const vector<string>& args) {
 }
 
 int MainCmds::runprecomputetests(const vector<string>& args) {
-  if(args.size() != 1) {
-    cerr << "precomputetests takes no arguments" << endl;
+  if(args.size() != 2) {
+    cerr << "Must supply argument: MODEL_FILE" << endl;
     return 1;
   }
 
-  Tests::runPrecomputeTests();
+  Tests::runPrecomputeTests(args[1]);
 
   return 0;
 }
