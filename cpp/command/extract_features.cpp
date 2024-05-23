@@ -268,17 +268,6 @@ void outputZip(const SelectedMoves& selectedMoves, const string& path) {
   combined.writeToZip(path);
 }
 
-  // float* pickNC = rmt.pickNC->data + idx * numTrunkFeatures;
-  // int pos = NNPos::locToPos(move.loc, board.x_size, nnXLen, nnYLen);
-  // if(pos >= 0 && pos < nnXLen * nnYLen) {
-  //   for(int i = 0; i < numTrunkFeatures; i++) {
-  //     pickNC[i] = trunkOutputNCHW[pos + i * nnXLen * nnYLen];
-  //   }
-  // }
-  // else {
-  //   std::fill(pickNC, pickNC + numTrunkFeatures, 0);
-  // }
-
 Logger* Worker::logger;
 string Worker::featureDir;
 bool Worker::recompute;
@@ -389,10 +378,10 @@ void Worker::processResults() {
     PrecomputeFeatures::writeResultToMoveset(result, moveset);
     if(moveset.hasAllPicks()) {
       auto splitSet = moveset.splitBlackWhite();
-      string blackPath = zipPath(result.sgfPath, featureDir, P_BLACK, "Picks");
+      string blackPath = zipPath(result.sgfPath, featureDir, P_BLACK, "Pick");
       if(recompute || !FileUtils::exists(blackPath))
         splitSet.first.writeToZip(blackPath);
-      string whitePath = zipPath(result.sgfPath, featureDir, P_WHITE, "Picks");
+      string whitePath = zipPath(result.sgfPath, featureDir, P_WHITE, "Pick");
       if(recompute || !FileUtils::exists(whitePath))
         splitSet.second.writeToZip(whitePath);
       moveset.releaseStorage(); // keeping this in memory for every file would be too much
