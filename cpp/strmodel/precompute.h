@@ -3,18 +3,19 @@
 #include <vector>
 #include <queue>
 #include "neuralnet/nninterface.h"
+#include "neuralnet/nneval.h"
 #include "strmodel/dataset.h"
 
 #ifndef STRMODEL_PRECOMPUTE_H
 #define STRMODEL_PRECOMPUTE_H
 
-struct ComputeHandleDeleter {
-  void operator()(ComputeHandle* handle) noexcept;
-};
+// struct ComputeHandleDeleter {
+//   void operator()(ComputeHandle* handle) noexcept;
+// };
 
-struct InputBuffersDeleter {
-  void operator()(InputBuffers* buffers) noexcept;
-};
+// struct InputBuffersDeleter {
+//   void operator()(InputBuffers* buffers) noexcept;
+// };
 
 class PrecomputeFeatures {
 
@@ -23,14 +24,22 @@ public:
   PrecomputeFeatures(LoadedModel& loadedModel, int cap);
   explicit PrecomputeFeatures(int cap);
 
+  struct ResultRow {
+    Player pla; // who made the move
+    int pos; // where the move happened
+    float winProb;
+    float lossProb; // not necessarily 1-winProb because no result is possible
+    float expectedScore; // predicted score at end of game by NN
+    float lead; // predicted bonus points to make game fair
+    float movePolicy; // policy at move location
+    float maxPolicy; // best move policy
+    PickOutput pick; // trunk features at move location
+  };
+
   struct Result {
     std::string sgfPath;
     size_t startIndex; // index (in moveset, not in game) of first result move
-    size_t endIndex; // one-past index (in moveset) of last result move
-    float* trunk; // output for every position in the game
-    int* movepos;
-    float* pick; // pos-specific output for every position in the game
-    Player* player; // player to move for every position
+    std::vector<ResultRow> rows;
   };
 
   // signal the start of input for the specified game
@@ -41,8 +50,9 @@ public:
   void endGame();
   bool isFull() const;
   // run all added boards through the neural net; invalidate all previous results
-  std::vector<Result> evaluateTrunks();
-  std::vector<Result> evaluatePicks();
+  std::vector<Result> evaluate(); // picks and POC features
+  // std::vector<Result> evaluateTrunks();
+  // std::vector<Result> evaluatePicks();
 
   // copy trunk data to moveset; sizes must match
   static void writeResultToMoveset(Result result, SelectedMoves::Moveset& moveset);
@@ -58,19 +68,22 @@ public:
 
 private:
 
-  void allocateBuffers();
+  // void allocateBuffers();
 
-  std::unique_ptr<ComputeHandle, ComputeHandleDeleter> handle;
-  std::unique_ptr<InputBuffers, InputBuffersDeleter> inputBuffers;
+  // std::unique_ptr<ComputeHandle, ComputeHandleDeleter> handle;
+  // std::unique_ptr<InputBuffers, InputBuffersDeleter> inputBuffers;
 
   size_t count; // input rows (boards) entered
   size_t capacity; // max rows
 
+  NNEvaluator* evaluator;
   // capacity-sized buffers
-  std::vector<float> trunk; // each entry of length trunkSize 
-  std::vector<int> movepos;
-  std::vector<float> pick; // each entry of length numTrunkFeatures
-  std::vector<Player> plas;
+  // std::vector<NNResultBuf*> buffers;
+  // std::vector<NNOutput*>& outputs;
+  // std::vector<float> trunk; // each entry of length trunkSize 
+  // std::vector<int> movepos;
+  // std::vector<float> pick; // each entry of length numTrunkFeatures
+  // std::vector<Player> plas;
 
   Result nextResult; // next result in the making by adding boards
   size_t resultTip; // index of buffer row where nextResult starts

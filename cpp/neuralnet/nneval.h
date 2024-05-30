@@ -53,6 +53,7 @@ struct NNResultBuf {
   int rowGlobalSize;
   float* rowSpatial;
   float* rowGlobal;
+  int rowPos; // tells the NN to give us trunk output features at this position
   std::shared_ptr<NNOutput> result;
   bool errorLogLockout; //error flag to restrict log to 1 error to prevent spam
   int symmetry; //The symmetry to use for this eval

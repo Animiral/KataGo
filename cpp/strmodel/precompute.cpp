@@ -14,55 +14,100 @@ using std::string;
 using std::vector;
 using namespace std::literals;
 
-namespace {
+// namespace {
 
-unique_ptr<ComputeHandle, ComputeHandleDeleter> createComputeHandle(LoadedModel& loadedModel, int capacity);
+// unique_ptr<ComputeHandle, ComputeHandleDeleter> createComputeHandle(LoadedModel& loadedModel, int capacity);
 
-}
+// }
 
-PrecomputeFeatures::PrecomputeFeatures(LoadedModel& loadedModel, int cap)
-: PrecomputeFeatures(cap)
+PrecomputeFeatures::PrecomputeFeatures(NNEvaluator& nnEvaluator, int cap)
+: PrecomputeFeatures(cap), evaluator(&nnEvaluator)
 {
-  handle = createComputeHandle(loadedModel, cap);
-  int modelVersion = NeuralNet::getModelVersion(&loadedModel);
-  numSpatialFeatures = NNModelVersion::getNumSpatialFeatures(modelVersion);
-  numGlobalFeatures = NNModelVersion::getNumGlobalFeatures(modelVersion);
-  inputBuffers.reset(NeuralNet::createInputBuffers(&loadedModel, capacity, PrecomputeFeatures::nnXLen, PrecomputeFeatures::nnYLen));
-  allocateBuffers();
+  // handle = createComputeHandle(loadedModel, cap);
+  // int modelVersion = NeuralNet::getModelVersion(&loadedModel);
+  // numSpatialFeatures = NNModelVersion::getNumSpatialFeatures(modelVersion);
+  // numGlobalFeatures = NNModelVersion::getNumGlobalFeatures(modelVersion);
+  // inputBuffers.reset(NeuralNet::createInputBuffers(&loadedModel, capacity, PrecomputeFeatures::nnXLen, PrecomputeFeatures::nnYLen));
+  // allocateBuffers();
 }
 
 PrecomputeFeatures::PrecomputeFeatures(int cap)
 : handle(nullptr, {}), inputBuffers(nullptr, {}),
   count(0),
-  capacity(cap)
+  capacity(cap),
+  resultTip(0)
 {
   numSpatialFeatures = NNModelVersion::getNumSpatialFeatures(NNModelVersion::defaultModelVersion); // 22 features
   numGlobalFeatures = NNModelVersion::getNumGlobalFeatures(NNModelVersion::defaultModelVersion); // 19 features
-  allocateBuffers();
+  // allocateBuffers();
 }
 
 void PrecomputeFeatures::startGame(const std::string& sgfPath) {
   nextResult.sgfPath = sgfPath;
   nextResult.startIndex = 0;
-  nextResult.trunk = trunk.data() + count * trunkSize;
-  nextResult.movepos = movepos.data() + count;
-  nextResult.pick = pick.data() + count * numTrunkFeatures;
-  nextResult.player = plas.data() + count;
+  // nextResult.trunk = trunk.data() + count * trunkSize;
+  // nextResult.movepos.clear();
+  // nextResult.pick.clear();
+  // nextResult.player.clear();
+  nextResult.rows.clear();
 }
 
 void PrecomputeFeatures::addBoard(Board& board, const BoardHistory& history, Move move) {
-  assert(!isFull());
+  assert(evaluator);
+
   MiscNNInputParams nnInputParams;
   nnInputParams.symmetry = 0;
   nnInputParams.policyOptimism = 0;
   bool inputsUseNHWC = false;
-  // write to row
-  float* binaryInput = NeuralNet::getSpatialBuffer(inputBuffers.get()) + count * nnXLen * nnYLen * numSpatialFeatures;
-  float* globalInput = NeuralNet::getGlobalBuffer(inputBuffers.get()) + count * numGlobalFeatures;
-  int* posInput = NeuralNet::getPosBuffer(inputBuffers.get()) + count;
-  NNInputs::fillRowV7(board, history, move.pla, nnInputParams, nnXLen, nnYLen, inputsUseNHWC, binaryInput, globalInput);
-  movepos[count] = *posInput = NNPos::locToPos(move.loc, board.x_size, nnXLen, nnYLen);
-  plas[count] = move.pla;
+
+  NNResultBuf buf;
+  buf.rowPos = NNPos::locToPos(move.loc, board.x_size, nnXLen, nnYLen);
+  evaluator->evaluate(board, history, move.pla, nnInputParams, buf, false, false); // todo: pass pos
+  assert(buf.hasResult);
+  NNOutput& nnout = *buf.result;
+
+  // interpret NN result
+  ResultRow row;
+  row.pla = move.pla;
+  row.pos = buf.rowPos;
+  row.winProb = P_WHITE == move.pla ? nnout.whiteWinProb : whiteLossProb;
+  row.lossProb = P_WHITE == move.pla ? nnout.whiteLossProb : whiteWinProb;
+  row.expectedScore = P_WHITE == move.pla ? nnout.whiteScoreMean : -nnout.whiteScoreMean;
+  row.lead = P_WHITE == move.pla ? nnout.whiteLead : -nnout.whiteLead;
+  row.movePolicy = nnout.policyProbs[buf.rowPos];
+  row.maxPolicy = *std::max_element(std::begin(nnout.policyProbs), std::end(nnout.policyProbs));
+  row.pick = vector<float>(nnout.pick, numTrunkFeatures); // trunk features at move location
+  nextResult.rows.push_back(row);
+
+  count++;
+}
+
+void PrecomputeFeatures::addFinalBoard(Board& board, const BoardHistory& history) {
+  assert(evaluator);
+
+  MiscNNInputParams nnInputParams;
+  nnInputParams.symmetry = 0;
+  nnInputParams.policyOptimism = 0;
+  bool inputsUseNHWC = false;
+
+  NNResultBuf buf;
+  buf.rowPos = 0; // we do not get pick vector from final board
+  evaluator->evaluate(board, history, move.pla, nnInputParams, buf, false, false); // todo: pass pos
+  assert(buf.hasResult);
+  NNOutput& nnout = *buf.result;
+
+  // interpret NN result
+  ResultRow row;
+  row.pla = move.pla;
+  row.pos = buf.rowPos;
+  row.winProb = P_WHITE == move.pla ? nnout.whiteWinProb : whiteLossProb;
+  row.lossProb = P_WHITE == move.pla ? nnout.whiteLossProb : whiteWinProb;
+  row.expectedScore = P_WHITE == move.pla ? nnout.whiteScoreMean : -nnout.whiteScoreMean;
+  row.lead = P_WHITE == move.pla ? nnout.whiteLead : -nnout.whiteLead;
+  row.movePolicy = nnout.policyProbs[buf.rowPos];
+  row.maxPolicy = *std::max_element(std::begin(nnout.policyProbs), std::end(nnout.policyProbs));
+  nextResult.rows.push_back(row);
+
   count++;
 }
 
@@ -77,59 +122,76 @@ bool PrecomputeFeatures::isFull() const {
   return count >= capacity;
 }
 
-std::vector<PrecomputeFeatures::Result> PrecomputeFeatures::evaluateTrunks() {
+std::vector<PrecomputeFeatures::Result> PrecomputeFeatures::evaluate() {
   if(count > 0) {
-    NeuralNet::getOutputTrunk(handle.get(), inputBuffers.get(), count, trunk.data());
     // if there is an open game, it becomes a partial result; the process resembles endGame(), then startGame()
     if(count > resultTip) {
       nextResult.endIndex = nextResult.startIndex + count - resultTip;
       results.push_back(nextResult);
       nextResult.startIndex = nextResult.endIndex;
-      nextResult.trunk = trunk.data();
-      nextResult.movepos = movepos.data();
-      nextResult.pick = pick.data();
-      nextResult.player = plas.data();
+      nextResult.rows.clear();
     }
   }
   count = resultTip = 0;
-  for(Result& result : results)
-    result.pick = nullptr; // no picks when evaluating trunks
   return move(results);
 }
 
-std::vector<PrecomputeFeatures::Result> PrecomputeFeatures::evaluatePicks() {
-  if(count > 0) {
-    NeuralNet::getOutputPick(handle.get(), inputBuffers.get(), count, pick.data());
-    // if there is an open game, it becomes a partial result; the process resembles endGame(), then startGame()
-    if(count > resultTip) {
-      nextResult.endIndex = nextResult.startIndex + count - resultTip;
-      results.push_back(nextResult);
-      nextResult.startIndex = nextResult.endIndex;
-      nextResult.trunk = trunk.data();
-      nextResult.movepos = movepos.data();
-      nextResult.pick = pick.data();
-      nextResult.player = plas.data();
-    }
-  }
-  count = resultTip = 0;
-  for(Result& result : results)
-    result.trunk = nullptr; // no trunks when evaluating picks
-  return move(results);
-}
+// std::vector<PrecomputeFeatures::Result> PrecomputeFeatures::evaluateTrunks() {
+//   if(count > 0) {
+//     NeuralNet::getOutputTrunk(handle.get(), inputBuffers.get(), count, trunk.data());
+//     // if there is an open game, it becomes a partial result; the process resembles endGame(), then startGame()
+//     if(count > resultTip) {
+//       nextResult.endIndex = nextResult.startIndex + count - resultTip;
+//       results.push_back(nextResult);
+//       nextResult.startIndex = nextResult.endIndex;
+//       nextResult.trunk = trunk.data();
+//       nextResult.movepos = movepos.data();
+//       nextResult.pick = pick.data();
+//       nextResult.player = plas.data();
+//     }
+//   }
+//   count = resultTip = 0;
+//   for(Result& result : results)
+//     result.pick = nullptr; // no picks when evaluating trunks
+//   return move(results);
+// }
+
+// std::vector<PrecomputeFeatures::Result> PrecomputeFeatures::evaluatePicks() {
+//   if(count > 0) {
+//     NeuralNet::getOutputPick(handle.get(), inputBuffers.get(), count, pick.data());
+//     // if there is an open game, it becomes a partial result; the process resembles endGame(), then startGame()
+//     if(count > resultTip) {
+//       nextResult.endIndex = nextResult.startIndex + count - resultTip;
+//       results.push_back(nextResult);
+//       nextResult.startIndex = nextResult.endIndex;
+//       nextResult.trunk = trunk.data();
+//       nextResult.movepos = movepos.data();
+//       nextResult.pick = pick.data();
+//       nextResult.player = plas.data();
+//     }
+//   }
+//   count = resultTip = 0;
+//   for(Result& result : results)
+//     result.trunk = nullptr; // no trunks when evaluating picks
+//   return move(results);
+// }
 
 void PrecomputeFeatures::writeResultToMoveset(Result result, SelectedMoves::Moveset& moveset) {
   assert(result.startIndex <= result.endIndex);
   assert(result.endIndex <= moveset.moves.size());
 
-  size_t count = result.endIndex - result.startIndex;
+  size_t count = result.endIndex - result.startIndex - 1; // take final board into account
 
   for(size_t i = 0; i < count; i++) {
-    SelectedMoves::Move& move = moveset.moves[result.startIndex+i];
-    if(result.trunk)
-      move.trunk.reset(new TrunkOutput(result.trunk + i*trunkSize, result.trunk + (i+1)*trunkSize));
-    if(result.pick)
-      move.pick.reset(new PickOutput(result.pick + i*numTrunkFeatures, result.pick + (i+1)*numTrunkFeatures));
-    move.pos = result.movepos[i];
+    SelectedMoves::Move& move = moveset.moves.at(result.startIndex+i);
+    ResultRow& row = result.rows.at(i);
+    ResultRow& nextRow = result.rows.at(i+1);
+    // if(result.trunk)
+    //   move.trunk.reset(new TrunkOutput(result.trunk + i*trunkSize, result.trunk + (i+1)*trunkSize));
+    if(!row.pick.empty())
+      move.pick.reset(new PickOutput(row.pick));
+
+    move.pos = row.movepos;
   }
 }
 
@@ -189,50 +251,50 @@ void PrecomputeFeatures::writePicksToNpz(const string& filePath) {
   zipFile.close();
 }
 
-void PrecomputeFeatures::allocateBuffers() {
-  trunk.resize(capacity * trunkSize);
-  movepos.resize(capacity);
-  pick.resize(capacity * numTrunkFeatures);
-  plas.resize(capacity);
-  count = resultTip = 0;
-}
+// void PrecomputeFeatures::allocateBuffers() {
+//   trunk.resize(capacity * trunkSize);
+//   movepos.resize(capacity);
+//   pick.resize(capacity * numTrunkFeatures);
+//   plas.resize(capacity);
+//   count = resultTip = 0;
+// }
 
-void ComputeHandleDeleter::operator()(ComputeHandle* handle) noexcept {
-  return NeuralNet::freeComputeHandle(handle);
-}
+// void ComputeHandleDeleter::operator()(ComputeHandle* handle) noexcept {
+//   return NeuralNet::freeComputeHandle(handle);
+// }
 
-void InputBuffersDeleter::operator()(InputBuffers* buffers) noexcept {
-  return NeuralNet::freeInputBuffers(buffers);
-}
+// void InputBuffersDeleter::operator()(InputBuffers* buffers) noexcept {
+//   return NeuralNet::freeInputBuffers(buffers);
+// }
 
-namespace {
+// namespace {
 
-unique_ptr<ComputeHandle, ComputeHandleDeleter> createComputeHandle(LoadedModel& loadedModel, int capacity) {
-  enabled_t useFP16Mode = enabled_t::False;
-  enabled_t useNHWCMode = enabled_t::False;
-  auto* computeContext = NeuralNet::createComputeContext(
-    {PrecomputeFeatures::gpuIdx}, nullptr, PrecomputeFeatures::nnXLen, PrecomputeFeatures::nnYLen,
-    "", "", false,
-    useFP16Mode, useNHWCMode, &loadedModel
-  );
+// unique_ptr<ComputeHandle, ComputeHandleDeleter> createComputeHandle(LoadedModel& loadedModel, int capacity) {
+//   enabled_t useFP16Mode = enabled_t::False;
+//   enabled_t useNHWCMode = enabled_t::False;
+//   auto* computeContext = NeuralNet::createComputeContext(
+//     {PrecomputeFeatures::gpuIdx}, nullptr, PrecomputeFeatures::nnXLen, PrecomputeFeatures::nnYLen,
+//     "", "", false,
+//     useFP16Mode, useNHWCMode, &loadedModel
+//   );
 
-  bool requireExactNNLen = true;
-  bool inputsUseNHWC = false;
-  unique_ptr<ComputeHandle, ComputeHandleDeleter> gpuHandle {
-    NeuralNet::createComputeHandle(
-      computeContext,
-      &loadedModel,
-      nullptr,
-      capacity,
-      requireExactNNLen,
-      inputsUseNHWC,
-      PrecomputeFeatures::gpuIdx,
-      0
-    ),
-    ComputeHandleDeleter()
-  };
+//   bool requireExactNNLen = true;
+//   bool inputsUseNHWC = false;
+//   unique_ptr<ComputeHandle, ComputeHandleDeleter> gpuHandle {
+//     NeuralNet::createComputeHandle(
+//       computeContext,
+//       &loadedModel,
+//       nullptr,
+//       capacity,
+//       requireExactNNLen,
+//       inputsUseNHWC,
+//       PrecomputeFeatures::gpuIdx,
+//       0
+//     ),
+//     ComputeHandleDeleter()
+//   };
 
-  return gpuHandle;
-}
+//   return gpuHandle;
+// }
 
-}
+// }

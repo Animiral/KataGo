@@ -317,7 +317,7 @@ void NNInputs::fillScoring(
 
 
 NNOutput::NNOutput()
-  :trunkData(NULL),whiteOwnerMap(NULL),noisedPolicyProbs(NULL)
+  :pick(NULL),whiteOwnerMap(NULL),noisedPolicyProbs(NULL)
 {}
 NNOutput::NNOutput(const NNOutput& other) {
   nnHash = other.nnHash;
@@ -334,12 +334,12 @@ NNOutput::NNOutput(const NNOutput& other) {
   nnXLen = other.nnXLen;
   nnYLen = other.nnYLen;
   const size_t trunkChannels = 384; // strength model is only compatible with this specific size
-  if(other.trunkData != NULL) {
-    trunkData = new float[trunkChannels * nnXLen * nnYLen];
-    std::copy(other.trunkData, other.trunkData + trunkChannels * nnXLen * nnYLen, trunkData);
+  if(other.pick != NULL) {
+    pick = new float[trunkChannels];
+    std::copy(other.pick, other.pick + trunkChannels, pick);
   }
   else
-    trunkData = NULL;
+    pick = NULL;
   if(other.whiteOwnerMap != NULL) {
     whiteOwnerMap = new float[nnXLen * nnYLen];
     std::copy(other.whiteOwnerMap, other.whiteOwnerMap + nnXLen * nnYLen, whiteOwnerMap);
@@ -401,7 +401,7 @@ NNOutput::NNOutput(const vector<shared_ptr<NNOutput>>& others) {
   nnXLen = others[0]->nnXLen;
   nnYLen = others[0]->nnYLen;
 
-  // NOTE on trunkData: aggregation not implemented
+  // NOTE on pick: aggregation not implemented
 
   {
     float whiteOwnerMapCount = 0.0f;
@@ -471,14 +471,14 @@ NNOutput& NNOutput::operator=(const NNOutput& other) {
   nnXLen = other.nnXLen;
   nnYLen = other.nnYLen;
   const size_t trunkChannels = 384; // strength model is only compatible with this specific size
-  if(trunkData != NULL)
-    delete[] trunkData;
-  if(other.trunkData != NULL) {
-    trunkData = new float[trunkChannels * nnXLen * nnYLen];
-    std::copy(other.trunkData, other.trunkData + trunkChannels * nnXLen * nnYLen, trunkData);
+  if(pick != NULL)
+    delete[] pick;
+  if(other.pick != NULL) {
+    pick = new float[trunkChannels];
+    std::copy(other.pick, other.pick + trunkChannels * nnXLen * nnYLen, pick);
   }
   else
-    trunkData = NULL;
+    pick = NULL;
   if(whiteOwnerMap != NULL)
     delete[] whiteOwnerMap;
   if(other.whiteOwnerMap != NULL) {
@@ -503,9 +503,9 @@ NNOutput& NNOutput::operator=(const NNOutput& other) {
 
 
 NNOutput::~NNOutput() {
-  if(trunkData != NULL) {
-    delete[] trunkData;
-    trunkData = NULL;
+  if(pick != NULL) {
+    delete[] pick;
+    pick = NULL;
   }
   if(whiteOwnerMap != NULL) {
     delete[] whiteOwnerMap;
@@ -674,6 +674,17 @@ Loc SymmetryHelpers::getSymLoc(Loc loc, int xSize, int ySize, int symmetry) {
   return getSymLoc(Location::getX(loc,xSize), Location::getY(loc,xSize), xSize, ySize, symmetry);
 }
 
+int getSymPos(int pos, int nnXLen, int nnYLen, int symmetry) {
+  int x = pos % nnXLen;
+  int y = pos / nnXLen;
+  bool transpose = (symmetry & 0x4) != 0;
+  bool flipX = (symmetry & 0x2) != 0;
+  bool flipY = (symmetry & 0x1) != 0;
+  if(flipX) { x = nnXLen - x - 1; }
+  if(flipY) { y = nnYLen - y - 1; }
+  if(transpose) { std::swap(x,y); }
+  return y * nnXLen + x;
+}
 
 Board SymmetryHelpers::getSymBoard(const Board& board, int symmetry) {
   bool transpose = (symmetry & 0x4) != 0;

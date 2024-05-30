@@ -22,6 +22,7 @@ struct SelectedMoves {
     // output values: filled later
     std::shared_ptr<TrunkOutput> trunk; // trunk output data
     std::shared_ptr<PickOutput> pick; // pick output data
+    MoveFeatures pocFeatures; // proof of concept model features
     int pos; // index into trunk data of move chosen by player
   };
   struct Moveset {

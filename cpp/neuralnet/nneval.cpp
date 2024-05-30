@@ -16,6 +16,7 @@ NNResultBuf::NNResultBuf()
     rowGlobalSize(0),
     rowSpatial(NULL),
     rowGlobal(NULL),
+    rowPos(0),
     result(nullptr),
     errorLogLockout(false),
     // If no symmetry is specified, it will use default or random based on config.

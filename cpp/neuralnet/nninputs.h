@@ -135,7 +135,7 @@ struct NNOutput {
 
   int nnXLen;
   int nnYLen;
-  float* trunkData; // trunk output for strength model preprocessing
+  float* pick; // piece of trunk output for strength model preprocessing
   //If not NULL, then this contains a nnXLen*nnYLen-sized map of expected ownership on the board.
   float* whiteOwnerMap;
 
@@ -174,6 +174,7 @@ namespace SymmetryHelpers {
   Loc getSymLoc(Loc loc, const Board& board, int symmetry);
   Loc getSymLoc(int x, int y, int xSize, int ySize, int symmetry);
   Loc getSymLoc(Loc loc, int xSize, int ySize, int symmetry);
+  int getSymPos(int pos, int nnXLen, int nnYLen, int symmetry);
 
   //Applies a symmetry to a board
   Board getSymBoard(const Board& board, int symmetry);

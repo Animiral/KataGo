@@ -133,27 +133,12 @@ namespace NeuralNet {
 
   // Result: mutably writes the results of the numBatchEltsFilled many parallel neural net evaluations
   // into the trunkBuffer.
-  void getOutputTrunk(
-    ComputeHandle* computeHandle,
-    InputBuffers* buffers,
-    int numBatchEltsFilled,
-    float* trunkBuffer
-  );
-
-  //Get the trunk output of the Neural Net at the specified locations -----------------
-
-  // Preconditions:
-  // buffers have been filled with input data for all batches.
-  // pickBuffer has enough space allocated to hold outSize * numBatchEltsFilled elements.
-
-  // Result: mutably writes the results of the numBatchEltsFilled many parallel neural net evaluations
-  // into the pickBuffer.
-  void getOutputPick(
-    ComputeHandle* computeHandle,
-    InputBuffers* buffers,
-    int numBatchEltsFilled,
-    float* pickBuffer
-  );
+  // void getOutputTrunk(
+  //   ComputeHandle* computeHandle,
+  //   InputBuffers* buffers,
+  //   int numBatchEltsFilled,
+  //   float* trunkBuffer
+  // );
 
   //FOR TESTING -----------------------------------------------------------------------
   //For all of the below, the input buffers must have exactly the size expected of the input for the operation.
