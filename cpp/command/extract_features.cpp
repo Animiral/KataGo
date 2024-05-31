@@ -9,6 +9,7 @@
 #include "../strmodel/precompute.h"
 #include "../command/commandline.h"
 #include "../neuralnet/modelversion.h"
+#include "../neuralnet/nneval.h"
 #include "../main.h"
 #include <iomanip>
 #include <memory>
@@ -49,7 +50,8 @@ struct RecentMoves {
 };
 
 Parameters parseArgs(const vector<string>& args);
-unique_ptr<LoadedModel, void(*)(LoadedModel*)> loadModel(string file);
+// unique_ptr<LoadedModel, void(*)(LoadedModel*)> loadModel(string file);
+unique_ptr<NNEvaluator> createEvaluator(const string& modelFile, int evaluatorThreads, int batchSize, Logger& logger);
 string movesetToString(const SelectedMoves::Moveset& moveset);
 vector<RecentMoves> getRecentMovesOfEveryGame(const Dataset& dataset, int windowSize, const string& featureDir, bool recompute, Logger& logger);
 void printRecentMoves(const vector<RecentMoves>& recentMoves, const Dataset& dataset);
@@ -110,8 +112,9 @@ int MainCmds::extract_features(const vector<string>& args) {
   Board::initHash();
   ScoreValue::initTables();
 
-  auto loadedModel = loadModel(params.modelFile);
-  logger.write(strprintf("Loaded model %s.", params.modelFile.c_str()));
+  // auto loadedModel = loadModel(params.modelFile);
+  // logger.write(strprintf("Loaded model %s.", params.modelFile.c_str()));
+  auto evaluator = createEvaluator(params.modelFile, params.batchThreads, params.batchSize, logger);
 
   Dataset dataset;
   dataset.load(params.listFile); // deliberately omit passing featureDir; we want to compute features, not load them
@@ -140,7 +143,7 @@ int MainCmds::extract_features(const vector<string>& args) {
     vector<Worker> workers;
     vector<std::thread> threads;
     for(int i = 0; i < params.batchThreads; i++)
-      workers.emplace_back(PrecomputeFeatures(*loadedModel, params.batchSize));
+      workers.emplace_back(PrecomputeFeatures(*evaluator, params.batchSize));
     for(int i = 0; i < params.batchThreads; i++)
       threads.emplace_back(ref(workers[i]));
     for(auto& thread : threads)
@@ -205,8 +208,44 @@ Parameters parseArgs(const vector<string>& args) {
   return params;
 }
 
-unique_ptr<LoadedModel, void(*)(LoadedModel*)> loadModel(string file) {
-  return unique_ptr<LoadedModel, void(*)(LoadedModel*)>(NeuralNet::loadModelFile(file, ""), &NeuralNet::freeLoadedModel);
+// unique_ptr<LoadedModel, void(*)(LoadedModel*)> loadModel(string file) {
+//   return unique_ptr<LoadedModel, void(*)(LoadedModel*)>(NeuralNet::loadModelFile(file, ""), &NeuralNet::freeLoadedModel);
+// }
+
+unique_ptr<NNEvaluator> createEvaluator(const string& modelFile, int evaluatorThreads, int batchSize, Logger& logger) {
+  assert(evaluatorThreads > 0);
+  assert(batchSize > 0);
+  const int maxConcurrentEvals = evaluatorThreads*2;
+  constexpr int nnXLen = 19;
+  constexpr int nnYLen = 19;
+  vector<int> gpuIdxByServerThread(evaluatorThreads, -1);
+  auto evaluator = make_unique<NNEvaluator>(
+    modelFile,
+    modelFile,
+    "", // expectedSha256
+    &logger,
+    batchSize,
+    maxConcurrentEvals,
+    nnXLen,
+    nnYLen,
+    true, // requireExactNNLen
+    false, // inputsUseNHWC
+    23, // nnCacheSizePowerOfTwo
+    17, // nnMutexPoolSizePowerOfTwo
+    false, // debugSkipNeuralNet
+    "", // openCLTunerFile
+    "", // homeDataDirOverride
+    false, // openCLReTunePerBoardSize
+    enabled_t::False, // useFP16Mode
+    enabled_t::False, // useNHWCMode
+    evaluatorThreads, // numNNServerThreadsPerModel
+    gpuIdxByServerThread,
+    "", // nnRandSeed
+    false, // doRandomize (for symmetry)
+    0 // defaultSymmetry
+  );
+  evaluator->spawnServerThreads();
+  return evaluator;
 }
 
 string movesetToString(const SelectedMoves::Moveset& moveset) {
@@ -340,37 +379,39 @@ void Worker::processGame(const string& sgfPath, SelectedMoves::Moveset& moveset)
     assert(turnIdx < moves.size()); // moves beyond end of game should never occur in moveset
     Move move = moves[turnIdx];
 
-    if(turnIdx == moveIt->index) {
+    // if(turnIdx == moveIt->index) {
       precompute.addBoard(board, history, move);
-      if(precompute.isFull()) {
-        processResults();
-      }
-      do moveIt++;
-      while(moveIt != moveEnd && !needsPick(*moveIt));
-    }
+      // if(precompute.isFull()) {
+      //   processResults();
+      // }
+      /*do*/ moveIt++;
+      /*while(moveIt != moveEnd && !needsPick(*moveIt));*/
+    // }
 
     // apply move
     bool suc = history.makeBoardMoveTolerant(board, move.loc, move.pla);
     if(!suc)
       throw StringError(strprintf("Illegal move %s at %s", PlayerIO::playerToString(move.pla), Location::toString(move.loc, sgf->xSize, sgf->ySize)));
   }
+  precompute.addFinalBoard(board, history);
   precompute.endGame();
 }
 
 void printResultToStdout(const PrecomputeFeatures::Result& result, const SelectedMoves::Moveset& moveset) {
-  if(result.startIndex >= result.endIndex) {
+  if(result.rows.size() < 2) { // needs at least one board with move + final board
     std::cout << strprintf("Result %s: empty result\n", result.sgfPath.c_str());
   }
   else {
     int firstMove = moveset.moves.at(result.startIndex).index;
-    int lastMove = moveset.moves.at(result.endIndex-1).index;
+    int endIndex = result.startIndex + result.rows.size();
+    int lastMove = moveset.moves.at(endIndex-2).index; // discard final board
     std::cout << strprintf("Result %s: move %d-%d\n", result.sgfPath.c_str(), firstMove, lastMove);
     // moveset.printSummary(std::cout);
   }
 }
 
 void Worker::processResults() {
-  vector<PrecomputeFeatures::Result> results = precompute.evaluatePicks();
+  vector<PrecomputeFeatures::Result> results = precompute.evaluate();
   for(auto& result : results) {
     SelectedMoves::Moveset& moveset = work->bygame[result.sgfPath];
     if(printResultsDebug)

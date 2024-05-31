@@ -21,18 +21,22 @@ class PrecomputeFeatures {
 
 public:
 
-  PrecomputeFeatures(LoadedModel& loadedModel, int cap);
+  PrecomputeFeatures(NNEvaluator& nnEvaluator, int cap);
   explicit PrecomputeFeatures(int cap);
+
+  bool includeTrunk; // get trunk outputs from NN
+  bool includePick; // get pieces of trunk from NN
 
   struct ResultRow {
     Player pla; // who made the move
     int pos; // where the move happened
-    float winProb;
-    float lossProb; // not necessarily 1-winProb because no result is possible
+    float whiteWinProb;
+    float whiteLossProb; // not necessarily 1-winProb because no result is possible
     float expectedScore; // predicted score at end of game by NN
-    float lead; // predicted bonus points to make game fair
+    float whiteLead; // predicted bonus points to make game fair
     float movePolicy; // policy at move location
     float maxPolicy; // best move policy
+    TrunkOutput trunk; // trunk features
     PickOutput pick; // trunk features at move location
   };
 
@@ -46,6 +50,7 @@ public:
   void startGame(const std::string& sgfPath);
   // extract input tensor and add it as new row
   void addBoard(Board& board, const BoardHistory& history, Move move);
+  void addFinalBoard(Board& board, const BoardHistory& history);
   // signal the end of input, finalize result for the game with the given path
   void endGame();
   bool isFull() const;
@@ -56,9 +61,9 @@ public:
 
   // copy trunk data to moveset; sizes must match
   static void writeResultToMoveset(Result result, SelectedMoves::Moveset& moveset);
-  void writeInputsToNpz(const std::string& filePath);
-  void writeOutputsToNpz(const std::string& filePath);
-  void writePicksToNpz(const std::string& filePath);
+  // void writeInputsToNpz(const std::string& filePath);
+  // void writeOutputsToNpz(const std::string& filePath);
+  // void writePicksToNpz(const std::string& filePath);
 
   constexpr static int nnXLen = 19;
   constexpr static int nnYLen = 19;

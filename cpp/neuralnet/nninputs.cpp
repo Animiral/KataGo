@@ -317,7 +317,7 @@ void NNInputs::fillScoring(
 
 
 NNOutput::NNOutput()
-  :pick(NULL),whiteOwnerMap(NULL),noisedPolicyProbs(NULL)
+  :trunk(NULL),pick(NULL),whiteOwnerMap(NULL),noisedPolicyProbs(NULL)
 {}
 NNOutput::NNOutput(const NNOutput& other) {
   nnHash = other.nnHash;
@@ -334,6 +334,12 @@ NNOutput::NNOutput(const NNOutput& other) {
   nnXLen = other.nnXLen;
   nnYLen = other.nnYLen;
   const size_t trunkChannels = 384; // strength model is only compatible with this specific size
+  if(other.trunk != NULL) {
+    trunk = new float[trunkChannels * nnXLen * nnYLen];
+    std::copy(other.trunk, other.trunk + trunkChannels, trunk);
+  }
+  else
+    trunk = NULL;
   if(other.pick != NULL) {
     pick = new float[trunkChannels];
     std::copy(other.pick, other.pick + trunkChannels, pick);
@@ -401,7 +407,7 @@ NNOutput::NNOutput(const vector<shared_ptr<NNOutput>>& others) {
   nnXLen = others[0]->nnXLen;
   nnYLen = others[0]->nnYLen;
 
-  // NOTE on pick: aggregation not implemented
+  // NOTE on trunk and pick: aggregation not implemented
 
   {
     float whiteOwnerMapCount = 0.0f;
@@ -471,11 +477,19 @@ NNOutput& NNOutput::operator=(const NNOutput& other) {
   nnXLen = other.nnXLen;
   nnYLen = other.nnYLen;
   const size_t trunkChannels = 384; // strength model is only compatible with this specific size
+  if(trunk != NULL)
+    delete[] trunk;
+  if(other.trunk != NULL) {
+    trunk = new float[trunkChannels * nnXLen * nnYLen];
+    std::copy(other.trunk, other.trunk + trunkChannels * nnXLen * nnYLen, trunk);
+  }
+  else
+    trunk = NULL;
   if(pick != NULL)
     delete[] pick;
   if(other.pick != NULL) {
     pick = new float[trunkChannels];
-    std::copy(other.pick, other.pick + trunkChannels * nnXLen * nnYLen, pick);
+    std::copy(other.pick, other.pick + trunkChannels, pick);
   }
   else
     pick = NULL;
@@ -503,6 +517,10 @@ NNOutput& NNOutput::operator=(const NNOutput& other) {
 
 
 NNOutput::~NNOutput() {
+  if(trunk != NULL) {
+    delete[] trunk;
+    trunk = NULL;
+  }
   if(pick != NULL) {
     delete[] pick;
     pick = NULL;
@@ -674,7 +692,7 @@ Loc SymmetryHelpers::getSymLoc(Loc loc, int xSize, int ySize, int symmetry) {
   return getSymLoc(Location::getX(loc,xSize), Location::getY(loc,xSize), xSize, ySize, symmetry);
 }
 
-int getSymPos(int pos, int nnXLen, int nnYLen, int symmetry) {
+int SymmetryHelpers::getSymPos(int pos, int nnXLen, int nnYLen, int symmetry) {
   int x = pos % nnXLen;
   int y = pos / nnXLen;
   bool transpose = (symmetry & 0x4) != 0;

@@ -21,8 +21,9 @@ using namespace std::literals;
 // }
 
 PrecomputeFeatures::PrecomputeFeatures(NNEvaluator& nnEvaluator, int cap)
-: PrecomputeFeatures(cap), evaluator(&nnEvaluator)
+: PrecomputeFeatures(cap)
 {
+  evaluator = &nnEvaluator;
   // handle = createComputeHandle(loadedModel, cap);
   // int modelVersion = NeuralNet::getModelVersion(&loadedModel);
   // numSpatialFeatures = NNModelVersion::getNumSpatialFeatures(modelVersion);
@@ -32,7 +33,9 @@ PrecomputeFeatures::PrecomputeFeatures(NNEvaluator& nnEvaluator, int cap)
 }
 
 PrecomputeFeatures::PrecomputeFeatures(int cap)
-: handle(nullptr, {}), inputBuffers(nullptr, {}),
+: // handle(nullptr, {}), inputBuffers(nullptr, {}),
+  includeTrunk(false),
+  includePick(true),
   count(0),
   capacity(cap),
   resultTip(0)
@@ -58,10 +61,11 @@ void PrecomputeFeatures::addBoard(Board& board, const BoardHistory& history, Mov
   MiscNNInputParams nnInputParams;
   nnInputParams.symmetry = 0;
   nnInputParams.policyOptimism = 0;
-  bool inputsUseNHWC = false;
 
   NNResultBuf buf;
   buf.rowPos = NNPos::locToPos(move.loc, board.x_size, nnXLen, nnYLen);
+  buf.includeTrunk = includeTrunk;
+  buf.includePick = includePick;
   evaluator->evaluate(board, history, move.pla, nnInputParams, buf, false, false); // todo: pass pos
   assert(buf.hasResult);
   NNOutput& nnout = *buf.result;
@@ -70,13 +74,16 @@ void PrecomputeFeatures::addBoard(Board& board, const BoardHistory& history, Mov
   ResultRow row;
   row.pla = move.pla;
   row.pos = buf.rowPos;
-  row.winProb = P_WHITE == move.pla ? nnout.whiteWinProb : whiteLossProb;
-  row.lossProb = P_WHITE == move.pla ? nnout.whiteLossProb : whiteWinProb;
-  row.expectedScore = P_WHITE == move.pla ? nnout.whiteScoreMean : -nnout.whiteScoreMean;
-  row.lead = P_WHITE == move.pla ? nnout.whiteLead : -nnout.whiteLead;
+  row.whiteWinProb = nnout.whiteWinProb;
+  row.whiteLossProb = nnout.whiteLossProb;
+  row.expectedScore = nnout.whiteScoreMean;
+  row.whiteLead = nnout.whiteLead;
   row.movePolicy = nnout.policyProbs[buf.rowPos];
   row.maxPolicy = *std::max_element(std::begin(nnout.policyProbs), std::end(nnout.policyProbs));
-  row.pick = vector<float>(nnout.pick, numTrunkFeatures); // trunk features at move location
+  if(nnout.trunk)
+    row.trunk = vector<float>(nnout.trunk, nnout.trunk + numTrunkFeatures * nnXLen * nnYLen); // trunk features at move location
+  if(nnout.pick)
+    row.pick = vector<float>(nnout.pick, nnout.pick + numTrunkFeatures); // trunk features at move location
   nextResult.rows.push_back(row);
 
   count++;
@@ -88,22 +95,22 @@ void PrecomputeFeatures::addFinalBoard(Board& board, const BoardHistory& history
   MiscNNInputParams nnInputParams;
   nnInputParams.symmetry = 0;
   nnInputParams.policyOptimism = 0;
-  bool inputsUseNHWC = false;
 
   NNResultBuf buf;
   buf.rowPos = 0; // we do not get pick vector from final board
-  evaluator->evaluate(board, history, move.pla, nnInputParams, buf, false, false); // todo: pass pos
+  buf.includeTrunk = includeTrunk;
+  evaluator->evaluate(board, history, history.presumedNextMovePla, nnInputParams, buf, false, false); // todo: pass pos
   assert(buf.hasResult);
   NNOutput& nnout = *buf.result;
 
   // interpret NN result
   ResultRow row;
-  row.pla = move.pla;
+  row.pla = history.presumedNextMovePla;
   row.pos = buf.rowPos;
-  row.winProb = P_WHITE == move.pla ? nnout.whiteWinProb : whiteLossProb;
-  row.lossProb = P_WHITE == move.pla ? nnout.whiteLossProb : whiteWinProb;
-  row.expectedScore = P_WHITE == move.pla ? nnout.whiteScoreMean : -nnout.whiteScoreMean;
-  row.lead = P_WHITE == move.pla ? nnout.whiteLead : -nnout.whiteLead;
+  row.whiteWinProb = nnout.whiteWinProb;
+  row.whiteLossProb = nnout.whiteLossProb;
+  row.expectedScore = nnout.whiteScoreMean;
+  row.whiteLead = nnout.whiteLead;
   row.movePolicy = nnout.policyProbs[buf.rowPos];
   row.maxPolicy = *std::max_element(std::begin(nnout.policyProbs), std::end(nnout.policyProbs));
   nextResult.rows.push_back(row);
@@ -112,7 +119,6 @@ void PrecomputeFeatures::addFinalBoard(Board& board, const BoardHistory& history
 }
 
 void PrecomputeFeatures::endGame() {
-  nextResult.endIndex = nextResult.startIndex + count - resultTip;
   results.push_back(nextResult);
   resultTip = count;
   nextResult = {};
@@ -126,9 +132,8 @@ std::vector<PrecomputeFeatures::Result> PrecomputeFeatures::evaluate() {
   if(count > 0) {
     // if there is an open game, it becomes a partial result; the process resembles endGame(), then startGame()
     if(count > resultTip) {
-      nextResult.endIndex = nextResult.startIndex + count - resultTip;
       results.push_back(nextResult);
-      nextResult.startIndex = nextResult.endIndex;
+      nextResult.startIndex += nextResult.rows.size(); // continue from intermediate state
       nextResult.rows.clear();
     }
   }
@@ -177,79 +182,89 @@ std::vector<PrecomputeFeatures::Result> PrecomputeFeatures::evaluate() {
 // }
 
 void PrecomputeFeatures::writeResultToMoveset(Result result, SelectedMoves::Moveset& moveset) {
-  assert(result.startIndex <= result.endIndex);
-  assert(result.endIndex <= moveset.moves.size());
+  assert(result.startIndex <= moveset.moves.size());
 
-  size_t count = result.endIndex - result.startIndex - 1; // take final board into account
+  size_t count = result.rows.size() - 1; // take final board into account
 
   for(size_t i = 0; i < count; i++) {
     SelectedMoves::Move& move = moveset.moves.at(result.startIndex+i);
     ResultRow& row = result.rows.at(i);
     ResultRow& nextRow = result.rows.at(i+1);
-    // if(result.trunk)
-    //   move.trunk.reset(new TrunkOutput(result.trunk + i*trunkSize, result.trunk + (i+1)*trunkSize));
+    if(!row.trunk.empty())
+      move.trunk.reset(new TrunkOutput(row.trunk));
     if(!row.pick.empty())
       move.pick.reset(new PickOutput(row.pick));
 
-    move.pos = row.movepos;
+    assert(move.pla == row.pla);
+    move.pos = row.pos;
+    move.pocFeatures.winProb = P_WHITE == move.pla ? nextRow.whiteWinProb : nextRow.whiteLossProb;
+    move.pocFeatures.lead = P_WHITE == move.pla ? nextRow.whiteLead : -nextRow.whiteLead;
+    move.pocFeatures.movePolicy = row.movePolicy;
+    move.pocFeatures.maxPolicy = row.maxPolicy;
+    move.pocFeatures.winrateLoss = P_WHITE == move.pla
+                                   ? row.whiteWinProb - nextRow.whiteWinProb
+                                   : row.whiteLossProb - nextRow.whiteLossProb;
+    move.pocFeatures.pointsLoss = P_WHITE == move.pla
+                                  ? row.whiteLead - nextRow.whiteLead
+                                  : -(row.whiteLead - nextRow.whiteLead);
   }
 }
 
-void PrecomputeFeatures::writeInputsToNpz(const string& filePath) {
-  int rows = count;
-  auto binaryInputNCHW = std::make_unique<NumpyBuffer<float>>(vector<int64_t>{rows, numSpatialFeatures, nnXLen, nnYLen});
-  auto globalInputNC = std::make_unique<NumpyBuffer<float>>(vector<int64_t>{rows, numGlobalFeatures});
-  std::copy_n(NeuralNet::getSpatialBuffer(inputBuffers.get()), rows*nnXLen*nnYLen*numSpatialFeatures, binaryInputNCHW->data);
-  std::copy_n(NeuralNet::getGlobalBuffer(inputBuffers.get()), rows*numGlobalFeatures, globalInputNC->data);
-  auto moveposN = std::make_unique<NumpyBuffer<float>>(vector<int64_t>{rows});
-  std::copy_n(movepos.begin(), rows, moveposN->data);
+// void PrecomputeFeatures::writeInputsToNpz(const string& filePath) {
+//   int rows = count;
+//   auto binaryInputNCHW = std::make_unique<NumpyBuffer<float>>(vector<int64_t>{rows, numSpatialFeatures, nnXLen, nnYLen});
+//   auto globalInputNC = std::make_unique<NumpyBuffer<float>>(vector<int64_t>{rows, numGlobalFeatures});
+//   std::copy_n(NeuralNet::getSpatialBuffer(inputBuffers.get()), rows*nnXLen*nnYLen*numSpatialFeatures, binaryInputNCHW->data);
+//   std::copy_n(NeuralNet::getGlobalBuffer(inputBuffers.get()), rows*numGlobalFeatures, globalInputNC->data);
+//   auto moveposN = std::make_unique<NumpyBuffer<float>>(vector<int64_t>{rows});
+//   std::copy_n(movepos.begin(), rows, moveposN->data);
 
-  ZipFile zipFile(filePath);
-  uint64_t numBytes = binaryInputNCHW->prepareHeaderWithNumRows(rows);
-  zipFile.writeBuffer("binaryInputNCHW", binaryInputNCHW->dataIncludingHeader, numBytes);
-  numBytes = moveposN->prepareHeaderWithNumRows(rows);
-  zipFile.writeBuffer("movepos", moveposN->dataIncludingHeader, numBytes);
-  numBytes = globalInputNC->prepareHeaderWithNumRows(rows);
-  zipFile.writeBuffer("globalInputNC", globalInputNC->dataIncludingHeader, numBytes);
-  zipFile.close();
-}
+//   ZipFile zipFile(filePath);
+//   uint64_t numBytes = binaryInputNCHW->prepareHeaderWithNumRows(rows);
+//   zipFile.writeBuffer("binaryInputNCHW", binaryInputNCHW->dataIncludingHeader, numBytes);
+//   numBytes = moveposN->prepareHeaderWithNumRows(rows);
+//   zipFile.writeBuffer("movepos", moveposN->dataIncludingHeader, numBytes);
+//   numBytes = globalInputNC->prepareHeaderWithNumRows(rows);
+//   zipFile.writeBuffer("globalInputNC", globalInputNC->dataIncludingHeader, numBytes);
+//   zipFile.close();
+// }
 
-void PrecomputeFeatures::writeOutputsToNpz(const string& filePath) {
-  int rows = count;
-  auto trunkOutputNCHW = std::make_unique<NumpyBuffer<float>>(vector<int64_t>{rows, numTrunkFeatures, nnXLen, nnYLen});
-  std::copy_n(trunk.begin(), rows*trunkSize, trunkOutputNCHW->data);
-  auto moveposN = std::make_unique<NumpyBuffer<float>>(vector<int64_t>{rows});
-  std::copy_n(movepos.begin(), rows, moveposN->data);
+// void PrecomputeFeatures::writeOutputsToNpz(const string& filePath) {
+//   int rows = count;
+//   auto trunkOutputNCHW = std::make_unique<NumpyBuffer<float>>(vector<int64_t>{rows, numTrunkFeatures, nnXLen, nnYLen});
+//   std::copy_n(trunk.begin(), rows*trunkSize, trunkOutputNCHW->data);
+//   auto moveposN = std::make_unique<NumpyBuffer<float>>(vector<int64_t>{rows});
+//   std::copy_n(movepos.begin(), rows, moveposN->data);
 
-  ZipFile zipFile(filePath);
-  uint64_t numBytes = trunkOutputNCHW->prepareHeaderWithNumRows(rows);
-  zipFile.writeBuffer("trunkOutputNCHW", trunkOutputNCHW->dataIncludingHeader, numBytes);
-  numBytes = moveposN->prepareHeaderWithNumRows(rows);
-  zipFile.writeBuffer("movepos", moveposN->dataIncludingHeader, numBytes);
-  zipFile.close();
-}
+//   ZipFile zipFile(filePath);
+//   uint64_t numBytes = trunkOutputNCHW->prepareHeaderWithNumRows(rows);
+//   zipFile.writeBuffer("trunkOutputNCHW", trunkOutputNCHW->dataIncludingHeader, numBytes);
+//   numBytes = moveposN->prepareHeaderWithNumRows(rows);
+//   zipFile.writeBuffer("movepos", moveposN->dataIncludingHeader, numBytes);
+//   zipFile.close();
+// }
 
-void PrecomputeFeatures::writePicksToNpz(const string& filePath) {
-  int rows = count;
-  NumpyBuffer<float> pickNC({rows, numTrunkFeatures});
+// void PrecomputeFeatures::writePicksToNpz(const string& filePath) {
+//   int rows = count;
+//   NumpyBuffer<float> pickNC({rows, numTrunkFeatures});
 
-  for(int i = 0; i < rows; i++) {
-    int pos = movepos[i];
-    if(pos >= 0 && pos < nnXLen * nnYLen) {
-      for(int j = 0; j < numTrunkFeatures; j++) {
-        pickNC.data[i*numTrunkFeatures + j] = trunk[i*trunkSize + j*nnXLen*nnYLen + pos];
-      }
-    }
-    else {
-      std::fill(pickNC.data + i*numTrunkFeatures, pickNC.data + (i+1)*numTrunkFeatures, 0);
-    }
-  }
+//   for(int i = 0; i < rows; i++) {
+//     int pos = movepos[i];
+//     if(pos >= 0 && pos < nnXLen * nnYLen) {
+//       for(int j = 0; j < numTrunkFeatures; j++) {
+//         pickNC.data[i*numTrunkFeatures + j] = trunk[i*trunkSize + j*nnXLen*nnYLen + pos];
+//       }
+//     }
+//     else {
+//       std::fill(pickNC.data + i*numTrunkFeatures, pickNC.data + (i+1)*numTrunkFeatures, 0);
+//     }
+//   }
 
-  ZipFile zipFile(filePath);
-  uint64_t numBytes = pickNC.prepareHeaderWithNumRows(rows);
-  zipFile.writeBuffer("pickNC", pickNC.dataIncludingHeader, numBytes);
-  zipFile.close();
-}
+//   ZipFile zipFile(filePath);
+//   uint64_t numBytes = pickNC.prepareHeaderWithNumRows(rows);
+//   zipFile.writeBuffer("pickNC", pickNC.dataIncludingHeader, numBytes);
+//   zipFile.close();
+// }
 
 // void PrecomputeFeatures::allocateBuffers() {
 //   trunk.resize(capacity * trunkSize);

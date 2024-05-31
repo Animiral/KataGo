@@ -17,6 +17,8 @@ NNResultBuf::NNResultBuf()
     rowSpatial(NULL),
     rowGlobal(NULL),
     rowPos(0),
+    includeTrunk(false),
+    includePick(false),
     result(nullptr),
     errorLogLockout(false),
     // If no symmetry is specified, it will use default or random based on config.
@@ -538,7 +540,10 @@ void NNEvaluator::serve(
         else
           emptyOutput->whiteOwnerMap = NULL;
         const size_t trunkNumChannels = 384; // strength model requires this size
-        emptyOutput->trunkData = new float[trunkNumChannels*nnXLen*nnYLen];
+        if(buf.resultBufs[row]->includeTrunk)
+          emptyOutput->trunk = new float[trunkNumChannels*nnXLen*nnYLen];
+        if(buf.resultBufs[row]->includePick)
+          emptyOutput->pick = new float[trunkNumChannels];
         outputBuf.push_back(emptyOutput);
       }
 

@@ -20,7 +20,7 @@ void SelectedMoves::Moveset::insert(int index, Player pla) {
   for(auto& m : moves)
     if(m.index == index)
       return;
-  moves.push_back({index, pla, nullptr, nullptr, -1});
+  moves.push_back({index, pla, nullptr, nullptr, {}, -1});
 }
 
 void SelectedMoves::Moveset::merge(const SelectedMoves::Moveset& rhs) {

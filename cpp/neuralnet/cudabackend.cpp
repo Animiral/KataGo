@@ -2352,6 +2352,7 @@ struct InputBuffers {
   float* userInputGlobalBuffer; //Host pointer
   int* userInputPosBuffer; //Host pointer
 
+  float* trunkResults; //Host pointer
   float* pickResults; //Host pointer
   float* policyPassResults; //Host pointer
   float* policyResults; //Host pointer
@@ -2396,7 +2397,8 @@ struct InputBuffers {
     userInputGlobalBuffer = new float[(size_t)m.numInputGlobalChannels * maxBatchSize];
     userInputPosBuffer = new int[(size_t)maxBatchSize];
 
-    pickResults = new float[(size_t)m.trunk.trunkNumChannels * maxBatchSize sizeof(float)];
+    trunkResults = new float[(size_t)m.trunk.trunkNumChannels * maxBatchSize * nnXLen * nnYLen];
+    pickResults = new float[(size_t)m.trunk.trunkNumChannels * maxBatchSize];
     policyPassResults = new float[(size_t)maxBatchSize * policyChannels];
     policyResults = new float[(size_t)maxBatchSize * policyChannels * nnXLen * nnYLen];
     valueResults = new float[(size_t)maxBatchSize * m.numValueChannels];
@@ -2409,6 +2411,8 @@ struct InputBuffers {
     delete[] userInputBuffer;
     delete[] userInputGlobalBuffer;
     delete[] userInputPosBuffer;
+    delete[] trunkResults;
+    delete[] pickResults;
     delete[] policyPassResults;
     delete[] policyResults;
     delete[] valueResults;
@@ -2432,7 +2436,7 @@ float* NeuralNet::getGlobalBuffer(InputBuffers* buffers) {
   return buffers->userInputGlobalBuffer;
 }
 int* NeuralNet::getPosBuffer(InputBuffers* buffers) {
-  return buffers->userPosBuffer;
+  return buffers->userInputPosBuffer;
 }
 void NeuralNet::freeInputBuffers(InputBuffers* inputBuffers) {
   delete inputBuffers;
@@ -2462,6 +2466,8 @@ void NeuralNet::getOutput(
   assert(numGlobalFeatures == inputBuffers->singleInputGlobalElts);
   const int policyChannels = version >= 12 ? 2 : 1;
   const int trunkChannels = gpuHandle->model->trunk->trunkNumChannels;
+  bool includeAnyTrunk = false;
+  bool includeAnyPick = false;
 
   for(int nIdx = 0; nIdx<batchSize; nIdx++) {
     float* rowSpatialInput = inputBuffers->userInputBuffer + (inputBuffers->singleInputElts * nIdx);
@@ -2471,7 +2477,10 @@ void NeuralNet::getOutput(
     const float* rowSpatial = inputBufs[nIdx]->rowSpatial;
     std::copy(rowGlobal,rowGlobal+numGlobalFeatures,rowGlobalInput);
     SymmetryHelpers::copyInputsWithSymmetry(rowSpatial, rowSpatialInput, 1, nnYLen, nnXLen, numSpatialFeatures, gpuHandle->inputsUseNHWC, inputBufs[nIdx]->symmetry);
-    if(inputBuffers->userInputPosBuffer != NULL) {
+    if(inputBufs[nIdx]->includeTrunk)
+      includeAnyTrunk = true;
+    if(inputBufs[nIdx]->includePick) {
+      includeAnyPick = true;
       const int rowPos = inputBufs[nIdx]->rowPos;
       inputBuffers->userInputPosBuffer[nIdx] = SymmetryHelpers::getSymPos(rowPos, nnXLen, nnYLen, inputBufs[nIdx]->symmetry);
     }
@@ -2552,10 +2561,17 @@ void NeuralNet::getOutput(
   );
 
 
-  // Pick cherries from the trunk output
-  CUDA_ERR("getOutput",cudaMemcpy(buffers->posBuf, inputBuffers->userInputPosBuffer, batchSize*sizeof(int), cudaMemcpyHostToDevice));
-  customCudaBatchIndex(buffers->trunkBuf, buffers->posBuf, buffers->pickBuf, batchSize, trunkChannels, nnXLen * nnYLen);
-  CUDA_ERR("getOutput",cudaMemcpy(inputBuffers->pickResults, buffers->pickBuf, trunkChannels*batchSize*sizeof(int), cudaMemcpyDeviceToHost));
+  // Trunk and Pick output
+  if(includeAnyTrunk) {
+    assert(!gpuHandle->usingFP16);
+    CUDA_ERR("getOutputTrunk",cudaMemcpy(inputBuffers->trunkResults, buffers->trunkBuf, trunkChannels*nnXLen*nnYLen*batchSize, cudaMemcpyDeviceToHost));
+  }
+  if(includeAnyPick) {
+    assert(!gpuHandle->usingFP16);
+    CUDA_ERR("getOutput",cudaMemcpy(buffers->posBuf, inputBuffers->userInputPosBuffer, batchSize*sizeof(int), cudaMemcpyHostToDevice));
+    customCudaBatchIndex(buffers->trunkBuf, buffers->posBuf, buffers->pickBuf, batchSize, trunkChannels, nnXLen * nnYLen);
+    CUDA_ERR("getOutput",cudaMemcpy(inputBuffers->pickResults, buffers->pickBuf, trunkChannels*batchSize*sizeof(int), cudaMemcpyDeviceToHost));
+  }
 
   CUDA_ERR("getOutput",cudaMemcpy(inputBuffers->policyPassResults, buffers->policyPassBuf, inputBuffers->singlePolicyPassResultBytes*batchSize, cudaMemcpyDeviceToHost));
   CUDA_ERR("getOutput",cudaMemcpy(inputBuffers->policyResults, buffers->policyBuf, inputBuffers->singlePolicyResultBytes*batchSize, cudaMemcpyDeviceToHost));
@@ -2573,8 +2589,14 @@ void NeuralNet::getOutput(
     assert(output->nnYLen == nnYLen);
     float policyOptimism = (float)inputBufs[row]->policyOptimism;
 
-    const float* pickBuf = inputBuffers->pickResults + row * trunkChannels;
-    std::copy(pickBuf, pickBuf + trunkChannels, output->pick);
+    if(inputBufs[row]->includeTrunk) {
+      const float* trunkBuf = inputBuffers->trunkResults + row * trunkChannels * nnXLen * nnYLen;
+      SymmetryHelpers::copyOutputsWithSymmetry(trunkBuf, output->trunk, trunkChannels, nnYLen, nnXLen, inputBufs[row]->symmetry);
+    }
+    if(inputBufs[row]->includePick) {
+      const float* pickBuf = inputBuffers->pickResults + row * trunkChannels;
+      std::copy(pickBuf, pickBuf + trunkChannels, output->pick);
+    }
 
     const float* policyPassSrcBuf = inputBuffers->policyPassResults + row * policyChannels;
     const float* policySrcBuf = inputBuffers->policyResults + row * policyChannels * nnXLen * nnYLen;

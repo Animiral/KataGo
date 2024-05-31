@@ -135,6 +135,7 @@ struct NNOutput {
 
   int nnXLen;
   int nnYLen;
+  float* trunk; // trunk output for strength model preprocessing
   float* pick; // piece of trunk output for strength model preprocessing
   //If not NULL, then this contains a nnXLen*nnYLen-sized map of expected ownership on the board.
   float* whiteOwnerMap;

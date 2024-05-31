@@ -27,7 +27,8 @@ namespace
 
   constexpr int maxMoves = 1000; // capacity for moves
 
-  unique_ptr<LoadedModel, void(*)(LoadedModel*)> loadModel(string file);
+  // unique_ptr<LoadedModel, void(*)(LoadedModel*)> loadModel(string file);
+  unique_ptr<NNEvaluator> createEvaluator(const string& modelFile, Logger& logger);
   SelectedMoves::Moveset readFromSgf(const string& sgfPath, const string& modelFile, int moveNumber);
   SelectedMoves::Moveset readFromZip(const string& zipPath);
   void dumpTensor(string path, float* data, size_t N);
@@ -121,8 +122,44 @@ int MainCmds::position_tensor(const vector<string>& args) {
 
 namespace {
 
-unique_ptr<LoadedModel, void(*)(LoadedModel*)> loadModel(string file) {
-  return unique_ptr<LoadedModel, void(*)(LoadedModel*)>(NeuralNet::loadModelFile(file, ""), &NeuralNet::freeLoadedModel);
+// unique_ptr<LoadedModel, void(*)(LoadedModel*)> loadModel(string file) {
+//   return unique_ptr<LoadedModel, void(*)(LoadedModel*)>(NeuralNet::loadModelFile(file, ""), &NeuralNet::freeLoadedModel);
+// }
+
+unique_ptr<NNEvaluator> createEvaluator(const string& modelFile, Logger& logger) {
+  constexpr int evaluatorThreads = 32;
+  constexpr int maxConcurrentEvals = evaluatorThreads*2;
+  constexpr int batchSize = 100;
+  constexpr int nnXLen = 19;
+  constexpr int nnYLen = 19;
+  vector<int> gpuIdxByServerThread(evaluatorThreads, -1);
+  auto evaluator = make_unique<NNEvaluator>(
+    modelFile,
+    modelFile,
+    "", // expectedSha256
+    &logger,
+    batchSize,
+    maxConcurrentEvals,
+    nnXLen,
+    nnYLen,
+    true, // requireExactNNLen
+    false, // inputsUseNHWC
+    23, // nnCacheSizePowerOfTwo
+    17, // nnMutexPoolSizePowerOfTwo
+    false, // debugSkipNeuralNet
+    "", // openCLTunerFile
+    "", // homeDataDirOverride
+    false, // openCLReTunePerBoardSize
+    enabled_t::False, // useFP16Mode
+    enabled_t::False, // useNHWCMode
+    evaluatorThreads, // numNNServerThreadsPerModel
+    gpuIdxByServerThread,
+    "", // nnRandSeed
+    false, // doRandomize (for symmetry)
+    0 // defaultSymmetry
+  );
+  evaluator->spawnServerThreads();
+  return evaluator;
 }
 
 SelectedMoves::Moveset readSgfToPrecompute(const string& sgfPath, PrecomputeFeatures& precompute, int moveNumber) {
@@ -155,12 +192,14 @@ SelectedMoves::Moveset readSgfToPrecompute(const string& sgfPath, PrecomputeFeat
 }
 
 SelectedMoves::Moveset readFromSgf(const string& sgfPath, const string& modelFile, int moveNumber) {
-  auto model = loadModel(modelFile);
+  auto evaluator = createEvaluator(modelFile, *theLogger);
   theLogger->write("Loaded model "+ modelFile);
-  PrecomputeFeatures precompute(*model, maxMoves);
+  PrecomputeFeatures precompute(*evaluator, maxMoves);
+  precompute.includeTrunk = true;
+  precompute.includePick = true;
   theLogger->write("Starting to extract tensors from " + sgfPath + "...");
   SelectedMoves::Moveset moveset = readSgfToPrecompute(sgfPath, precompute, moveNumber);
-  vector<PrecomputeFeatures::Result> results = precompute.evaluatePicks();
+  vector<PrecomputeFeatures::Result> results = precompute.evaluate();
   assert(1 == results.size());
   PrecomputeFeatures::writeResultToMoveset(results.front(), moveset);
   return moveset;
