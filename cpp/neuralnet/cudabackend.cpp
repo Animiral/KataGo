@@ -2564,10 +2564,12 @@ void NeuralNet::getOutput(
   // Trunk and Pick output
   if(includeAnyTrunk) {
     assert(!gpuHandle->usingFP16);
-    CUDA_ERR("getOutputTrunk",cudaMemcpy(inputBuffers->trunkResults, buffers->trunkBuf, trunkChannels*nnXLen*nnYLen*batchSize, cudaMemcpyDeviceToHost));
+    assert(!gpuHandle->usingNHWC);
+    CUDA_ERR("getOutputTrunk",cudaMemcpy(inputBuffers->trunkResults, buffers->trunkBuf, trunkChannels*nnXLen*nnYLen*batchSize*sizeof(float), cudaMemcpyDeviceToHost));
   }
   if(includeAnyPick) {
     assert(!gpuHandle->usingFP16);
+    assert(!gpuHandle->usingNHWC);
     CUDA_ERR("getOutput",cudaMemcpy(buffers->posBuf, inputBuffers->userInputPosBuffer, batchSize*sizeof(int), cudaMemcpyHostToDevice));
     customCudaBatchIndex(buffers->trunkBuf, buffers->posBuf, buffers->pickBuf, batchSize, trunkChannels, nnXLen * nnYLen);
     CUDA_ERR("getOutput",cudaMemcpy(inputBuffers->pickResults, buffers->pickBuf, trunkChannels*batchSize*sizeof(int), cudaMemcpyDeviceToHost));
@@ -2591,7 +2593,7 @@ void NeuralNet::getOutput(
 
     if(inputBufs[row]->includeTrunk) {
       const float* trunkBuf = inputBuffers->trunkResults + row * trunkChannels * nnXLen * nnYLen;
-      SymmetryHelpers::copyOutputsWithSymmetry(trunkBuf, output->trunk, trunkChannels, nnYLen, nnXLen, inputBufs[row]->symmetry);
+      SymmetryHelpers::copyOutputsWithSymmetry(trunkBuf, output->trunk, 1, nnYLen, nnXLen, inputBufs[row]->symmetry, trunkChannels);
     }
     if(inputBufs[row]->includePick) {
       const float* pickBuf = inputBuffers->pickResults + row * trunkChannels;

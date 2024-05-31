@@ -201,11 +201,6 @@ void runTrunksPicks(NNEvaluator& evaluator) {
   PrecomputeFeatures::writeResultToMoveset(results[0], movesetA);
   PrecomputeFeatures::writeResultToMoveset(results[1], movesetB);
 
-  cout << "movesetA summary:\n";
-  movesetA.printSummary(cout);
-  cout << "movesetB summary:\n";
-  movesetB.printSummary(cout);
-
   // compare trunks with picks
   for(const auto& moveset : {movesetA, movesetB}) {
     for(const auto& move : moveset.moves) {
@@ -214,7 +209,6 @@ void runTrunksPicks(NNEvaluator& evaluator) {
       vector<float> expectedPick(numTrunkFeatures);
       for(int c = 0; c < numTrunkFeatures; c++)
         expectedPick[c] = move.trunk->at(c*19*19 + move.pos);
-      cout << "move " << move.index << " pick " << vecChecksum(*move.pick) << " expected " << vecChecksum(expectedPick) << "\n";
       testAssert(approxEqual(*move.pick, expectedPick));
     }
   }

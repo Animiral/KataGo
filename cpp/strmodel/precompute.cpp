@@ -80,7 +80,7 @@ void PrecomputeFeatures::addBoard(Board& board, const BoardHistory& history, Mov
   row.whiteLead = nnout.whiteLead;
   row.movePolicy = nnout.policyProbs[buf.rowPos];
   row.maxPolicy = *std::max_element(std::begin(nnout.policyProbs), std::end(nnout.policyProbs));
-  if(nnout.trunk)
+  if(nnout.trunk) 
     row.trunk = vector<float>(nnout.trunk, nnout.trunk + numTrunkFeatures * nnXLen * nnYLen); // trunk features at move location
   if(nnout.pick)
     row.pick = vector<float>(nnout.pick, nnout.pick + numTrunkFeatures); // trunk features at move location
@@ -183,30 +183,31 @@ std::vector<PrecomputeFeatures::Result> PrecomputeFeatures::evaluate() {
 
 void PrecomputeFeatures::writeResultToMoveset(Result result, SelectedMoves::Moveset& moveset) {
   assert(result.startIndex <= moveset.moves.size());
-
-  size_t count = result.rows.size() - 1; // take final board into account
+  size_t count = result.rows.size();
 
   for(size_t i = 0; i < count; i++) {
     SelectedMoves::Move& move = moveset.moves.at(result.startIndex+i);
     ResultRow& row = result.rows.at(i);
-    ResultRow& nextRow = result.rows.at(i+1);
+    assert(move.pla == row.pla);
+    move.pos = row.pos;
     if(!row.trunk.empty())
       move.trunk.reset(new TrunkOutput(row.trunk));
     if(!row.pick.empty())
       move.pick.reset(new PickOutput(row.pick));
 
-    assert(move.pla == row.pla);
-    move.pos = row.pos;
-    move.pocFeatures.winProb = P_WHITE == move.pla ? nextRow.whiteWinProb : nextRow.whiteLossProb;
-    move.pocFeatures.lead = P_WHITE == move.pla ? nextRow.whiteLead : -nextRow.whiteLead;
-    move.pocFeatures.movePolicy = row.movePolicy;
-    move.pocFeatures.maxPolicy = row.maxPolicy;
-    move.pocFeatures.winrateLoss = P_WHITE == move.pla
-                                   ? row.whiteWinProb - nextRow.whiteWinProb
-                                   : row.whiteLossProb - nextRow.whiteLossProb;
-    move.pocFeatures.pointsLoss = P_WHITE == move.pla
-                                  ? row.whiteLead - nextRow.whiteLead
-                                  : -(row.whiteLead - nextRow.whiteLead);
+    if(i < count-1) { // POC features only work for boards showing the move outcome
+      ResultRow& nextRow = result.rows.at(i+1);
+      move.pocFeatures.winProb = P_WHITE == move.pla ? nextRow.whiteWinProb : nextRow.whiteLossProb;
+      move.pocFeatures.lead = P_WHITE == move.pla ? nextRow.whiteLead : -nextRow.whiteLead;
+      move.pocFeatures.movePolicy = row.movePolicy;
+      move.pocFeatures.maxPolicy = row.maxPolicy;
+      move.pocFeatures.winrateLoss = P_WHITE == move.pla
+                                     ? row.whiteWinProb - nextRow.whiteWinProb
+                                     : row.whiteLossProb - nextRow.whiteLossProb;
+      move.pocFeatures.pointsLoss = P_WHITE == move.pla
+                                    ? row.whiteLead - nextRow.whiteLead
+                                    : -(row.whiteLead - nextRow.whiteLead);
+    }
   }
 }
 
