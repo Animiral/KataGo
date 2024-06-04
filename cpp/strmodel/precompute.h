@@ -28,8 +28,8 @@ public:
   bool includePick; // get pieces of trunk from NN
 
   struct ResultRow {
-    Player pla; // who made the move
-    int pos; // where the move happened
+    int index; // 0-based move number in the game
+    int pos; // index into trunk data of move chosen by player
     float whiteWinProb;
     float whiteLossProb; // not necessarily 1-winProb because no result is possible
     float expectedScore; // predicted score at end of game by NN
@@ -50,7 +50,7 @@ public:
   void startGame(const std::string& sgfPath);
   // extract input tensor and add it as new row
   void addBoard(Board& board, const BoardHistory& history, Move move);
-  void addFinalBoard(Board& board, const BoardHistory& history);
+  void addBoard(Board& board, const BoardHistory& history); // final board without move
   // signal the end of input, finalize result for the game with the given path
   void endGame();
   bool isFull() const;
@@ -69,11 +69,13 @@ public:
   constexpr static int nnYLen = 19;
   constexpr static int numTrunkFeatures = 384;  // strength model is limited to this size
   constexpr static int trunkSize = nnXLen*nnYLen*numTrunkFeatures;
+  constexpr static int numPocFeatures = 6;      // filling struct MoveFeatures
   constexpr static int gpuIdx = -1;
 
 private:
 
   // void allocateBuffers();
+  void addBoardImpl(Board& board, const BoardHistory& history, int rowPos, Player pla, bool maybeTrunkPick);
 
   // std::unique_ptr<ComputeHandle, ComputeHandleDeleter> handle;
   // std::unique_ptr<InputBuffers, InputBuffersDeleter> inputBuffers;

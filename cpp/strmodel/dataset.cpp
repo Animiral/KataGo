@@ -20,7 +20,11 @@ void SelectedMoves::Moveset::insert(int index, Player pla) {
   for(auto& m : moves)
     if(m.index == index)
       return;
-  moves.push_back({index, pla, nullptr, nullptr, {}, -1});
+  Move m;
+  m.index = index;
+  m.pla = pla;
+  m.pos = -1;
+  moves.push_back(m);
 }
 
 void SelectedMoves::Moveset::merge(const SelectedMoves::Moveset& rhs) {
@@ -58,6 +62,37 @@ pair<SelectedMoves::Moveset, SelectedMoves::Moveset> SelectedMoves::Moveset::spl
 
 namespace {
 
+vector<int> getBufferOfMoveMember(
+  const vector<SelectedMoves::Move>& moves,
+  int SelectedMoves::Move::* member,
+  size_t
+) {
+  vector<int> buffer(moves.size());
+  for(size_t i = 0; i < moves.size(); i++) {
+    buffer[i] = moves[i].*member;
+  }
+  return buffer;
+}
+
+pair<vector<float>, bool> getBufferOfMoveMember(
+  const vector<SelectedMoves::Move>& moves,
+  std::shared_ptr<vector<float>> SelectedMoves::Move::* member,
+  size_t elsPerMove
+) {
+  vector<float> buffer(moves.size() * elsPerMove);
+  bool haveData = false;
+  for(size_t i = 0; i < moves.size(); i++) {
+    const SelectedMoves::Move& move = moves[i];
+    if(move.*member) {
+      assert((move.*member)->size() == elsPerMove);
+      std::copy((move.*member)->begin(), (move.*member)->end(), &buffer[i*elsPerMove]);
+      haveData = true;
+    }
+  }
+  return make_pair(move(buffer), haveData);
+}
+
+
 template<typename T>
 void addFileToZip(zip_t& archive, const vector<T>& buffer, const char* name) {
   unique_ptr<zip_source_t, decltype(&zip_source_free)> source{
@@ -93,33 +128,21 @@ void SelectedMoves::Moveset::writeToZip(const string& filePath) const {
   }
 
   // merge individual moves data into contiguous buffers
-  vector<int> indexBuffer(moves.size());
-  vector<float> trunkBuffer(moves.size() * trunkSize);
-  vector<float> pickBuffer(moves.size() * numTrunkFeatures);
-  vector<int> posBuffer(moves.size());
-  bool haveTrunks = false;
-  bool havePicks = false;
-  for(size_t i = 0; i < moves.size(); i++) {
-    const Move& move = moves[i];
-    indexBuffer[i] = move.index;
-    if(move.trunk) {
-      assert(move.trunk->size() == trunkSize);
-      std::copy(move.trunk->begin(), move.trunk->end(), &trunkBuffer[i*trunkSize]);
-      haveTrunks = true;
-    }
-    if(move.pick) {
-      assert(move.pick->size() == numTrunkFeatures);
-      std::copy(move.pick->begin(), move.pick->end(), &pickBuffer[i*numTrunkFeatures]);
-      havePicks = true;
-    }
-    posBuffer[i] = move.pos;
-  }
+  vector<int> indexBuffer = getBufferOfMoveMember(moves, &Move::index, 1);
+  vector<int> posBuffer = getBufferOfMoveMember(moves, &Move::pos, 1);
+  vector<float> trunkBuffer, pickBuffer, pocBuffer;
+  bool haveTrunks, havePicks, havePocs;
+  tie(trunkBuffer, haveTrunks) = getBufferOfMoveMember(moves, &Move::trunk, trunkSize);
+  tie(pickBuffer, havePicks) = getBufferOfMoveMember(moves, &Move::pick, numTrunkFeatures);
+  tie(pocBuffer, havePocs) = getBufferOfMoveMember(moves, &Move::poc, numPocFeatures);
 
   addFileToZip(*archive, indexBuffer, "index.bin");
   if(haveTrunks) 
     addFileToZip(*archive, trunkBuffer, "trunk.bin");
   if(havePicks) 
     addFileToZip(*archive, pickBuffer, "pick.bin");
+  if(havePocs) 
+    addFileToZip(*archive, pocBuffer, "poc.bin");
   addFileToZip(*archive, posBuffer, "movepos.bin");
 
   zip_t* archivep = archive.release();
@@ -153,9 +176,11 @@ float vecChecksum(const vector<float>& vec) {
 
 void SelectedMoves::Moveset::printSummary(std::ostream& stream) const {
   for(const Move& m : moves) {
-    float trunkSum = m.trunk ? vecChecksum(*m.trunk) : 0;
-    float pickSum = m.pick ? vecChecksum(*m.pick) : 0;
-    stream << strprintf("%d: pos %d, trunk %f, pick %f\n", m.index, m.pos, trunkSum, pickSum);
+    string trunkStr = m.trunk ? strprintf("trunk %f", vecChecksum(*m.trunk)) : "no trunk"s;
+    string pickStr = m.pick ? strprintf("pick %f", vecChecksum(*m.pick)) : "no pick"s;
+    string pocStr = m.poc ? strprintf("poc(wr %f, pt %f, p %f, maxp %f, wr- %f, pt- %f)",
+      m.poc->at(0), m.poc->at(1), m.poc->at(2), m.poc->at(3), m.poc->at(4), m.poc->at(5)) : "no poc"s;
+    stream << strprintf("%d: pos %d, %s, %s, %s\n", m.index, m.pos, trunkStr.c_str(), pickStr.c_str(), pocStr.c_str());
   }
 }
 
@@ -256,6 +281,8 @@ SelectedMoves::Moveset SelectedMoves::Moveset::readFromZip(const string& filePat
     readFromZipPart(*archive, "trunk.bin", moveset, &Move::trunk, trunkSize);
   if(zip_name_locate(archive.get(), "pick.bin", ZIP_FL_ENC_RAW) >= 0)
     readFromZipPart(*archive, "pick.bin", moveset, &Move::pick, numTrunkFeatures);
+  if(zip_name_locate(archive.get(), "poc.bin", ZIP_FL_ENC_RAW) >= 0)
+    readFromZipPart(*archive, "poc.bin", moveset, &Move::poc, numPocFeatures);
   readFromZipPart(*archive, "movepos.bin", moveset, &Move::pos, 1);
 
   std::for_each(moveset.moves.begin(), moveset.moves.end(), [pla](Move& m) { m.pla = pla; });

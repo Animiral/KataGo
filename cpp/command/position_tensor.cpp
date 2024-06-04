@@ -127,9 +127,9 @@ namespace {
 // }
 
 unique_ptr<NNEvaluator> createEvaluator(const string& modelFile, Logger& logger) {
-  constexpr int evaluatorThreads = 32;
-  constexpr int maxConcurrentEvals = evaluatorThreads*2;
-  constexpr int batchSize = 100;
+  constexpr int evaluatorThreads = 2;
+  constexpr int maxConcurrentEvals = 4;
+  constexpr int batchSize = 10;
   constexpr int nnXLen = 19;
   constexpr int nnYLen = 19;
   vector<int> gpuIdxByServerThread(evaluatorThreads, -1);

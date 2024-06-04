@@ -4,6 +4,7 @@
 #include <map>
 #include <string>
 #include <vector>
+#include <utility>
 #include <memory>
 #include <ostream>
 #include "core/logger.h"
@@ -22,7 +23,7 @@ struct SelectedMoves {
     // output values: filled later
     std::shared_ptr<TrunkOutput> trunk; // trunk output data
     std::shared_ptr<PickOutput> pick; // pick output data
-    MoveFeatures pocFeatures; // proof of concept model features
+    std::shared_ptr<std::vector<float>> poc; // proof of concept model features
     int pos; // index into trunk data of move chosen by player
   };
   struct Moveset {
@@ -41,6 +42,7 @@ struct SelectedMoves {
     constexpr static int nnYLen = 19;
     constexpr static int numTrunkFeatures = 384;  // strength model is limited to this size
     constexpr static int trunkSize = nnXLen*nnYLen*numTrunkFeatures;
+    constexpr static int numPocFeatures = 6;      // filling struct MoveFeatures
   };
 
   std::map<std::string, Moveset> bygame;

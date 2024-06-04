@@ -51,7 +51,7 @@ struct RecentMoves {
 
 Parameters parseArgs(const vector<string>& args);
 // unique_ptr<LoadedModel, void(*)(LoadedModel*)> loadModel(string file);
-unique_ptr<NNEvaluator> createEvaluator(const string& modelFile, int evaluatorThreads, int batchSize, Logger& logger);
+unique_ptr<NNEvaluator> createEvaluator(const string& modelFile, int evaluatorThreads, int batchSize);
 string movesetToString(const SelectedMoves::Moveset& moveset);
 vector<RecentMoves> getRecentMovesOfEveryGame(const Dataset& dataset, int windowSize, const string& featureDir, bool recompute, Logger& logger);
 void printRecentMoves(const vector<RecentMoves>& recentMoves, const Dataset& dataset);
@@ -106,6 +106,7 @@ void combineAndDumpRecentMoves(
 
 int MainCmds::extract_features(const vector<string>& args) {
   Parameters params = parseArgs(args);
+  int workerThreads = 64; // number of CPU threads filling requests to GPU
   Logger logger(params.cfg.get(), false, true);
   logger.write(Version::getKataGoVersionForHelp());
 
@@ -114,7 +115,7 @@ int MainCmds::extract_features(const vector<string>& args) {
 
   // auto loadedModel = loadModel(params.modelFile);
   // logger.write(strprintf("Loaded model %s.", params.modelFile.c_str()));
-  auto evaluator = createEvaluator(params.modelFile, params.batchThreads, params.batchSize, logger);
+  auto evaluator = createEvaluator(params.modelFile, params.batchThreads, params.batchSize);
 
   Dataset dataset;
   dataset.load(params.listFile); // deliberately omit passing featureDir; we want to compute features, not load them
@@ -142,9 +143,13 @@ int MainCmds::extract_features(const vector<string>& args) {
   
     vector<Worker> workers;
     vector<std::thread> threads;
-    for(int i = 0; i < params.batchThreads; i++)
-      workers.emplace_back(PrecomputeFeatures(*evaluator, params.batchSize));
-    for(int i = 0; i < params.batchThreads; i++)
+    for(int i = 0; i < workerThreads; i++) {
+      PrecomputeFeatures precompute(*evaluator, params.batchSize);
+      precompute.includeTrunk = false; // TODO: add parameter for this
+      precompute.includePick = true; // TODO: add parameter for this
+      workers.emplace_back(std::move(precompute));
+    }
+    for(int i = 0; i < workerThreads; i++)
       threads.emplace_back(ref(workers[i]));
     for(auto& thread : threads)
       thread.join();
@@ -212,7 +217,7 @@ Parameters parseArgs(const vector<string>& args) {
 //   return unique_ptr<LoadedModel, void(*)(LoadedModel*)>(NeuralNet::loadModelFile(file, ""), &NeuralNet::freeLoadedModel);
 // }
 
-unique_ptr<NNEvaluator> createEvaluator(const string& modelFile, int evaluatorThreads, int batchSize, Logger& logger) {
+unique_ptr<NNEvaluator> createEvaluator(const string& modelFile, int evaluatorThreads, int batchSize) {
   assert(evaluatorThreads > 0);
   assert(batchSize > 0);
   const int maxConcurrentEvals = evaluatorThreads*2;
@@ -223,7 +228,7 @@ unique_ptr<NNEvaluator> createEvaluator(const string& modelFile, int evaluatorTh
     modelFile,
     modelFile,
     "", // expectedSha256
-    &logger,
+    nullptr, // logger
     batchSize,
     maxConcurrentEvals,
     nnXLen,
@@ -370,8 +375,9 @@ void Worker::processGame(const string& sgfPath, SelectedMoves::Moveset& moveset)
   Player initialPla;
   sgf->setupInitialBoardAndHist(rules, board, initialPla, history);
   // moveset is always in ascending order; we calculate all moves which do not have pick data
-  auto needsPick = [](SelectedMoves::Move& m) { return nullptr == m.pick; };
-  auto moveIt = std::find_if(moveset.moves.begin(), moveset.moves.end(), needsPick);
+  // auto needsPick = [](SelectedMoves::Move& m) { return nullptr == m.pick; };
+  // auto moveIt = std::find_if(moveset.moves.begin(), moveset.moves.end(), needsPick);
+  auto moveIt = moveset.moves.begin(); // TODO: only pick moves which are necessary for requested features
   auto moveEnd = moveset.moves.end();
 
   precompute.startGame(sgfPath);
@@ -379,21 +385,25 @@ void Worker::processGame(const string& sgfPath, SelectedMoves::Moveset& moveset)
     assert(turnIdx < moves.size()); // moves beyond end of game should never occur in moveset
     Move move = moves[turnIdx];
 
-    // if(turnIdx == moveIt->index) {
+    if(turnIdx == moveIt->index) {
       precompute.addBoard(board, history, move);
       // if(precompute.isFull()) {
       //   processResults();
       // }
       /*do*/ moveIt++;
       /*while(moveIt != moveEnd && !needsPick(*moveIt));*/
-    // }
+    }
 
     // apply move
     bool suc = history.makeBoardMoveTolerant(board, move.loc, move.pla);
     if(!suc)
       throw StringError(strprintf("Illegal move %s at %s", PlayerIO::playerToString(move.pla), Location::toString(move.loc, sgf->xSize, sgf->ySize)));
   }
-  precompute.addFinalBoard(board, history);
+  if(moveIt != moveEnd) { // add final board?
+    assert(history.getCurrentTurnNumber() == moveIt->index);
+    precompute.addBoard(board, history);
+    assert(++moveIt == moveEnd);
+  }
   precompute.endGame();
 }
 
