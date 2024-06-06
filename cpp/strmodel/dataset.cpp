@@ -16,13 +16,14 @@ using std::move;
 using namespace std::literals;
 using Global::strprintf;
 
-void SelectedMoves::Moveset::insert(int index, Player pla) {
+void SelectedMoves::Moveset::insert(int index, Selection selection) {
   for(auto& m : moves)
     if(m.index == index)
       return;
   Move m;
   m.index = index;
-  m.pla = pla;
+  m.selection = selection;
+  m.pla = C_EMPTY;
   m.pos = -1;
   moves.push_back(m);
 }
@@ -37,13 +38,24 @@ void SelectedMoves::Moveset::merge(const SelectedMoves::Moveset& rhs) {
       before = ++moves.insert(before, m);
     }
     if(moves.end() != before && before->index == m.index) { // in doubt, pick rhs data
-      *before = m;
+      if(m.selection.trunk) before->selection.trunk = true;
+      if(m.selection.pick) before->selection.pick = true;
+      if(m.selection.head) before->selection.head = true;
+      if(m.trunk) before->trunk = m.trunk;
+      if(m.pick) before->pick = m.pick;
+      if(m.head) before->head = m.head;
+      if(m.pos >= 0) before->pos = m.pos;
     }
   }
 }
 
-bool SelectedMoves::Moveset::hasAllPicks() const {
-  return moves.end() == std::find_if(moves.begin(), moves.end(), [](const Move& m) { return nullptr == m.pick; });
+bool SelectedMoves::Moveset::hasAllResults() const {
+  auto needsResults = [](const Move& m) -> bool {
+    return (m.selection.trunk && nullptr == m.trunk)
+        || (m.selection.pick && nullptr == m.pick)
+        || (m.selection.head && nullptr == m.head);
+  };
+  return moves.end() == std::find_if(moves.begin(), moves.end(), needsResults);
 }
 
 void SelectedMoves::Moveset::releaseStorage() {
@@ -57,7 +69,7 @@ pair<SelectedMoves::Moveset, SelectedMoves::Moveset> SelectedMoves::Moveset::spl
   vector<Move> blackMoves, whiteMoves;
   std::copy_if(moves.begin(), moves.end(), std::back_inserter(blackMoves), [](const Move& m){ return P_BLACK == m.pla; });
   std::copy_if(moves.begin(), moves.end(), std::back_inserter(whiteMoves), [](const Move& m){ return P_WHITE == m.pla; });
-  return { { blackMoves }, { whiteMoves } };
+  return { { blackMoves, P_BLACK }, { whiteMoves, P_WHITE } };
 }
 
 namespace {
@@ -130,19 +142,19 @@ void SelectedMoves::Moveset::writeToZip(const string& filePath) const {
   // merge individual moves data into contiguous buffers
   vector<int> indexBuffer = getBufferOfMoveMember(moves, &Move::index, 1);
   vector<int> posBuffer = getBufferOfMoveMember(moves, &Move::pos, 1);
-  vector<float> trunkBuffer, pickBuffer, pocBuffer;
-  bool haveTrunks, havePicks, havePocs;
+  vector<float> trunkBuffer, pickBuffer, headBuffer;
+  bool haveTrunks, havePicks, haveHeads;
   tie(trunkBuffer, haveTrunks) = getBufferOfMoveMember(moves, &Move::trunk, trunkSize);
   tie(pickBuffer, havePicks) = getBufferOfMoveMember(moves, &Move::pick, numTrunkFeatures);
-  tie(pocBuffer, havePocs) = getBufferOfMoveMember(moves, &Move::poc, numPocFeatures);
+  tie(headBuffer, haveHeads) = getBufferOfMoveMember(moves, &Move::head, numHeadFeatures);
 
   addFileToZip(*archive, indexBuffer, "index.bin");
   if(haveTrunks) 
     addFileToZip(*archive, trunkBuffer, "trunk.bin");
   if(havePicks) 
     addFileToZip(*archive, pickBuffer, "pick.bin");
-  if(havePocs) 
-    addFileToZip(*archive, pocBuffer, "poc.bin");
+  if(haveHeads) 
+    addFileToZip(*archive, headBuffer, "head.bin");
   addFileToZip(*archive, posBuffer, "movepos.bin");
 
   zip_t* archivep = archive.release();
@@ -178,9 +190,9 @@ void SelectedMoves::Moveset::printSummary(std::ostream& stream) const {
   for(const Move& m : moves) {
     string trunkStr = m.trunk ? strprintf("trunk %f", vecChecksum(*m.trunk)) : "no trunk"s;
     string pickStr = m.pick ? strprintf("pick %f", vecChecksum(*m.pick)) : "no pick"s;
-    string pocStr = m.poc ? strprintf("poc(wr %f, pt %f, p %f, maxp %f, wr- %f, pt- %f)",
-      m.poc->at(0), m.poc->at(1), m.poc->at(2), m.poc->at(3), m.poc->at(4), m.poc->at(5)) : "no poc"s;
-    stream << strprintf("%d: pos %d, %s, %s, %s\n", m.index, m.pos, trunkStr.c_str(), pickStr.c_str(), pocStr.c_str());
+    string headStr = m.head ? strprintf("head(wr %f, pt %f, p %f, maxp %f, wr- %f, pt- %f)",
+      m.head->at(0), m.head->at(1), m.head->at(2), m.head->at(3), m.head->at(4), m.head->at(5)) : "no head"s;
+    stream << strprintf("%d: pos %d, %s, %s, %s\n", m.index, m.pos, trunkStr.c_str(), pickStr.c_str(), headStr.c_str());
   }
 }
 
@@ -274,15 +286,15 @@ SelectedMoves::Moveset SelectedMoves::Moveset::readFromZip(const string& filePat
   if(0 != zip_stat_index(archive.get(), 0, 0, &stat))
     throw StringError("Error getting stat of first file in archive: "s + zip_strerror(archive.get()));
   uint64_t expectedCount = stat.size / sizeof(int);
-  Moveset moveset{vector<Move>(expectedCount)};
+  Moveset moveset{vector<Move>(expectedCount), pla};
 
   readFromZipPart(*archive, "index.bin", moveset, &Move::index, 1);
   if(zip_name_locate(archive.get(), "trunk.bin", ZIP_FL_ENC_RAW) >= 0)
     readFromZipPart(*archive, "trunk.bin", moveset, &Move::trunk, trunkSize);
   if(zip_name_locate(archive.get(), "pick.bin", ZIP_FL_ENC_RAW) >= 0)
     readFromZipPart(*archive, "pick.bin", moveset, &Move::pick, numTrunkFeatures);
-  if(zip_name_locate(archive.get(), "poc.bin", ZIP_FL_ENC_RAW) >= 0)
-    readFromZipPart(*archive, "poc.bin", moveset, &Move::poc, numPocFeatures);
+  if(zip_name_locate(archive.get(), "head.bin", ZIP_FL_ENC_RAW) >= 0)
+    readFromZipPart(*archive, "head.bin", moveset, &Move::head, numHeadFeatures);
   readFromZipPart(*archive, "movepos.bin", moveset, &Move::pos, 1);
 
   std::for_each(moveset.moves.begin(), moveset.moves.end(), [pla](Move& m) { m.pla = pla; });
@@ -466,7 +478,9 @@ int countMovesOfColor(const string& sgfPath, Player pla) {
   return std::count_if(moves.begin(), moves.end(), [pla](Move m) { return pla == m.pla; });
 }
 
-int findMovesOfColor(const string& sgfPath, Player pla, SelectedMoves& selectedMoves, size_t capacity) {
+pair<SelectedMoves::Moveset, size_t> findMovesOfColor(const string& sgfPath, Player pla, size_t capacity, Selection selection) {
+  SelectedMoves::Moveset movesOfColor;
+  movesOfColor.pla = pla;
   auto sgf = std::unique_ptr<CompactSgf>(CompactSgf::loadFile(sgfPath));
   const auto& moves = sgf->moves;
   Rules rules = sgf->getRulesOrFailAllowUnspecified(Rules::getTrompTaylorish());
@@ -474,69 +488,78 @@ int findMovesOfColor(const string& sgfPath, Player pla, SelectedMoves& selectedM
   BoardHistory history;
   Player initialPla;
   sgf->setupInitialBoardAndHist(rules, board, initialPla, history);
-  vector<int> foundMoves;
+  size_t found = std::count_if(moves.begin(), moves.end(), [pla](Move m) { return pla == m.pla ; });
+  size_t excess = found > capacity ? found - capacity : 0;
+  found -= excess;
 
   for(int i = 0; i < moves.size(); i++) {
     if(pla == moves[i].pla) {
-      foundMoves.push_back(i);
+      if(excess > 0) {
+        excess--;
+        continue;
+      }
+      if(movesOfColor.moves.empty() || movesOfColor.moves.back().index != i)
+        movesOfColor.insert(i, selection);
+      if(selection.head) // for head features, we also need the board after the move to calculate winrate loss etc
+        movesOfColor.insert(i+1, {false, false, selection.head});
     }
   }
 
-  // insert only up to capacity, with preference for later moves
-  auto& gameMoves = selectedMoves.bygame[sgfPath];
-  size_t start = capacity > foundMoves.size() ? 0 : foundMoves.size() - capacity;
+  return std::make_pair(std::move(movesOfColor), found);
 
-  for(size_t i = start; i < foundMoves.size(); i++) {
-    gameMoves.insert(foundMoves[i], pla);
-  }
+  // // size_t start = capacity > foundMoves.size() ? 0 : foundMoves.size() - capacity;
 
-  return foundMoves.size() - start;
+  // for(size_t i = start; i < foundMoves.size(); i++) {
+  //   gameMoves.insert(foundMoves[i].index, foundMoves[i].selection);
+  // }
+
+  // return foundMoves.size() - start;
 }
 
 }
 
-size_t Dataset::getRecentMoves(size_t player, size_t game, MoveFeatures* buffer, size_t bufsize) const {
-  assert(player < players.size());
-  assert(game <= games.size());
+// size_t Dataset::getRecentMoves(size_t player, size_t game, MoveFeatures* buffer, size_t bufsize) const {
+//   assert(player < players.size());
+//   assert(game <= games.size());
 
-  // start from the game preceding the specified index
-  int gameIndex;
-  if(games.size() == game) {
-      gameIndex = players[player].lastOccurrence;
-  }
-  else {
-    const Game* gm = &games[game];
-    if(player == gm->black.player)
-      gameIndex = gm->black.prevGame;
-    else if(player == gm->white.player)
-      gameIndex = gm->white.prevGame;
-    else
-      gameIndex = static_cast<int>(game) - 1;
-  }
+//   // start from the game preceding the specified index
+//   int gameIndex;
+//   if(games.size() == game) {
+//       gameIndex = players[player].lastOccurrence;
+//   }
+//   else {
+//     const Game* gm = &games[game];
+//     if(player == gm->black.player)
+//       gameIndex = gm->black.prevGame;
+//     else if(player == gm->white.player)
+//       gameIndex = gm->white.prevGame;
+//     else
+//       gameIndex = static_cast<int>(game) - 1;
+//   }
 
-  // go backwards in player's history and fill the buffer in backwards order
-  MoveFeatures* outptr = buffer + bufsize;
-  while(gameIndex >= 0 && outptr > buffer) {
-    while(gameIndex >= 0 && player != games[gameIndex].black.player && player != games[gameIndex].white.player)
-      gameIndex--; // this is just defense to ensure that we find a game which the player occurs in
-    if(gameIndex < 0)
-      break;
-    const Game* gm = &games[gameIndex];
-    bool isBlack = player == gm->black.player;
-    const auto& features = isBlack ? gm->black.features : gm->white.features;
-    for(int i = features.size(); i > 0 && outptr > buffer;)
-      *--outptr = features[--i];
-    gameIndex = isBlack ? gm->black.prevGame : gm->white.prevGame;
-  }
+//   // go backwards in player's history and fill the buffer in backwards order
+//   MoveFeatures* outptr = buffer + bufsize;
+//   while(gameIndex >= 0 && outptr > buffer) {
+//     while(gameIndex >= 0 && player != games[gameIndex].black.player && player != games[gameIndex].white.player)
+//       gameIndex--; // this is just defense to ensure that we find a game which the player occurs in
+//     if(gameIndex < 0)
+//       break;
+//     const Game* gm = &games[gameIndex];
+//     bool isBlack = player == gm->black.player;
+//     const auto& features = isBlack ? gm->black.features : gm->white.features;
+//     for(int i = features.size(); i > 0 && outptr > buffer;)
+//       *--outptr = features[--i];
+//     gameIndex = isBlack ? gm->black.prevGame : gm->white.prevGame;
+//   }
 
-  // if there are not enough features in history to fill the buffer, adjust
-  size_t count = bufsize - (outptr - buffer);
-  if(outptr > buffer)
-    std::memmove(buffer, outptr, count * sizeof(MoveFeatures));
-  return count;
-}
+//   // if there are not enough features in history to fill the buffer, adjust
+//   size_t count = bufsize - (outptr - buffer);
+//   if(outptr > buffer)
+//     std::memmove(buffer, outptr, count * sizeof(MoveFeatures));
+//   return count;
+// }
 
-SelectedMoves Dataset::getRecentMoves(::Player player, size_t game, size_t capacity) const {
+SelectedMoves Dataset::getRecentMoves(::Player player, size_t game, size_t capacity, Selection selection) const {
   SelectedMoves selectedMoves;
   const Game& gameData = games[game];
   auto& info = P_BLACK == player ? gameData.black : gameData.white;
@@ -558,7 +581,9 @@ SelectedMoves Dataset::getRecentMoves(::Player player, size_t game, size_t capac
       throw StringError(strprintf("Game %s does not contain player %d (name=%s)",
         historicGame.sgfPath.c_str(), playerId, players[playerId].name.c_str()));
     }
-    capacity -= findMovesOfColor(historicGame.sgfPath, pla, selectedMoves, capacity);
+    pair<SelectedMoves::Moveset, size_t> moves_count = findMovesOfColor(historicGame.sgfPath, pla, capacity, selection);
+    selectedMoves.bygame[historicGame.sgfPath] = std::move(moves_count.first);
+    capacity -= moves_count.second;
   }
 
   return selectedMoves;

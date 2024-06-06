@@ -43,49 +43,49 @@ void runStrengthModelTests(const string& modelFile, const string& listFile, cons
       cout << "\tPlayer " << player.name << ", last occurred in game [" << player.lastOccurrence << "]\n";
   }
 
-  {
-    cout << "- get recent moves: ";
-    assert(dataset.players.size() >= 3 && dataset.games.size() >= 3);
-    bool pass = true;
-    vector<MoveFeatures> buffer(10);
-    vector<MoveFeatures> expected(10);
+  // {
+  //   cout << "- get recent moves: ";
+  //   assert(dataset.players.size() >= 3 && dataset.games.size() >= 3);
+  //   bool pass = true;
+  //   vector<MoveFeatures> buffer(10);
+  //   vector<MoveFeatures> expected(10);
 
-    // if there are no previous features, we expect the buffer to be unchanged.
-    buffer[0].winProb = 2;
-    size_t count = dataset.getRecentMoves(2, 1, buffer.data(), 10);
-    if(0 != count || 2 != buffer[0].winProb) {
-      cout << "expected 0 features, got " << count << ": ";
-      printFeatures(buffer.data(), count);
-      pass = false;
-    }
+  //   // if there are no previous features, we expect the buffer to be unchanged.
+  //   buffer[0].winProb = 2;
+  //   size_t count = dataset.getRecentMoves(2, 1, buffer.data(), 10);
+  //   if(0 != count || 2 != buffer[0].winProb) {
+  //     cout << "expected 0 features, got " << count << ": ";
+  //     printFeatures(buffer.data(), count);
+  //     pass = false;
+  //   }
 
-    // expect features in a sequence ordered from old to new
-    count = dataset.getRecentMoves(0, 2, buffer.data(), 10);
-    expected[0] = dataset.games[0].white.features[0]; // this makes assumptions about the UT dataset
-    expected[1] = dataset.games[1].white.features[0];
-    expected[2] = dataset.games[1].white.features[1];
-    if(3 != count || !featuresEqual(buffer.data(), expected.data(), count)) {
-      cout << "expected 3 features: ";
-      printFeatures(expected.data(), 3);
-      cout << ", got " << count << ": ";
-      printFeatures(buffer.data(), count);
-      pass = false;
-    }
+  //   // expect features in a sequence ordered from old to new
+  //   count = dataset.getRecentMoves(0, 2, buffer.data(), 10);
+  //   expected[0] = dataset.games[0].white.features[0]; // this makes assumptions about the UT dataset
+  //   expected[1] = dataset.games[1].white.features[0];
+  //   expected[2] = dataset.games[1].white.features[1];
+  //   if(3 != count || !featuresEqual(buffer.data(), expected.data(), count)) {
+  //     cout << "expected 3 features: ";
+  //     printFeatures(expected.data(), 3);
+  //     cout << ", got " << count << ": ";
+  //     printFeatures(buffer.data(), count);
+  //     pass = false;
+  //   }
 
-    // expect features cut off at the specified count, expect game index working 1 past end
-    count = dataset.getRecentMoves(2, 3, buffer.data(), 2);
-    expected[0] = dataset.games[2].black.features[1];
-    expected[1] = dataset.games[2].black.features[2];
-    if(2 != count || !featuresEqual(buffer.data(), expected.data(), count)) {
-      cout << "expected 2 features: ";
-      printFeatures(expected.data(), 2);
-      cout << ", got " << count << ": ";
-      printFeatures(buffer.data(), count);
-      pass = false;
-    }
+  //   // expect features cut off at the specified count, expect game index working 1 past end
+  //   count = dataset.getRecentMoves(2, 3, buffer.data(), 2);
+  //   expected[0] = dataset.games[2].black.features[1];
+  //   expected[1] = dataset.games[2].black.features[2];
+  //   if(2 != count || !featuresEqual(buffer.data(), expected.data(), count)) {
+  //     cout << "expected 2 features: ";
+  //     printFeatures(expected.data(), 2);
+  //     cout << ", got " << count << ": ";
+  //     printFeatures(buffer.data(), count);
+  //     pass = false;
+  //   }
 
-    cout << (pass ? "pass" : "fail") << "\n";
-  }
+  //   cout << (pass ? "pass" : "fail") << "\n";
+  // }
 
   {
     cout << "- StochasticPredictor.predict(): ";
@@ -145,102 +145,102 @@ void runStrengthModelTests(const string& modelFile, const string& listFile, cons
     cout << "\n";
   }
 
-  {
-    size_t sample = 2;
-    cout << "- save/load: ";
+  // {
+  //   size_t sample = 2;
+  //   cout << "- save/load: ";
 
-    vector<MoveFeatures> features(10);
-    features.resize(dataset.getRecentMoves(dataset.games[sample].black.player, sample, features.data(), 10));
-    StrengthNet& net = strengthModel.net;
-    Rand rand(123ull); // reproducible seed
-    net.randomInit(rand);
-    net.setInput({features});
-    net.forward();
-    vector<float> expected = net.getOutput();
-    std::ostringstream weightsBefore;
-    net.printWeights(weightsBefore, "before save/load", true);
+  //   vector<MoveFeatures> features(10);
+  //   features.resize(dataset.getRecentMoves(dataset.games[sample].black.player, sample, features.data(), 10));
+  //   StrengthNet& net = strengthModel.net;
+  //   Rand rand(123ull); // reproducible seed
+  //   net.randomInit(rand);
+  //   net.setInput({features});
+  //   net.forward();
+  //   vector<float> expected = net.getOutput();
+  //   std::ostringstream weightsBefore;
+  //   net.printWeights(weightsBefore, "before save/load", true);
 
-    net.saveModelFile(modelFile);
-    net.loadModelFile(modelFile);
+  //   net.saveModelFile(modelFile);
+  //   net.loadModelFile(modelFile);
 
-    net.forward();
-    vector<float> actual = net.getOutput();
+  //   net.forward();
+  //   vector<float> actual = net.getOutput();
 
-    bool pass = true;
-    for(int i = 0; i < expected.size(); i++) {
-      if(actual[i] != expected[i]) {
-        cout << Global::strprintf("(%.2f != %.2f) ", actual[i], expected[i]);
-        pass = false;
-      }
-    }
-    cout << (pass ? "pass" : "fail") << "\n";
+  //   bool pass = true;
+  //   for(int i = 0; i < expected.size(); i++) {
+  //     if(actual[i] != expected[i]) {
+  //       cout << Global::strprintf("(%.2f != %.2f) ", actual[i], expected[i]);
+  //       pass = false;
+  //     }
+  //   }
+  //   cout << (pass ? "pass" : "fail") << "\n";
 
-    if(!pass) {
-      cout << weightsBefore.str();
-      net.printWeights(cout, "after save/load", true);
-    }
-  }
+  //   if(!pass) {
+  //     cout << weightsBefore.str();
+  //     net.printWeights(cout, "after save/load", true);
+  //   }
+  // }
 
-  {
-    size_t sample = 2;
-    cout << "- fits game " << sample << " (black) from UT dataset: ";
+  // {
+  //   size_t sample = 2;
+  //   cout << "- fits game " << sample << " (black) from UT dataset: ";
 
-    float estimate;
-    bool pass;
-    float weightPenalty = 0;
-    float learnrate = 0.01f;
+  //   float estimate;
+  //   bool pass;
+  //   float weightPenalty = 0;
+  //   float learnrate = 0.01f;
 
-    auto& game = dataset.games[sample];
-    StrengthNet& net = strengthModel.net;
-    Rand rand(123ull); // reproducible seed
-    net.randomInit(rand);
-    vector<MoveFeatures> features(10);
-    features.resize(dataset.getRecentMoves(game.black.player, sample, features.data(), 10));
-    net.setInput({features});
-    // cout << features.size() << " input features\n";
-    // net.printWeights(cout, "initial values");
-    // std::ofstream hfile("h_values.csv"); // debug csv
+  //   auto& game = dataset.games[sample];
+  //   StrengthNet& net = strengthModel.net;
+  //   Rand rand(123ull); // reproducible seed
+  //   net.randomInit(rand);
+  //   vector<MoveFeatures> features(10);
+  //   features.resize(dataset.getRecentMoves(game.black.player, sample, features.data(), 10));
+  //   net.setInput({features});
+  //   // cout << features.size() << " input features\n";
+  //   // net.printWeights(cout, "initial values");
+  //   // std::ofstream hfile("h_values.csv"); // debug csv
 
-    int i;
-    for(i = 0; i < 1000; i++) {
-      net.forward();
-      // net.h.print(hfile, "h", false);
-      net.setTarget({game.black.rating});
-      net.backward();
-      net.update(weightPenalty, learnrate);
-      // cout << "epoch " << i << ": thetavar=" << net.thetaVar() << "\n";
-    }
+  //   int i;
+  //   for(i = 0; i < 1000; i++) {
+  //     net.forward();
+  //     // net.h.print(hfile, "h", false);
+  //     net.setTarget({game.black.rating});
+  //     net.backward();
+  //     net.update(weightPenalty, learnrate);
+  //     // cout << "epoch " << i << ": thetavar=" << net.thetaVar() << "\n";
+  //   }
 
-    // hfile.close();
+  //   // hfile.close();
 
-    // // reconstruct the matrix multiplication
-    // net.forward();
-    // net.backward(fat.second); //, 0);
-    // net.h_grad.print(cout, "h_grad (left)");
-    // net.x.print(cout, "x (right)");
-    // net.x.transpose();
-    // StrengthNetImpl::matmul(net.W_grad, net.h_grad, net.x);
-    // net.x.transpose();
-    // net.W_grad.print(cout, "W_grad (result)");
+  //   // // reconstruct the matrix multiplication
+  //   // net.forward();
+  //   // net.backward(fat.second); //, 0);
+  //   // net.h_grad.print(cout, "h_grad (left)");
+  //   // net.x.print(cout, "x (right)");
+  //   // net.x.transpose();
+  //   // StrengthNetImpl::matmul(net.W_grad, net.h_grad, net.x);
+  //   // net.x.transpose();
+  //   // net.W_grad.print(cout, "W_grad (result)");
 
-    // GET THE FULL PICTURE
-    // net.printWeights(cout, "after " + Global::intToString(i) + " epochs ");
-    // net.forward();
-    // net.backward(fat.second); //, 0);
-    // net.update(weightPenalty, learnrate);
-    // i++;
-    // net.printState(cout, "after " + Global::intToString(i) + " epochs ");
-    // net.printGrads(cout, "after " + Global::intToString(i) + " epochs ");
-    // net.printWeights(cout, "after " + Global::intToString(i) + " epochs ");
+  //   // GET THE FULL PICTURE
+  //   // net.printWeights(cout, "after " + Global::intToString(i) + " epochs ");
+  //   // net.forward();
+  //   // net.backward(fat.second); //, 0);
+  //   // net.update(weightPenalty, learnrate);
+  //   // i++;
+  //   // net.printState(cout, "after " + Global::intToString(i) + " epochs ");
+  //   // net.printGrads(cout, "after " + Global::intToString(i) + " epochs ");
+  //   // net.printWeights(cout, "after " + Global::intToString(i) + " epochs ");
 
-    net.forward();
-    estimate = net.getOutput()[0];
-    pass = fabs(estimate - game.black.rating) <= 0.1f;
-    cout << (pass ? "pass" : "fail") << "\n";
+  //   net.forward();
+  //   estimate = net.getOutput()[0];
+  //   pass = fabs(estimate - game.black.rating) <= 0.1f;
+  //   cout << (pass ? "pass" : "fail") << "\n";
 
-    if(!pass)
-      cout << "Estimate: " << estimate << ", target: " << game.black.rating << "\n";
-  }
+  //   if(!pass)
+  //     cout << "Estimate: " << estimate << ", target: " << game.black.rating << "\n";
+  // }
 
   {
     cout << "- fits all samples from list file " << listFile << ": ";
@@ -261,21 +261,21 @@ void runStrengthModelTests(const string& modelFile, const string& listFile, cons
     cout << (pass ? "pass" : "fail") << "\n";
   }
 
-  {
-    cout << "- evaluate:\n";
+  // {
+  //   cout << "- evaluate:\n";
 
-    Rand rand(123ull); // reproducible seed
-    dataset.randomSplit(rand, 0.33f, 0.33f);
-    StochasticPredictor predictor;
-    StrengthModel::Evaluation eval = strengthModel.evaluate(predictor, Dataset::Game::training, 10);
-    cout << Global::strprintf("  Training: mse = %f, rate = %.3f, logp = %f\n", eval.mse, eval.rate, eval.logp);
+  //   Rand rand(123ull); // reproducible seed
+  //   dataset.randomSplit(rand, 0.33f, 0.33f);
+  //   StochasticPredictor predictor;
+  //   StrengthModel::Evaluation eval = strengthModel.evaluate(predictor, Dataset::Game::training, 10);
+  //   cout << Global::strprintf("  Training: mse = %f, rate = %.3f, logp = %f\n", eval.mse, eval.rate, eval.logp);
 
-    eval = strengthModel.evaluate(predictor, Dataset::Game::validation, 10);
-    cout << Global::strprintf("  Validation: mse = %f, rate = %.3f, logp = %f\n", eval.mse, eval.rate, eval.logp);
+  //   eval = strengthModel.evaluate(predictor, Dataset::Game::validation, 10);
+  //   cout << Global::strprintf("  Validation: mse = %f, rate = %.3f, logp = %f\n", eval.mse, eval.rate, eval.logp);
 
-    eval = strengthModel.evaluate(predictor, Dataset::Game::test, 10);
-    cout << Global::strprintf("  Test: mse = %f, rate = %.3f, logp = %f\n", eval.mse, eval.rate, eval.logp);
-  }
+  //   eval = strengthModel.evaluate(predictor, Dataset::Game::test, 10);
+  //   cout << Global::strprintf("  Test: mse = %f, rate = %.3f, logp = %f\n", eval.mse, eval.rate, eval.logp);
+  // }
 }
 }
 

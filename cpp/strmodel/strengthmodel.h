@@ -61,17 +61,17 @@ public:
   void extractFeatures(const std::string& featureDir, const Search& search, Logger* logger = nullptr);
 
   // training loop on strength network
-  void train(int epochs, int steps, size_t batchSize, float weightPenalty, float learnrate, size_t windowSize, Rand& rand);
+  // void train(int epochs, int steps, size_t batchSize, float weightPenalty, float learnrate, size_t windowSize, Rand& rand);
 
   // run predictions using windowSize moves and determine rate/error over the games matching the given set,
   // set=batch games also match set=training, set==-1 matches everything
-  struct Evaluation {
-    size_t count; // how many games were evaluated in the selected set
-    float mse;   // mean of squares of predicted ratings vs player ratings
-    float rate;  // relative amount of matches in which the predicted winner matched the actual winner
-    float logp;  // mean log-likelihood of all match outcomes in the eyes of the predictor
-  };
-  Evaluation evaluate(Predictor& predictor, int set, size_t windowSize = 1000);
+  // struct Evaluation {
+  //   size_t count; // how many games were evaluated in the selected set
+  //   float mse;   // mean of squares of predicted ratings vs player ratings
+  //   float rate;  // relative amount of matches in which the predicted winner matched the actual winner
+  //   float logp;  // mean log-likelihood of all match outcomes in the eyes of the predictor
+  // };
+  // Evaluation evaluate(Predictor& predictor, int set, size_t windowSize = 1000);
 
   // run the strength model on SGFs provided directly by the user and predict one rating number from them
   struct Analysis {

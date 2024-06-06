@@ -29,7 +29,7 @@ namespace
 
   // unique_ptr<LoadedModel, void(*)(LoadedModel*)> loadModel(string file);
   unique_ptr<NNEvaluator> createEvaluator(const string& modelFile, Logger& logger);
-  SelectedMoves::Moveset readFromSgf(const string& sgfPath, const string& modelFile, int moveNumber);
+  SelectedMoves::Moveset readFromSgf(const string& sgfPath, const string& modelFile, int moveNumber, Selection selection);
   SelectedMoves::Moveset readFromZip(const string& zipPath);
   void dumpTensor(string path, float* data, size_t N);
 
@@ -46,6 +46,7 @@ int MainCmds::position_tensor(const vector<string>& args) {
   string sgfPath;
   string zipPath;
   int moveNumber;
+  Selection selection;
   bool summary;
 
   KataGoCommandLine cmd("Precompute move features for all games in the dataset.");
@@ -57,6 +58,9 @@ int MainCmds::position_tensor(const vector<string>& args) {
     TCLAP::ValueArg<string> sgfArg("","sgf","SGF file with the game to extract.",false,"","SGF_FILE",cmd);
     TCLAP::ValueArg<string> zipArg("","zip","ZIP file with precomputed trunk to extract.",false,"","ZIP_FILE", cmd);
     TCLAP::ValueArg<int> moveNumberArg("","move-number","Extract the position or trunk at this move number/index, starting at 0.",false,0,"MOVE_NUMBER", cmd);
+    TCLAP::SwitchArg withTrunkArg("T","with-trunk","Extract trunk features from SGF.",cmd,false);
+    TCLAP::SwitchArg withPickArg("P","with-pick","Extract pick features from SGF.",cmd,false);
+    TCLAP::SwitchArg withHeadArg("H","with-head","Extract head features from SGf.",cmd,false);
     TCLAP::SwitchArg summaryArg("s","summary","Print general info on all moves in the SGF or ZIP.",cmd,false);
     cmd.addOverrideConfigArg();
     cmd.parseArgs(args);
@@ -65,6 +69,9 @@ int MainCmds::position_tensor(const vector<string>& args) {
     sgfPath = sgfArg.getValue();
     zipPath = zipArg.getValue();
     moveNumber = moveNumberArg.getValue();
+    selection.trunk = withTrunkArg.getValue();
+    selection.pick = withPickArg.getValue();
+    selection.head = withHeadArg.getValue();
     summary = summaryArg.getValue();
 
     cmd.getConfig(cfg);
@@ -89,7 +96,7 @@ int MainCmds::position_tensor(const vector<string>& args) {
     cerr << Version::getKataGoVersionForHelp() << endl;
 
   if(!sgfPath.empty()) {
-    auto moveset = readFromSgf(sgfPath, modelFile, moveNumber);
+    auto moveset = readFromSgf(sgfPath, modelFile, moveNumber, selection);
     if(summary) {
       moveset.printSummary(std::cout);
     }
@@ -162,7 +169,13 @@ unique_ptr<NNEvaluator> createEvaluator(const string& modelFile, Logger& logger)
   return evaluator;
 }
 
-SelectedMoves::Moveset readSgfToPrecompute(const string& sgfPath, PrecomputeFeatures& precompute, int moveNumber) {
+SelectedMoves::Moveset readFromSgf(const string& sgfPath, const string& modelFile, int moveNumber, Selection selection) {
+  auto evaluator = createEvaluator(modelFile, *theLogger);
+  theLogger->write("Loaded model "+ modelFile);
+  PrecomputeFeatures precompute(*evaluator, maxMoves);
+  precompute.selection = selection;
+  theLogger->write("Starting to extract tensors from " + sgfPath + "...");
+
   auto sgf = std::unique_ptr<CompactSgf>(CompactSgf::loadFile(sgfPath));
   const auto& moves = sgf->moves;
   Rules rules = sgf->getRulesOrFailAllowUnspecified(Rules::getTrompTaylorish());
@@ -172,36 +185,15 @@ SelectedMoves::Moveset readSgfToPrecompute(const string& sgfPath, PrecomputeFeat
   SelectedMoves::Moveset moveset;
   sgf->setupInitialBoardAndHist(rules, board, initialPla, history);
 
-  precompute.startGame(sgfPath);
   for(int turnIdx = 0; turnIdx < moves.size(); turnIdx++) {
     Move move = moves[turnIdx];
-    if(precompute.isFull())
-      throw StringError("Partial game results not implemented");
-    if(turnIdx >= moveNumber) {
-      moveset.insert(turnIdx, move.pla);
-      precompute.addBoard(board, history, move);
-    }
-    // apply move
-    bool suc = history.makeBoardMoveTolerant(board, move.loc, move.pla);
-    if(!suc)
-      throw StringError(Global::strprintf("Illegal move %s at %s", PlayerIO::playerToString(move.pla), Location::toString(move.loc, sgf->xSize, sgf->ySize)));
+    if(turnIdx >= moveNumber)
+      moveset.insert(turnIdx, precompute.selection);
+    history.makeBoardMoveAssumeLegal(board, move.loc, move.pla, NULL, true);
   }
-  precompute.endGame();
 
-  return moveset; // blank moveset to receive results
-}
-
-SelectedMoves::Moveset readFromSgf(const string& sgfPath, const string& modelFile, int moveNumber) {
-  auto evaluator = createEvaluator(modelFile, *theLogger);
-  theLogger->write("Loaded model "+ modelFile);
-  PrecomputeFeatures precompute(*evaluator, maxMoves);
-  precompute.includeTrunk = true;
-  precompute.includePick = true;
-  theLogger->write("Starting to extract tensors from " + sgfPath + "...");
-  SelectedMoves::Moveset moveset = readSgfToPrecompute(sgfPath, precompute, moveNumber);
-  vector<PrecomputeFeatures::Result> results = precompute.evaluate();
-  assert(1 == results.size());
-  PrecomputeFeatures::writeResultToMoveset(results.front(), moveset);
+  PrecomputeFeatures::Result result = precompute.processGame(sgfPath, moveset);
+  PrecomputeFeatures::writeResultToMoveset(result, moveset);
   return moveset;
 }
 

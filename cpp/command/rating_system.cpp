@@ -92,12 +92,14 @@ int MainCmds::rating_system(const vector<string>& args) {
     predictor.reset(new SmallPredictor(strengthModel.net));
   }
   size_t windowSize = 1000;
-  StrengthModel::Evaluation eval = strengthModel.evaluate(*predictor, set, windowSize);
-  cout << Global::strprintf("Evaluation on %d %c-games: mse=%f, successRate=%.3f, successLogp=%f\n",
-    eval.count, "*-TVBE"[set+1], eval.mse, eval.rate, eval.logp);
+  // StrengthModel::Evaluation eval = strengthModel.evaluate(*predictor, set, windowSize);
+  cout << Global::strprintf("Evaluation currently not implemented!\n");
 
-  cout << Global::strprintf("Store evaluation in %s...\n", outlistFile.c_str());
-  dataset.store(outlistFile);
-  logger.write("All cleaned up, quitting");
+  // cout << Global::strprintf("Evaluation on %d %c-games: mse=%f, successRate=%.3f, successLogp=%f\n",
+  //   eval.count, "*-TVBE"[set+1], eval.mse, eval.rate, eval.logp);
+
+  // cout << Global::strprintf("Store evaluation in %s...\n", outlistFile.c_str());
+  // dataset.store(outlistFile);
+  // logger.write("All cleaned up, quitting");
   return 0;
 }

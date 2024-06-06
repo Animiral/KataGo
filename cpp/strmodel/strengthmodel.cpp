@@ -136,121 +136,121 @@ void StrengthModel::extractFeatures(const std::string& featureDir, const Search&
   }
 }
 
-void StrengthModel::train(int epochs, int steps, size_t batchSize, float weightPenalty, float learnrate, size_t windowSize, Rand& rand) {
-  SmallPredictor predictor(net);
+// void StrengthModel::train(int epochs, int steps, size_t batchSize, float weightPenalty, float learnrate, size_t windowSize, Rand& rand) {
+//   SmallPredictor predictor(net);
 
-  {
-    // evaluate starting net
-    Evaluation trainingEval = evaluate(predictor, Dataset::Game::training, windowSize);
-    Evaluation validationEval = evaluate(predictor, Dataset::Game::validation, windowSize);
-    float theta_var = net.thetaVar();
-    // cout << "Epoch " << e << ": mse=" << std::fixed << std::setprecision(3) << mse << "\n";
-    cout << Global::strprintf("Before training: sqrt_mse_T=%.2f, alpha_T=%.3f, lbd_T=%.2f, sqrt_mse_V=%.2f, alpha_V=%.3f, lbd_V=%.2f, theta^2=%.4f\n",
-      sqrt(trainingEval.mse), trainingEval.rate, trainingEval.logp,
-      sqrt(validationEval.mse), validationEval.rate, validationEval.logp,
-      theta_var);
-  }
+//   {
+//     // evaluate starting net
+//     Evaluation trainingEval = evaluate(predictor, Dataset::Game::training, windowSize);
+//     Evaluation validationEval = evaluate(predictor, Dataset::Game::validation, windowSize);
+//     float theta_var = net.thetaVar();
+//     // cout << "Epoch " << e << ": mse=" << std::fixed << std::setprecision(3) << mse << "\n";
+//     cout << Global::strprintf("Before training: sqrt_mse_T=%.2f, alpha_T=%.3f, lbd_T=%.2f, sqrt_mse_V=%.2f, alpha_V=%.3f, lbd_V=%.2f, theta^2=%.4f\n",
+//       sqrt(trainingEval.mse), trainingEval.rate, trainingEval.logp,
+//       sqrt(validationEval.mse), validationEval.rate, validationEval.logp,
+//       theta_var);
+//   }
 
-  for(int e = 0; e < epochs; e++) {
-    float grads_var = 0;
-    // train weights
-    for(int s = 0; s < steps; s++) {
-      dataset->randomBatch(rand, batchSize);
-      vector<vector<MoveFeatures>> inputs;
-      vector<float> targets;
-      for(size_t t = 0; t < dataset->games.size(); t++) {
-        const Dataset::Game& game = dataset->games[t];
-        if(Dataset::Game::batch == game.set) {
-          for(auto& playerInfo : {game.white, game.black}) {
-            vector<MoveFeatures> features(windowSize);
-            size_t moveCount = dataset->getRecentMoves(playerInfo.player, t, features.data(), windowSize);
-            features.resize(moveCount);
-            inputs.push_back(features);
-            targets.push_back(playerInfo.rating);
-          }
-        }
-      }
-      net.setInput(inputs);
-      net.forward();
-      // if(0 == s) {
-      //   auto outt = net.getOutput();
-      //   outt.resize(10);
-      //   cout << "Forward output: ";
-      //   for(auto o : outt)
-      //     cout << o << ", ";
-      //   cout << "\n";
-      //   cout << "Backward targets: ";
-      //   auto tt = targets;
-      //   tt.resize(10);
-      //   for(auto o : tt)
-      //     cout << o << ", ";
-      //   cout << "\n";
-      // }
-      net.setTarget(targets);
-      net.backward();
-      grads_var += net.gradsVar();
-      // if(s == 0) {
-      //   net.printWeights(cout, "epoch " + Global::intToString(e) + " step " + Global::intToString(s));
-      //   net.printState(cout, "epoch " + Global::intToString(e) + " step " + Global::intToString(s));
-      //   net.printGrads(cout, "epoch " + Global::intToString(e) + " step " + Global::intToString(s));
-      //   // cout << "Test #" << i-split << " (" << xy[i].first.size() << " moves): prediction=" << std::fixed << std::setprecision(3) << y_hat << ", target=" << xy[i].second << ", sqerr=" << sqerr << "\n";
-      // }
+//   for(int e = 0; e < epochs; e++) {
+//     float grads_var = 0;
+//     // train weights
+//     for(int s = 0; s < steps; s++) {
+//       dataset->randomBatch(rand, batchSize);
+//       vector<vector<MoveFeatures>> inputs;
+//       vector<float> targets;
+//       for(size_t t = 0; t < dataset->games.size(); t++) {
+//         const Dataset::Game& game = dataset->games[t];
+//         if(Dataset::Game::batch == game.set) {
+//           for(auto& playerInfo : {game.white, game.black}) {
+//             vector<MoveFeatures> features(windowSize);
+//             size_t moveCount = dataset->getRecentMoves(playerInfo.player, t, features.data(), windowSize);
+//             features.resize(moveCount);
+//             inputs.push_back(features);
+//             targets.push_back(playerInfo.rating);
+//           }
+//         }
+//       }
+//       net.setInput(inputs);
+//       net.forward();
+//       // if(0 == s) {
+//       //   auto outt = net.getOutput();
+//       //   outt.resize(10);
+//       //   cout << "Forward output: ";
+//       //   for(auto o : outt)
+//       //     cout << o << ", ";
+//       //   cout << "\n";
+//       //   cout << "Backward targets: ";
+//       //   auto tt = targets;
+//       //   tt.resize(10);
+//       //   for(auto o : tt)
+//       //     cout << o << ", ";
+//       //   cout << "\n";
+//       // }
+//       net.setTarget(targets);
+//       net.backward();
+//       grads_var += net.gradsVar();
+//       // if(s == 0) {
+//       //   net.printWeights(cout, "epoch " + Global::intToString(e) + " step " + Global::intToString(s));
+//       //   net.printState(cout, "epoch " + Global::intToString(e) + " step " + Global::intToString(s));
+//       //   net.printGrads(cout, "epoch " + Global::intToString(e) + " step " + Global::intToString(s));
+//       //   // cout << "Test #" << i-split << " (" << xy[i].first.size() << " moves): prediction=" << std::fixed << std::setprecision(3) << y_hat << ", target=" << xy[i].second << ", sqerr=" << sqerr << "\n";
+//       // }
 
-      net.update(weightPenalty, learnrate);
-    }
-    // cout << "Sample #" << i << "(" << xy[i].first.size() << " moves): (" << y_hat << "-" << xy[i].second << ")^2 = " << (y_hat-xy[i].second)*(y_hat-xy[i].second) << "\n";
-    grads_var /= steps; // average in 1 training update
-    // net.printWeights(cout, "epoch " + Global::intToString(e));
-    // net.printState(cout, "epoch " + Global::intToString(e));
+//       net.update(weightPenalty, learnrate);
+//     }
+//     // cout << "Sample #" << i << "(" << xy[i].first.size() << " moves): (" << y_hat << "-" << xy[i].second << ")^2 = " << (y_hat-xy[i].second)*(y_hat-xy[i].second) << "\n";
+//     grads_var /= steps; // average in 1 training update
+//     // net.printWeights(cout, "epoch " + Global::intToString(e));
+//     // net.printState(cout, "epoch " + Global::intToString(e));
 
-    // test epoch result
-    Evaluation trainingEval = evaluate(predictor, Dataset::Game::training, windowSize);
-    Evaluation validationEval = evaluate(predictor, Dataset::Game::validation, windowSize);
-    float theta_var = net.thetaVar();
-    // cout << "Epoch " << e << ": mse=" << std::fixed << std::setprecision(3) << mse << "\n";
-    cout << Global::strprintf("Epoch %d: sqrt_mse_T=%.2f, alpha_T=%.3f, lbd_T=%.2f, sqrt_mse_V=%.2f, alpha_V=%.3f, lbd_V=%.2f, theta^2=%.4f, grad^2=%.4f\n",
-      e, sqrt(trainingEval.mse), trainingEval.rate, trainingEval.logp,
-      sqrt(validationEval.mse), validationEval.rate, validationEval.logp,
-      theta_var, grads_var);
-  }
-}
+//     // test epoch result
+//     Evaluation trainingEval = evaluate(predictor, Dataset::Game::training, windowSize);
+//     Evaluation validationEval = evaluate(predictor, Dataset::Game::validation, windowSize);
+//     float theta_var = net.thetaVar();
+//     // cout << "Epoch " << e << ": mse=" << std::fixed << std::setprecision(3) << mse << "\n";
+//     cout << Global::strprintf("Epoch %d: sqrt_mse_T=%.2f, alpha_T=%.3f, lbd_T=%.2f, sqrt_mse_V=%.2f, alpha_V=%.3f, lbd_V=%.2f, theta^2=%.4f, grad^2=%.4f\n",
+//       e, sqrt(trainingEval.mse), trainingEval.rate, trainingEval.logp,
+//       sqrt(validationEval.mse), validationEval.rate, validationEval.logp,
+//       theta_var, grads_var);
+//   }
+// }
 
-StrengthModel::Evaluation StrengthModel::evaluate(Predictor& predictor, int set, size_t windowSize) {
-  vector<MoveFeatures> blackFeatures(windowSize);
-  vector<MoveFeatures> whiteFeatures(windowSize);
-  size_t successCount = 0;
-  size_t count = 0;
-  float mse = 0;
-  float logp = 0;
+// StrengthModel::Evaluation StrengthModel::evaluate(Predictor& predictor, int set, size_t windowSize) {
+//   vector<MoveFeatures> blackFeatures(windowSize);
+//   vector<MoveFeatures> whiteFeatures(windowSize);
+//   size_t successCount = 0;
+//   size_t count = 0;
+//   float mse = 0;
+//   float logp = 0;
 
-  for(size_t i = 0; i < dataset->games.size(); i++) {
-    Dataset::Game& gm = dataset->games[i];
+//   for(size_t i = 0; i < dataset->games.size(); i++) {
+//     Dataset::Game& gm = dataset->games[i];
 
-    // always perform prediction, even for games not in the set
-    size_t blackCount = dataset->getRecentMoves(gm.black.player, i, blackFeatures.data(), windowSize);
-    size_t whiteCount = dataset->getRecentMoves(gm.white.player, i, whiteFeatures.data(), windowSize);
-    gm.prediction = predictor.predict(blackFeatures.data(), blackCount, whiteFeatures.data(), whiteCount);
+//     // always perform prediction, even for games not in the set
+//     size_t blackCount = dataset->getRecentMoves(gm.black.player, i, blackFeatures.data(), windowSize);
+//     size_t whiteCount = dataset->getRecentMoves(gm.white.player, i, whiteFeatures.data(), windowSize);
+//     gm.prediction = predictor.predict(blackFeatures.data(), blackCount, whiteFeatures.data(), whiteCount);
 
-    // skip games not in set, also set < 0 means "include everything"
-    if(set >= 0 && gm.set != set && !(Dataset::Game::training == set && Dataset::Game::batch == gm.set))
-      continue;
+//     // skip games not in set, also set < 0 means "include everything"
+//     if(set >= 0 && gm.set != set && !(Dataset::Game::training == set && Dataset::Game::batch == gm.set))
+//       continue;
 
-    float diffBlack = gm.black.rating - gm.prediction.blackRating;
-    float diffWhite = gm.white.rating - gm.prediction.whiteRating;
-    mse += diffBlack * diffBlack + diffWhite * diffWhite;
-    if((.5 >= gm.score && .5 >= gm.prediction.score)  // white win predicted (0.5 counts as prediction for white)
-    || (.5 < gm.score && .5 < gm.prediction.score)) { // black win predicted
-      successCount++;
-    }
-    logp += std::log(1 - std::abs(gm.score - gm.prediction.score));
-    count++;
-  }
+//     float diffBlack = gm.black.rating - gm.prediction.blackRating;
+//     float diffWhite = gm.white.rating - gm.prediction.whiteRating;
+//     mse += diffBlack * diffBlack + diffWhite * diffWhite;
+//     if((.5 >= gm.score && .5 >= gm.prediction.score)  // white win predicted (0.5 counts as prediction for white)
+//     || (.5 < gm.score && .5 < gm.prediction.score)) { // black win predicted
+//       successCount++;
+//     }
+//     logp += std::log(1 - std::abs(gm.score - gm.prediction.score));
+//     count++;
+//   }
 
-  float rate = float(successCount) / count;
-  mse /= count;
-  logp /= count;
-  return { count, mse, rate, logp };
-}
+//   float rate = float(successCount) / count;
+//   mse /= count;
+//   logp /= count;
+//   return { count, mse, rate, logp };
+// }
 
 StrengthModel::Analysis StrengthModel::analyze(vector<Sgf*> sgfs, const string& playerName, const Search& search) {
   vector<MoveFeatures> playerFeatures;

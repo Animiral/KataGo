@@ -28,6 +28,7 @@ using std::unique_ptr;
 using std::make_unique;
 using std::ref;
 using Global::strprintf;
+using namespace std::string_literals;
 
 // params of this command
 struct Parameters {
@@ -35,6 +36,7 @@ struct Parameters {
   string modelFile;
   string listFile; // CSV file listing all SGFs to be fed into the rating system
   string featureDir; // Directory for move feature cache
+  Selection selection; // features to extract
   int windowSize; // Extract up to this many recent moves
   int batchSize; // Send this many moves to the GPU at once in a worker thread
   int batchThreads; // Number of concurrent workers feeding positions to GPU
@@ -53,7 +55,7 @@ Parameters parseArgs(const vector<string>& args);
 // unique_ptr<LoadedModel, void(*)(LoadedModel*)> loadModel(string file);
 unique_ptr<NNEvaluator> createEvaluator(const string& modelFile, int evaluatorThreads, int batchSize);
 string movesetToString(const SelectedMoves::Moveset& moveset);
-vector<RecentMoves> getRecentMovesOfEveryGame(const Dataset& dataset, int windowSize, const string& featureDir, bool recompute, Logger& logger);
+vector<RecentMoves> getRecentMovesOfEveryGame(const Dataset& dataset, int windowSize, const string& featureDir, Selection selection, bool recompute, Logger& logger);
 void printRecentMoves(const vector<RecentMoves>& recentMoves, const Dataset& dataset);
 string zipPath(const string& sgfPath, const string& featureDir, Player player, const char* title);
 // output all movesets in selected moves into one combined zip
@@ -85,9 +87,8 @@ class Worker {
   PrecomputeFeatures precompute;
 
   bool fetchWork(const string*& sgfPath, SelectedMoves::Moveset*& moveset);
-  void processGame(const string& sgfPath, SelectedMoves::Moveset& moveset);
-  void processResults();
-  void reportProgress(const string& sgfPath);
+  void reportProgress(const string& message);
+  void reportError(const string& sgfPath, const char* what);
 
 };
 
@@ -106,7 +107,7 @@ void combineAndDumpRecentMoves(
 
 int MainCmds::extract_features(const vector<string>& args) {
   Parameters params = parseArgs(args);
-  int workerThreads = 64; // number of CPU threads filling requests to GPU
+  int workerThreads = 2; // 64; // number of CPU threads filling requests to GPU
   Logger logger(params.cfg.get(), false, true);
   logger.write(Version::getKataGoVersionForHelp());
 
@@ -121,7 +122,7 @@ int MainCmds::extract_features(const vector<string>& args) {
   dataset.load(params.listFile); // deliberately omit passing featureDir; we want to compute features, not load them
   logger.write("Find recent moves of all train/eval/test games using window size " + Global::intToString(params.windowSize) + "...");
 
-  vector<RecentMoves> recentByGame = getRecentMovesOfEveryGame(dataset, params.windowSize, params.featureDir, params.recompute, logger);
+  vector<RecentMoves> recentByGame = getRecentMovesOfEveryGame(dataset, params.windowSize, params.featureDir, params.selection, params.recompute, logger);
   if(params.printRecentMoves)
     printRecentMoves(recentByGame, dataset);
 
@@ -145,8 +146,7 @@ int MainCmds::extract_features(const vector<string>& args) {
     vector<std::thread> threads;
     for(int i = 0; i < workerThreads; i++) {
       PrecomputeFeatures precompute(*evaluator, params.batchSize);
-      precompute.includeTrunk = false; // TODO: add parameter for this
-      precompute.includePick = true; // TODO: add parameter for this
+      precompute.selection = params.selection;
       workers.emplace_back(std::move(precompute));
     }
     for(int i = 0; i < workerThreads; i++)
@@ -195,6 +195,9 @@ Parameters parseArgs(const vector<string>& args) {
   TCLAP::ValueArg<int> windowSizeArg("s","window-size","Extract up to this many recent moves.",false,1000,"SIZE",cmd);
   TCLAP::ValueArg<int> batchSizeArg("b","batch-size","Send this many moves to the GPU at once in a worker thread.",false,400,"SIZE",cmd);
   TCLAP::ValueArg<int> batchThreadsArg("t","batch-threads","Number of concurrent workers feeding positions to GPU.",false,4,"COUNT",cmd);
+  TCLAP::SwitchArg withTrunkArg("T","with-trunk","Extract trunk features.",cmd,false);
+  TCLAP::SwitchArg withPickArg("P","with-pick","Extract pick features.",cmd,false);
+  TCLAP::SwitchArg withHeadArg("H","with-head","Extract head features.",cmd,false);
   TCLAP::SwitchArg recomputeArg("r","recompute","Overwrite existing ZIPs, do not reuse them.",cmd,false);
   TCLAP::SwitchArg printRecentMovesArg("p","print-recent-moves","Output information on which moves are recent moves for which game.",cmd,false);
   cmd.addOverrideConfigArg();
@@ -203,12 +206,19 @@ Parameters parseArgs(const vector<string>& args) {
   params.modelFile = cmd.getModelFile();
   params.listFile = listArg.getValue();
   params.featureDir = featureDirArg.getValue();
+  params.selection.trunk = withTrunkArg.getValue();
+  params.selection.pick = withPickArg.getValue();
+  params.selection.head = withHeadArg.getValue();
   params.windowSize = windowSizeArg.getValue();
   params.batchSize = batchSizeArg.getValue();
   params.batchThreads = batchThreadsArg.getValue();
   params.recompute = recomputeArg.getValue();
   params.printRecentMoves = printRecentMovesArg.getValue();
   cmd.getConfig(*params.cfg);
+
+  if(!params.selection.trunk && !params.selection.pick && !params.selection.head) {
+    throw StringError("No features selected for extraction.");
+  }
 
   return params;
 }
@@ -264,7 +274,7 @@ string movesetToString(const SelectedMoves::Moveset& moveset) {
   return oss.str();
 }
 
-vector<RecentMoves> getRecentMovesOfEveryGame(const Dataset& dataset, int windowSize, const string& featureDir, bool recompute, Logger& logger) {
+vector<RecentMoves> getRecentMovesOfEveryGame(const Dataset& dataset, int windowSize, const string& featureDir, Selection selection, bool recompute, Logger& logger) {
   vector<RecentMoves> recentByGame;
   for(size_t i = 0; i < dataset.games.size(); i++) {
     if(Dataset::Game::none != dataset.games[i].set) {
@@ -275,8 +285,8 @@ vector<RecentMoves> getRecentMovesOfEveryGame(const Dataset& dataset, int window
           continue;
       }
       logger.write(strprintf("Find recent moves of %s", dataset.games[i].sgfPath.c_str()));
-      RecentMoves blackRecentMoves{i, P_BLACK, dataset.getRecentMoves(P_BLACK, i, windowSize)};
-      RecentMoves whiteRecentMoves{i, P_WHITE, dataset.getRecentMoves(P_WHITE, i, windowSize)};
+      RecentMoves blackRecentMoves{i, P_BLACK, dataset.getRecentMoves(P_BLACK, i, windowSize, selection)};
+      RecentMoves whiteRecentMoves{i, P_WHITE, dataset.getRecentMoves(P_WHITE, i, windowSize, selection)};
       recentByGame.push_back(std::move(blackRecentMoves));
       recentByGame.push_back(std::move(whiteRecentMoves));
     }
@@ -334,79 +344,6 @@ void Worker::setWork(SelectedMoves& work_) {
   startTime = std::chrono::system_clock::now();
 }
 
-void Worker::operator()() {
-  const string* sgfPath;
-  SelectedMoves::Moveset* moveset;
-  while(fetchWork(sgfPath, moveset)) {
-    // try to get already computed data, if we are resuming and it is available
-    string blackPath = zipPath(*sgfPath, featureDir, P_BLACK, "Pick");
-    if(!recompute && FileUtils::exists(blackPath))
-      moveset->merge(SelectedMoves::Moveset::readFromZip(blackPath, P_BLACK));
-    string whitePath = zipPath(*sgfPath, featureDir, P_WHITE, "Pick");
-    if(!recompute && FileUtils::exists(whitePath))
-      moveset->merge(SelectedMoves::Moveset::readFromZip(whitePath, P_WHITE));
-
-    // picks loaded from existing ZIPs are automatically excluded from processing
-    if(moveset->hasAllPicks())
-      moveset->releaseStorage(); // throw away and re-read the ZIP later to save memory
-    else
-      processGame(*sgfPath, *moveset);
-  }
-  processResults();
-}
-
-bool Worker::fetchWork(const string*& sgfPath, SelectedMoves::Moveset*& moveset) {
-  if(work->bygame.end() == workIterator)
-    return false;
-
-  std::lock_guard<std::mutex> lock(workMutex);
-  sgfPath = &workIterator->first;
-  moveset = &workIterator->second;
-  ++workIterator;
-  return true;
-}
-
-void Worker::processGame(const string& sgfPath, SelectedMoves::Moveset& moveset) {
-  auto sgf = std::unique_ptr<CompactSgf>(CompactSgf::loadFile(sgfPath));
-  const auto& moves = sgf->moves;
-  Rules rules = sgf->getRulesOrFailAllowUnspecified(Rules::getTrompTaylorish());
-  Board board;
-  BoardHistory history;
-  Player initialPla;
-  sgf->setupInitialBoardAndHist(rules, board, initialPla, history);
-  // moveset is always in ascending order; we calculate all moves which do not have pick data
-  // auto needsPick = [](SelectedMoves::Move& m) { return nullptr == m.pick; };
-  // auto moveIt = std::find_if(moveset.moves.begin(), moveset.moves.end(), needsPick);
-  auto moveIt = moveset.moves.begin(); // TODO: only pick moves which are necessary for requested features
-  auto moveEnd = moveset.moves.end();
-
-  precompute.startGame(sgfPath);
-  for(int turnIdx = 0; moveIt != moveEnd; turnIdx++) {
-    assert(turnIdx < moves.size()); // moves beyond end of game should never occur in moveset
-    Move move = moves[turnIdx];
-
-    if(turnIdx == moveIt->index) {
-      precompute.addBoard(board, history, move);
-      // if(precompute.isFull()) {
-      //   processResults();
-      // }
-      /*do*/ moveIt++;
-      /*while(moveIt != moveEnd && !needsPick(*moveIt));*/
-    }
-
-    // apply move
-    bool suc = history.makeBoardMoveTolerant(board, move.loc, move.pla);
-    if(!suc)
-      throw StringError(strprintf("Illegal move %s at %s", PlayerIO::playerToString(move.pla), Location::toString(move.loc, sgf->xSize, sgf->ySize)));
-  }
-  if(moveIt != moveEnd) { // add final board?
-    assert(history.getCurrentTurnNumber() == moveIt->index);
-    precompute.addBoard(board, history);
-    assert(++moveIt == moveEnd);
-  }
-  precompute.endGame();
-}
-
 void printResultToStdout(const PrecomputeFeatures::Result& result, const SelectedMoves::Moveset& moveset) {
   if(result.rows.size() < 2) { // needs at least one board with move + final board
     std::cout << strprintf("Result %s: empty result\n", result.sgfPath.c_str());
@@ -420,35 +357,67 @@ void printResultToStdout(const PrecomputeFeatures::Result& result, const Selecte
   }
 }
 
-void Worker::processResults() {
-  vector<PrecomputeFeatures::Result> results = precompute.evaluate();
-  for(auto& result : results) {
-    SelectedMoves::Moveset& moveset = work->bygame[result.sgfPath];
-    if(printResultsDebug)
-      printResultToStdout(result, moveset);
-    PrecomputeFeatures::writeResultToMoveset(result, moveset);
-    if(moveset.hasAllPicks()) {
-      auto splitSet = moveset.splitBlackWhite();
-      string blackPath = zipPath(result.sgfPath, featureDir, P_BLACK, "Pick");
-      if(recompute || !FileUtils::exists(blackPath))
-        splitSet.first.writeToZip(blackPath);
-      string whitePath = zipPath(result.sgfPath, featureDir, P_WHITE, "Pick");
-      if(recompute || !FileUtils::exists(whitePath))
-        splitSet.second.writeToZip(whitePath);
-      moveset.releaseStorage(); // keeping this in memory for every file would be too much
-      reportProgress(result.sgfPath);
+void Worker::operator()() try {
+  const string* sgfPath;
+  SelectedMoves::Moveset* moveset;
+  while(fetchWork(sgfPath, moveset)) try {
+    // try to get already computed data, if we are resuming and it is available
+    string blackPath = zipPath(*sgfPath, featureDir, P_BLACK, "Features");
+    if(!recompute && FileUtils::exists(blackPath))
+      moveset->merge(SelectedMoves::Moveset::readFromZip(blackPath, P_BLACK));
+    string whitePath = zipPath(*sgfPath, featureDir, P_WHITE, "Features");
+    if(!recompute && FileUtils::exists(whitePath))
+      moveset->merge(SelectedMoves::Moveset::readFromZip(whitePath, P_WHITE));
+
+    // features loaded from existing ZIPs are automatically excluded from processing
+    if(moveset->hasAllResults()) {
+      moveset->releaseStorage(); // throw away and re-read the ZIP later to save memory
+      continue;
     }
+
+    PrecomputeFeatures::Result result = precompute.processGame(*sgfPath, *moveset);
+    if(printResultsDebug)
+      printResultToStdout(result, *moveset);
+    PrecomputeFeatures::writeResultToMoveset(result, *moveset);
+    auto splitSet = moveset->splitBlackWhite();
+    if(recompute || !FileUtils::exists(blackPath))
+      splitSet.first.writeToZip(blackPath);
+    if(recompute || !FileUtils::exists(whitePath))
+      splitSet.second.writeToZip(whitePath);
+    moveset->releaseStorage(); // keeping this in memory for every file would be too much
+    reportProgress(*sgfPath);
+  }
+  catch(const std::exception& e) {
+    reportError(*sgfPath, e.what());
   }
 }
+catch(const std::exception& e) {
+  logger->write("Unexpected error in worker thread: "s + e.what());
+}
 
-void Worker::reportProgress(const string& sgfPath) {
+bool Worker::fetchWork(const string*& sgfPath, SelectedMoves::Moveset*& moveset) {
+  if(work->bygame.end() == workIterator)
+    return false;
+
+  std::lock_guard<std::mutex> lock(workMutex);
+  sgfPath = &workIterator->first;
+  moveset = &workIterator->second;
+  ++workIterator;
+  return true;
+}
+
+void Worker::reportProgress(const string& message) {
   std::lock_guard<std::mutex> lock(reportMutex);
   size_t p = ++progress;
   size_t total = work->bygame.size();
   auto elapsedTime = std::chrono::system_clock::now() - startTime;
   auto remainingTime = elapsedTime * (total - p) / p;
   string remainingString = Global::longDurationToString(remainingTime);
-  logger->write(strprintf("%d/%d (%s remaining): %s", p, total, remainingString.c_str(), sgfPath.c_str()));
+  logger->write(strprintf("%d/%d (%s remaining): %s", p, total, remainingString.c_str(), message.c_str()));
+}
+
+void Worker::reportError(const string& sgfPath, const char* what) {
+  reportProgress(strprintf("Error processing %s: %s", sgfPath.c_str(), what));
 }
 
 // thread worker function for a subset of recent moves
@@ -462,26 +431,32 @@ void combineAndDumpRecentMoves(
   size_t total,                 // overall number of items, 100% progress
   std::chrono::time_point<std::chrono::system_clock> startTime // common start time of all workers
 ) {
-  for(RecentMoves* moves = workBegin; moves != workEnd; ++moves) {
+  auto reportProgress = [&] (const RecentMoves* moves, const char* message = "") {
+    size_t p = ++counter;
+    auto elapsedTime = std::chrono::system_clock::now() - startTime;
+    auto remainingTime = elapsedTime * (total - p) / p;
+    string remainingString = Global::longDurationToString(remainingTime);
+    logger.write(strprintf("%d/%d (%s remaining): %s (%s) %s",
+      p, total, remainingString.c_str(),
+      dataset.games[moves->game].sgfPath.c_str(),
+      PlayerIO::playerToString(moves->pla).c_str(),
+      message));
+  };
+  for(RecentMoves* moves = workBegin; moves != workEnd; ++moves) try {
     // get relevant precomputations from disk
     SelectedMoves precomputed;
     for(auto& kv : moves->sel.bygame) {
-      Player pla = kv.second.moves[0].pla; // players never play against themselves, therefore we can just pick color of first move
-      string path = zipPath(kv.first, featureDir, pla, "Pick");
+      string path = zipPath(kv.first, featureDir, kv.second.pla, "Features");
       precomputed.bygame[kv.first] = SelectedMoves::Moveset::readFromZip(path, moves->pla);
     }
     // adopt precomputated sets into recent move set
     moves->sel.copyFeaturesFrom(precomputed);
     string path = zipPath(dataset.games[moves->game].sgfPath, featureDir, moves->pla, "Recent");
     outputZip(moves->sel, path);
-    size_t p = ++counter;
-    auto elapsedTime = std::chrono::system_clock::now() - startTime;
-    auto remainingTime = elapsedTime * (total - p) / p;
-    string remainingString = Global::longDurationToString(remainingTime);
-    logger.write(strprintf("%d/%d (%s remaining): %s (%s)",
-      p, total, remainingString.c_str(),
-      dataset.games[moves->game].sgfPath.c_str(),
-      PlayerIO::playerToString(moves->pla).c_str()));
+    reportProgress(moves);
+  }
+  catch(const std::exception& e) {
+    reportProgress(moves, e.what());
   }
 }
 

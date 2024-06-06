@@ -123,7 +123,8 @@ int MainCmds::strength_training(const vector<string>& args) {
     if(!strengthModelFile.empty())
       logger.write("Loading strength model " + strengthModelFile);
     StrengthModel strengthModel(strengthModelFile, &dataset, &seedRand);
-    strengthModel.train(epochs, steps, batchSize, weightPenalty, learnrate, windowSize, seedRand);
+    // strengthModel.train(epochs, steps, batchSize, weightPenalty, learnrate, windowSize, seedRand);
+    logger.write("Training currently not implemented!");
 
     if(!strengthModelFile.empty())
       strengthModel.net.saveModelFile(strengthModelFile);

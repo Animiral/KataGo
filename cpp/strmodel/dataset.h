@@ -12,25 +12,35 @@
 #include "game/board.h"
 #include "neuralnet/strengthnet.h"
 
+// specifies which features should be extracted for the strength model
+struct Selection {
+  bool trunk; // raw trunk outputs from the neural net
+  bool pick;  // move-position feature vector picked from trunk output
+  bool head; // traditional head features like winrate, lead and policy
+};
+
 using TrunkOutput = std::vector<float>;
 using PickOutput = std::vector<float>;
 
 // represents a set of moves, possibly spread over several games
+// TODO: separate into Query (which recent move data to acquire from NN) and Results
 struct SelectedMoves {
   struct Move {
     int index; // 0-based move number in the game
-    Player pla;
+    Selection selection; // which features to query for this move
     // output values: filled later
+    Player pla;
     std::shared_ptr<TrunkOutput> trunk; // trunk output data
     std::shared_ptr<PickOutput> pick; // pick output data
-    std::shared_ptr<std::vector<float>> poc; // proof of concept model features
+    std::shared_ptr<std::vector<float>> head; // head features
     int pos; // index into trunk data of move chosen by player
   };
   struct Moveset {
     std::vector<Move> moves; // in ascending order
-    void insert(int index, Player pla); // preserves order
+    Player pla; // player associated with the moveset (even if it contains different-color moves)
+    void insert(int index, Selection selection); // prevents duplicates
     void merge(const Moveset& rhs); // merge rhs entries into this
-    bool hasAllPicks() const; // true if all moves have pick data
+    bool hasAllResults() const; // true if all player moves have data
     void releaseStorage(); // free memory by letting go of TrunkOutputs/PickOutputs (can be re-read from zip later)
     std::pair<Moveset, Moveset> splitBlackWhite() const;
     void writeToZip(const std::string& filePath) const;
@@ -42,7 +52,7 @@ struct SelectedMoves {
     constexpr static int nnYLen = 19;
     constexpr static int numTrunkFeatures = 384;  // strength model is limited to this size
     constexpr static int trunkSize = nnXLen*nnYLen*numTrunkFeatures;
-    constexpr static int numPocFeatures = 6;      // filling struct MoveFeatures
+    constexpr static int numHeadFeatures = 6;      // filling struct MoveFeatures
   };
 
   std::map<std::string, Moveset> bygame;
@@ -95,9 +105,10 @@ public:
   void load(const std::string& path, const std::string& featureDir = "");
   void store(const std::string& path) const;
   // retrieve up to bufsize moves played by the player in games before the game index, return # retrieved
-  size_t getRecentMoves(size_t player, size_t game, MoveFeatures* buffer, size_t bufsize) const;
+  // size_t getRecentMoves(size_t player, size_t game, MoveFeatures* buffer, size_t bufsize) const;
   // identify up to capacity moves played by the player in games before the game index (without attached data)
-  SelectedMoves getRecentMoves(::Player player, size_t game, size_t capacity) const;
+  // with head features, also returns follow-up (opponent) moves and final board state
+  SelectedMoves getRecentMoves(::Player player, size_t game, size_t capacity, Selection selection) const;
   // randomly assign the `set` member of every game; *Part in [0.0, 1.0], testPart = 1-trainingPart-validationPart
   void randomSplit(Rand& rand, float trainingPart, float validationPart);
   // randomly assign set=batch to the given nr of training games (and reset previous batch to set=training)

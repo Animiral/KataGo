@@ -24,11 +24,11 @@ public:
   PrecomputeFeatures(NNEvaluator& nnEvaluator, int cap);
   explicit PrecomputeFeatures(int cap);
 
-  bool includeTrunk; // get trunk outputs from NN
-  bool includePick; // get pieces of trunk from NN
+  Selection selection; // which features to extract
 
   struct ResultRow {
     int index; // 0-based move number in the game
+    Player pla;
     int pos; // index into trunk data of move chosen by player
     float whiteWinProb;
     float whiteLossProb; // not necessarily 1-winProb because no result is possible
@@ -47,15 +47,16 @@ public:
   };
 
   // signal the start of input for the specified game
-  void startGame(const std::string& sgfPath);
+  Result processGame(const std::string& sgfPath, const SelectedMoves::Moveset& moveset);
+  // void startGame(const std::string& sgfPath);
   // extract input tensor and add it as new row
-  void addBoard(Board& board, const BoardHistory& history, Move move);
-  void addBoard(Board& board, const BoardHistory& history); // final board without move
+  // void addBoard(Board& board, const BoardHistory& history, Move move, Selection selection);
+  // void addBoard(Board& board, const BoardHistory& history, Selection selection); // final board without move
   // signal the end of input, finalize result for the game with the given path
-  void endGame();
-  bool isFull() const;
+  // void endGame();
+  // bool isFull() const;
   // run all added boards through the neural net; invalidate all previous results
-  std::vector<Result> evaluate(); // picks and POC features
+  // std::vector<Result> evaluate();
   // std::vector<Result> evaluateTrunks();
   // std::vector<Result> evaluatePicks();
 
@@ -69,13 +70,13 @@ public:
   constexpr static int nnYLen = 19;
   constexpr static int numTrunkFeatures = 384;  // strength model is limited to this size
   constexpr static int trunkSize = nnXLen*nnYLen*numTrunkFeatures;
-  constexpr static int numPocFeatures = 6;      // filling struct MoveFeatures
+  constexpr static int numHeadFeatures = 6;      // filling struct MoveFeatures
   constexpr static int gpuIdx = -1;
 
 private:
 
   // void allocateBuffers();
-  void addBoardImpl(Board& board, const BoardHistory& history, int rowPos, Player pla, bool maybeTrunkPick);
+  ResultRow addBoardImpl(Board& board, const BoardHistory& history, int rowPos, Player pla, Selection selection);
 
   // std::unique_ptr<ComputeHandle, ComputeHandleDeleter> handle;
   // std::unique_ptr<InputBuffers, InputBuffersDeleter> inputBuffers;

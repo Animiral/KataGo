@@ -34,8 +34,7 @@ PrecomputeFeatures::PrecomputeFeatures(NNEvaluator& nnEvaluator, int cap)
 
 PrecomputeFeatures::PrecomputeFeatures(int cap)
 : // handle(nullptr, {}), inputBuffers(nullptr, {}),
-  includeTrunk(false),
-  includePick(true),
+  selection{false, false, false},
   count(0),
   capacity(cap),
   resultTip(0)
@@ -45,47 +44,78 @@ PrecomputeFeatures::PrecomputeFeatures(int cap)
   // allocateBuffers();
 }
 
-void PrecomputeFeatures::startGame(const std::string& sgfPath) {
-  nextResult.sgfPath = sgfPath;
-  nextResult.startIndex = 0;
-  // nextResult.trunk = trunk.data() + count * trunkSize;
-  // nextResult.movepos.clear();
-  // nextResult.pick.clear();
-  // nextResult.player.clear();
-  nextResult.rows.clear();
-}
+PrecomputeFeatures::Result PrecomputeFeatures::processGame(const string& sgfPath, const SelectedMoves::Moveset& moveset) {
+  auto sgf = std::unique_ptr<CompactSgf>(CompactSgf::loadFile(sgfPath));
+  const auto& moves = sgf->moves;
+  Rules rules = sgf->getRulesOrFailAllowUnspecified(Rules::getTrompTaylorish());
+  Board board;
+  BoardHistory history;
+  Player initialPla;
+  sgf->setupInitialBoardAndHist(rules, board, initialPla, history);
+  auto moveIt = moveset.moves.begin();
+  auto moveEnd = moveset.moves.end();
+  Result result{sgfPath, 0, {}};
 
-void PrecomputeFeatures::addBoard(Board& board, const BoardHistory& history, Move move) {
-  int rowPos = NNPos::locToPos(move.loc, board.x_size, nnXLen, nnYLen);
-  addBoardImpl(board, history, rowPos, move.pla, true);
-}
+  for(int turnIdx = 0; turnIdx < moves.size() && moveIt != moveEnd; turnIdx++) {
+    Move move = moves[turnIdx];
 
-void PrecomputeFeatures::addBoard(Board& board, const BoardHistory& history) {
-  addBoardImpl(board, history, 0, history.presumedNextMovePla, false);
-}
-
-void PrecomputeFeatures::endGame() {
-  results.push_back(nextResult);
-  resultTip = count;
-  nextResult = {};
-}
-
-bool PrecomputeFeatures::isFull() const {
-  return count >= capacity;
-}
-
-std::vector<PrecomputeFeatures::Result> PrecomputeFeatures::evaluate() {
-  if(count > 0) {
-    // if there is an open game, it becomes a partial result; the process resembles endGame(), then startGame()
-    if(count > resultTip) {
-      results.push_back(nextResult);
-      nextResult.startIndex += nextResult.rows.size(); // continue from intermediate state
-      nextResult.rows.clear();
+    if(turnIdx == moveIt->index) {
+      int rowPos = NNPos::locToPos(move.loc, board.x_size, nnXLen, nnYLen);
+      result.rows.push_back(addBoardImpl(board, history, rowPos, move.pla, moveIt->selection));
+      moveIt++;
     }
+
+    history.makeBoardMoveAssumeLegal(board, move.loc, move.pla, NULL, true);
   }
-  count = resultTip = 0;
-  return move(results);
+  if(moveIt != moveEnd) { // add final board?
+    assert(history.getCurrentTurnNumber() == moveIt->index);
+    result.rows.push_back(addBoardImpl(board, history, 0, C_EMPTY, moveIt->selection));
+    assert(++moveIt == moveEnd);
+  }
+  return std::move(result);
 }
+
+// void PrecomputeFeatures::startGame(const std::string& sgfPath) {
+//   nextResult.sgfPath = sgfPath;
+//   nextResult.startIndex = 0;
+//   // nextResult.trunk = trunk.data() + count * trunkSize;
+//   // nextResult.movepos.clear();
+//   // nextResult.pick.clear();
+//   // nextResult.player.clear();
+//   nextResult.rows.clear();
+// }
+
+// void PrecomputeFeatures::addBoard(Board& board, const BoardHistory& history, Move move, Selection sel) {
+//   int rowPos = NNPos::locToPos(move.loc, board.x_size, nnXLen, nnYLen);
+//   nextResult.rows.push_back(addBoardImpl(board, history, rowPos, move.pla, sel));
+// }
+
+// void PrecomputeFeatures::addBoard(Board& board, const BoardHistory& history, Selection sel) {
+//   nextResult.rows.push_back(addBoardImpl(board, history, 0, C_EMPTY, sel));
+// }
+
+// void PrecomputeFeatures::endGame() {
+//   results.push_back(nextResult);
+//   resultTip = count;
+//   nextResult = {};
+// }
+
+// bool PrecomputeFeatures::isFull() const {
+//   return count >= capacity;
+// }
+
+// std::vector<PrecomputeFeatures::Result> PrecomputeFeatures::evaluate() {
+//   if(count > 0) {
+//     // if there is an open game, it becomes a partial result; the process resembles endGame(), then startGame()
+//     if(count > resultTip) {
+//       results.push_back(nextResult);
+//       nextResult.startIndex += nextResult.rows.size(); // continue from intermediate state
+//       nextResult.rows.clear();
+//     }
+//   }
+//   count = resultTip = 0;
+//   return move(results);
+// }
 
 // std::vector<PrecomputeFeatures::Result> PrecomputeFeatures::evaluateTrunks() {
 //   if(count > 0) {
@@ -135,29 +165,30 @@ void PrecomputeFeatures::writeResultToMoveset(Result result, SelectedMoves::Move
     SelectedMoves::Move& move = moveset.moves.at(result.startIndex+i);
     ResultRow& row = result.rows.at(i);
     assert(move.index == row.index);
+    move.pla = row.pla;
     move.pos = row.pos;
     if(!row.trunk.empty())
       move.trunk.reset(new TrunkOutput(row.trunk));
     if(!row.pick.empty())
       move.pick.reset(new PickOutput(row.pick));
 
-    if(i < count-1) { // POC features only work for boards showing the move outcome
+    if(i < count-1) { // head features only work for boards showing the move outcome
       ResultRow& nextRow = result.rows.at(i+1);
-      if(nextRow.index != row.index+1) // we cannot determine poc features when missing next move
+      if(nextRow.index != row.index+1) // we cannot determine head features when missing next move
         continue;
-      assert(6 <= numPocFeatures);
-      vector<float> poc(numPocFeatures);
-      poc[0] = P_WHITE == move.pla ? nextRow.whiteWinProb : nextRow.whiteLossProb; // post-move winProb
-      poc[1] = P_WHITE == move.pla ? nextRow.whiteLead : -nextRow.whiteLead; // lead
-      poc[2] = row.movePolicy; // movePolicy
-      poc[3] = row.maxPolicy; // maxPolicy
-      poc[4] = P_WHITE == move.pla // winrateLoss
+      assert(6 <= numHeadFeatures);
+      vector<float> head(numHeadFeatures);
+      head[0] = P_WHITE == move.pla ? nextRow.whiteWinProb : nextRow.whiteLossProb; // post-move winProb
+      head[1] = P_WHITE == move.pla ? nextRow.whiteLead : -nextRow.whiteLead; // lead
+      head[2] = row.movePolicy; // movePolicy
+      head[3] = row.maxPolicy; // maxPolicy
+      head[4] = P_WHITE == move.pla // winrateLoss
                        ? row.whiteWinProb - nextRow.whiteWinProb
                        : row.whiteLossProb - nextRow.whiteLossProb;
-      poc[5] = P_WHITE == move.pla // pointsLoss
+      head[5] = P_WHITE == move.pla // pointsLoss
                        ? row.whiteLead - nextRow.whiteLead
                        : -(row.whiteLead - nextRow.whiteLead);
-      move.poc = std::make_shared<vector<float>>(poc);
+      move.head = std::make_shared<vector<float>>(head);
     }
   }
 }
@@ -226,7 +257,7 @@ void PrecomputeFeatures::writeResultToMoveset(Result result, SelectedMoves::Move
 //   count = resultTip = 0;
 // }
 
-void PrecomputeFeatures::addBoardImpl(Board& board, const BoardHistory& history, int rowPos, Player pla, bool maybeTrunkPick) {
+PrecomputeFeatures::ResultRow PrecomputeFeatures::addBoardImpl(Board& board, const BoardHistory& history, int rowPos, Player pla, Selection sel) {
   assert(evaluator);
 
   MiscNNInputParams nnInputParams;
@@ -235,31 +266,32 @@ void PrecomputeFeatures::addBoardImpl(Board& board, const BoardHistory& history,
 
   NNResultBuf buf;
   buf.rowPos = rowPos;
-  if(maybeTrunkPick) {
-    buf.includeTrunk = includeTrunk;
-    buf.includePick = includePick;
-  }
-  evaluator->evaluate(board, history, pla, nnInputParams, buf, false, false);
+  buf.includeTrunk = sel.trunk;
+  buf.includePick = sel.pick;
+  Player evalPla = C_EMPTY == pla ? history.presumedNextMovePla : pla;
+  evaluator->evaluate(board, history, evalPla, nnInputParams, buf, false, false);
   assert(buf.hasResult);
   NNOutput& nnout = *buf.result;
 
   // interpret NN result
   ResultRow row;
   row.index = history.getCurrentTurnNumber();
+  row.pla = pla;
   row.pos = rowPos;
-  row.whiteWinProb = nnout.whiteWinProb;
-  row.whiteLossProb = nnout.whiteLossProb;
-  row.expectedScore = nnout.whiteScoreMean;
-  row.whiteLead = nnout.whiteLead;
-  row.movePolicy = nnout.policyProbs[buf.rowPos];
-  row.maxPolicy = *std::max_element(std::begin(nnout.policyProbs), std::end(nnout.policyProbs));
   if(nnout.trunk) 
     row.trunk = vector<float>(nnout.trunk, nnout.trunk + numTrunkFeatures * nnXLen * nnYLen); // trunk features at move location
   if(nnout.pick)
     row.pick = vector<float>(nnout.pick, nnout.pick + numTrunkFeatures); // trunk features at move location
-  nextResult.rows.push_back(row);
-
+  if(sel.head) {
+    row.whiteWinProb = nnout.whiteWinProb;
+    row.whiteLossProb = nnout.whiteLossProb;
+    row.expectedScore = nnout.whiteScoreMean;
+    row.whiteLead = nnout.whiteLead;
+    row.movePolicy = nnout.policyProbs[buf.rowPos];
+    row.maxPolicy = *std::max_element(std::begin(nnout.policyProbs), std::end(nnout.policyProbs));
+  }
   count++;
+  return std::move(row);
 }
 
 // void ComputeHandleDeleter::operator()(ComputeHandle* handle) noexcept {
