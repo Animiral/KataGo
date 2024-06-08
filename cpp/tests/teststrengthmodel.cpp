@@ -4,11 +4,13 @@
 #include "core/fileutils.h"
 #include "core/global.h"
 #include <iomanip>
-#include "core/using.h"
+#include "strmodel/using.h"
 
-using std::min;
+using namespace StrModel;
 
 namespace {
+
+using std::cout;
 
 void printFeatures(const MoveFeatures* features, size_t count); // to cout
 void createFeatureCache(const string& listFile, const string& featureDir);
@@ -23,17 +25,17 @@ void matmul(Tensor& y, const Tensor& W, const Tensor& x);
 
 namespace Tests {
 void runStrengthModelTests(const string& modelFile, const string& listFile, const string& featureDir) {
-  Dataset dataset;
-  StrengthModel strengthModel(modelFile, &dataset);
-
   try {
     createFeatureCache(listFile, featureDir);
-    dataset.load(listFile, featureDir);
   }
   catch(const StringError& e) {
     cout << "skip strength model tests (" << e.what() << ")\n";
     return;
   }
+
+  DatasetFiles files(featureDir);
+  Dataset dataset(listFile, files);
+  StrengthModel strengthModel(modelFile, &dataset);
 
   {
     cout << "- UT dataset contains " << dataset.games.size() << " games and " << dataset.players.size() << " players:\n";

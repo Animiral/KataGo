@@ -115,6 +115,7 @@ class NNEvaluator {
   std::string getInternalModelName() const;
   Logger* getLogger();
   bool isNeuralNetLess() const;
+  int getTrunkNumChannels() const noexcept;
   int getMaxBatchSize() const;
   int getNumGpus() const;
   int getNumServerThreads() const;

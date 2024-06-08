@@ -11,6 +11,8 @@
 #include <memory>
 #include "core/using.h"
 
+namespace StrModel {
+
 using std::sqrt;
 
 float Predictor::glickoScore(float blackRating, float whiteRating) {
@@ -390,6 +392,8 @@ void StrengthModel::extractGameFeatures(const CompactSgf& sgf, const Search& sea
   }
 }
 
+constexpr uint32_t FEATURE_HEADER_POC = 0xfea70235;
+
 void StrengthModel::writeFeaturesToFile(const string& featurePath, const vector<MoveFeatures>& features) const {
   string featureDir = FileUtils::dirname(featurePath);
   if(!FileUtils::create_directories(featureDir))
@@ -397,7 +401,7 @@ void StrengthModel::writeFeaturesToFile(const string& featurePath, const vector<
   auto featureFile = std::unique_ptr<std::FILE, decltype(&std::fclose)>(std::fopen(featurePath.c_str(), "wb"), &std::fclose);
   if(nullptr == featureFile)
     throw IOError("Failed to create feature file " + featurePath);
-  size_t writecount = std::fwrite(&Dataset::FEATURE_HEADER_POC, 4, 1, featureFile.get());
+  size_t writecount = std::fwrite(&FEATURE_HEADER_POC, 4, 1, featureFile.get());
   if(1 != writecount)
     throw IOError("Failed to write to feature file " + featurePath);
   writecount = std::fwrite(features.data(), sizeof(MoveFeatures), features.size(), featureFile.get());
@@ -406,3 +410,5 @@ void StrengthModel::writeFeaturesToFile(const string& featurePath, const vector<
   if(0 != std::fclose(featureFile.release()))
     throw IOError("Failed to write to feature file " + featurePath);
 }
+
+} // end namespace StrModel

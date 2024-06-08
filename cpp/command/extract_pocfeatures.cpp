@@ -12,6 +12,7 @@
 #include <iomanip>
 
 using namespace std;
+using namespace StrModel;
 
 namespace
 {
@@ -114,8 +115,8 @@ int MainCmds::extract_pocfeatures(const vector<string>& args) {
   }
 
   Search search(searchParams, nnEval, &logger, "");
-  Dataset dataset;
-  dataset.load(listFile); // deliberately omit passing featureDir; we want to compute features, not load them
+  DatasetFiles files(featureDir);
+  Dataset dataset(listFile, files);
   StrengthModel strengthModel("", &dataset);
   strengthModel.extractFeatures(featureDir, search, &logger);
 

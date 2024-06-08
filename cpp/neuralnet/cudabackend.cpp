@@ -2438,6 +2438,9 @@ float* NeuralNet::getGlobalBuffer(InputBuffers* buffers) {
 int* NeuralNet::getPosBuffer(InputBuffers* buffers) {
   return buffers->userInputPosBuffer;
 }
+int NeuralNet::trunkNumChannels(LoadedModel& model) noexcept {
+  return model.modelDesc.trunk.trunkNumChannels;
+}
 void NeuralNet::freeInputBuffers(InputBuffers* inputBuffers) {
   delete inputBuffers;
 }
@@ -2480,8 +2483,10 @@ void NeuralNet::getOutput(
     if(inputBufs[nIdx]->includeTrunk)
       includeAnyTrunk = true;
     if(inputBufs[nIdx]->includePick) {
-      includeAnyPick = true;
       const int rowPos = inputBufs[nIdx]->rowPos;
+      assert(rowPos >= 0);
+      assert(rowPos < nnXLen * nnYLen); // with includePick, rowPos may not correspond to PASS_LOC or NULL_LOC
+      includeAnyPick = true;
       inputBuffers->userInputPosBuffer[nIdx] = SymmetryHelpers::getSymPos(rowPos, nnXLen, nnYLen, inputBufs[nIdx]->symmetry);
     }
     else {

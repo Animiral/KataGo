@@ -12,6 +12,7 @@
 #include <iomanip>
 
 using namespace std;
+using namespace StrModel;
 using Global::strprintf;
 
 namespace

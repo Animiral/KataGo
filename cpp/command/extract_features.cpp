@@ -17,22 +17,20 @@
 #include <thread>
 #include <mutex>
 #include <chrono>
-#include <functional>
+#include <algorithm>
 #include <zip.h>
 #include "../core/using.h"
 
 namespace
 {
 
-using std::unique_ptr;
-using std::make_unique;
 using std::ref;
-using Global::strprintf;
-using namespace std::string_literals;
+using namespace StrModel;
+using clock = std::chrono::system_clock;
+using time_point = std::chrono::time_point<clock>;
 
 // params of this command
 struct Parameters {
-  unique_ptr<ConfigParser> cfg;
   string modelFile;
   string listFile; // CSV file listing all SGFs to be fed into the rating system
   string featureDir; // Directory for move feature cache
@@ -46,109 +44,125 @@ struct Parameters {
 
 // stores recent moves of one player in one game in a Dataset
 struct RecentMoves {
-  size_t game;
+  GameId game;
   Player pla;
-  SelectedMoves sel;
+  GamesTurns sel;
 };
 
-Parameters parseArgs(const vector<string>& args);
+// handles the actual extraction process
+class ExtractFeatures {
+
+public:
+
+  ExtractFeatures(const Parameters& params, DatasetFiles& files, Dataset& dataset, NNEvaluator& evaluator) noexcept;
+
+  // find every game in the dataset that we want to compute features for
+  vector<RecentMoves> getAllQueries() const;
+  static GamesTurns mergeQueries(const vector<RecentMoves>& recentByGame);
+  void printRecentMoves(const vector<RecentMoves>& recentMoves) const;
+
+  // thread worker function to construct recent move ZIPs out of available game feature ZIPs
+  void buildRecentMoves(
+    RecentMoves* workBegin,       // workload for this thread as begin/end pair,
+    RecentMoves* workEnd,         // specifies which moves are recent to which games
+    std::atomic<size_t>& counter, // shared counter to report common progress
+    size_t total,                 // overall number of items, 100% progress
+    time_point startTime          // common start time of all workers
+  ) const;
+
+  Logger* logger;
+
+private:
+
+  Parameters params;
+  DatasetFiles* files;
+  Dataset* dataset;
+  NNEvaluator* evaluator;
+
+};
+
+Parameters parseArgs(const vector<string>& args, ConfigParser& cfg);
 // unique_ptr<LoadedModel, void(*)(LoadedModel*)> loadModel(string file);
 unique_ptr<NNEvaluator> createEvaluator(const string& modelFile, int evaluatorThreads, int batchSize);
-string movesetToString(const SelectedMoves::Moveset& moveset);
-vector<RecentMoves> getRecentMovesOfEveryGame(const Dataset& dataset, int windowSize, const string& featureDir, Selection selection, bool recompute, Logger& logger);
-void printRecentMoves(const vector<RecentMoves>& recentMoves, const Dataset& dataset);
-string zipPath(const string& sgfPath, const string& featureDir, Player player, const char* title);
-// output all movesets in selected moves into one combined zip
-void outputZip(const SelectedMoves& selectedMoves, const string& path);
 
 // takes a subset of the dataset games, feeds them into NN and prepares the results
 class Worker {
  public:
   Worker() = default;
-  explicit Worker(PrecomputeFeatures&& precompute_);
+  explicit Worker(Precompute&& precompute_);
 
-  static void setWork(SelectedMoves& work_); // assign shared workload for all workers
+  static void setWork(GamesTurns& work_); // assign shared workload for all workers
   void operator()(); // to be called as its own thread
 
   static Logger* logger; // shared logger for all workers
-  static string featureDir; // shared configuration: directory for zip output
+  static Dataset* dataset; // shared dataset for all workers
   static bool recompute; // shared configuration: set true to disregard existing zips
+  static Selection selection; // what to compute
   static bool printResultsDebug; // summary of precompute results to stdout
 
  private:
 
-  static SelectedMoves* work;
-  static std::map<string, SelectedMoves::Moveset>::iterator workIterator; // points to next work item
+  static GamesTurns* work;
+  static map<GameId, vector<int>>::iterator workIterator; // points to next work item
   static std::mutex workMutex; // synchronizes access to workIterator
   static size_t progress; // shared counter for finished work
-  static std::chrono::time_point<std::chrono::system_clock> startTime; // time when work was assigned
+  static time_point startTime; // time when work was assigned
   static std::mutex reportMutex; // synchronizes access to logger
 
-  PrecomputeFeatures precompute;
+  Precompute precompute;
 
-  bool fetchWork(const string*& sgfPath, SelectedMoves::Moveset*& moveset);
+  bool fetchWork(GameId& gameId, vector<int>*& turns);
+  static bool featuresPreexist(GameId gameId, const vector<int>& turns);
   void reportProgress(const string& message);
   void reportError(const string& sgfPath, const char* what);
 
 };
 
-void combineAndDumpRecentMoves(
-  RecentMoves* workBegin,       // workload for this thread as begin/end pair,
-  RecentMoves* workEnd,         // specifies which moves are recent to which games
-  const Dataset& dataset,       // games SGF path lookup
-  const string& featureDir,     // where to put the zip files
-  Logger& logger,               // progress report sink
-  std::atomic<size_t>& counter, // shared counter to report common progress
-  size_t total,                 // overall number of items, 100% progress
-  std::chrono::time_point<std::chrono::system_clock> startTime // common start time of all workers
-);
-
 }
 
 int MainCmds::extract_features(const vector<string>& args) {
-  Parameters params = parseArgs(args);
+  ConfigParser cfg;
+  Parameters params = parseArgs(args, cfg);
   int workerThreads = 2; // 64; // number of CPU threads filling requests to GPU
-  Logger logger(params.cfg.get(), false, true);
+  Logger logger(&cfg, false, true);
   logger.write(Version::getKataGoVersionForHelp());
 
   Board::initHash();
   ScoreValue::initTables();
 
-  // auto loadedModel = loadModel(params.modelFile);
-  // logger.write(strprintf("Loaded model %s.", params.modelFile.c_str()));
+  DatasetFiles files(params.featureDir);
+  Dataset dataset(params.listFile, files);
+
   auto evaluator = createEvaluator(params.modelFile, params.batchThreads, params.batchSize);
 
-  Dataset dataset;
-  dataset.load(params.listFile); // deliberately omit passing featureDir; we want to compute features, not load them
+  ExtractFeatures extract(params, files, dataset, *evaluator);
+  extract.logger = &logger;
+
   logger.write("Find recent moves of all train/eval/test games using window size " + Global::intToString(params.windowSize) + "...");
 
-  vector<RecentMoves> recentByGame = getRecentMovesOfEveryGame(dataset, params.windowSize, params.featureDir, params.selection, params.recompute, logger);
+  vector<RecentMoves> recentByGame = extract.getAllQueries();
   if(params.printRecentMoves)
-    printRecentMoves(recentByGame, dataset);
+    extract.printRecentMoves(recentByGame);
 
-  // combine exactly what needs to be precomputed for which game
-  // and do it using concurrent GPU workers.
   size_t total = 0;
   {
-    SelectedMoves recentAll;
-    for(auto& recent : recentByGame)
-      recentAll.merge(recent.sel);
+    // combine exactly what needs to be precomputed for which game
+    GamesTurns recentAll = ExtractFeatures::mergeQueries(recentByGame);
     total = recentAll.bygame.size();
     logger.write(Global::intToString(total) + " games found. Extracting...");
   
+    // evaluate all queries using concurrent GPU workers
     Worker::logger = &logger;
-    Worker::featureDir = params.featureDir;
+    Worker::dataset = &dataset;
     Worker::recompute = params.recompute;
+    Worker::selection = params.selection;
     Worker::printResultsDebug = params.printRecentMoves; // clumsy tie of unrelated debug print options
     Worker::setWork(recentAll);
   
     vector<Worker> workers;
     vector<std::thread> threads;
-    for(int i = 0; i < workerThreads; i++) {
-      PrecomputeFeatures precompute(*evaluator, params.batchSize);
-      precompute.selection = params.selection;
-      workers.emplace_back(std::move(precompute));
-    }
+    for(int i = 0; i < workerThreads; i++)
+      workers.emplace_back(Precompute(*evaluator));
     for(int i = 0; i < workerThreads; i++)
       threads.emplace_back(ref(workers[i]));
     for(auto& thread : threads)
@@ -160,15 +174,14 @@ int MainCmds::extract_features(const vector<string>& args) {
   {
     constexpr int accumulateThreadCount = 16;
     logger.write(strprintf("Accumulating recent moves using %d threads...", accumulateThreadCount));
-    auto startTime = std::chrono::system_clock::now();
+    auto startTime = clock::now();
     total = recentByGame.size();
     std::atomic<size_t> progress(0);
     vector<std::thread> threads;
     for(int i = 0; i < accumulateThreadCount; i++) {
       RecentMoves* workBegin = &recentByGame[total*i/accumulateThreadCount];
       RecentMoves* workEnd = &recentByGame[total*(i+1)/accumulateThreadCount];
-      threads.emplace_back(&combineAndDumpRecentMoves, workBegin, workEnd, ref(dataset),
-                           ref(params.featureDir), ref(logger), ref(progress), total, startTime);
+      threads.emplace_back(&ExtractFeatures::buildRecentMoves, extract, workBegin, workEnd, ref(progress), total, startTime);
     }
     for(auto& thread : threads)
       thread.join();
@@ -181,10 +194,123 @@ int MainCmds::extract_features(const vector<string>& args) {
 
 namespace {
 
-Parameters parseArgs(const vector<string>& args) {
-  Parameters params;
-  params.cfg = make_unique<ConfigParser>();
+ExtractFeatures::ExtractFeatures(const Parameters& params_, DatasetFiles& files_, Dataset& dataset_, NNEvaluator& evaluator_) noexcept
+: logger(nullptr), params(params_), files(&files_), dataset(&dataset_), evaluator(&evaluator_)
+{}
 
+vector<RecentMoves> ExtractFeatures::getAllQueries() const {
+  vector<RecentMoves> recentByGame;
+  for(GameId i = 0; i < dataset->games.size(); i++) {
+    if(Dataset::Game::none == dataset->games[i].set)
+      continue;
+
+    if(!params.recompute) {
+      string blackZipPath = files->featurePath(dataset->games[i].sgfPath, P_BLACK, "Recent");
+      string whiteZipPath = files->featurePath(dataset->games[i].sgfPath, P_WHITE, "Recent");
+      if(FileUtils::exists(blackZipPath) && FileUtils::exists(whiteZipPath))
+        continue;
+    }
+
+    if(logger)
+      logger->write(strprintf("Find recent moves of %s", dataset->games[i].sgfPath.c_str()));
+    recentByGame.push_back({i, P_BLACK, dataset->getRecentMoves(P_BLACK, i, params.windowSize)});
+    recentByGame.push_back({i, P_WHITE, dataset->getRecentMoves(P_WHITE, i, params.windowSize)});
+  }
+  return recentByGame;
+}
+
+namespace {
+
+vector<int> mergeOrderedVectors(const vector<int>& a, const vector<int>& b) {
+  vector<int> merged;
+  size_t i = 0, j = 0;
+  size_t N = a.size(), M = b.size();
+  while(i < N && j < M) {
+    if(a[i] == b[j]) {
+      merged.push_back(a[i]);
+      i++; j++;
+    }
+    else if(a[i] < b[j])
+      merged.push_back(a[i++]);
+    else if(a[i] > b[j])
+      merged.push_back(b[j++]);
+  }
+  if(i < N)
+    merged.insert(merged.end(), &a[i], &a[N]);
+  if(j < M)
+    merged.insert(merged.end(), &b[j], &b[M]);
+  return merged;
+}
+
+}
+
+GamesTurns ExtractFeatures::mergeQueries(const vector<RecentMoves>& recentByGame) {
+  GamesTurns merged;
+  for(const RecentMoves& recent : recentByGame) {
+    for(const auto& game_turns : recent.sel.bygame) {
+      vector<int>& target = merged.bygame[game_turns.first];
+      target = mergeOrderedVectors(target, game_turns.second);
+    }
+  }
+  return merged;
+}
+
+void ExtractFeatures::printRecentMoves(const vector<RecentMoves>& recentMoves) const {
+  for(const RecentMoves& rec : recentMoves) {
+    const string& sgfPath = dataset->games[rec.game].sgfPath;
+    std::cout << strprintf("Recent moves to %s for %s:\n", sgfPath.c_str(), PlayerIO::playerToString(rec.pla).c_str());
+    for(const auto& kv : rec.sel.bygame) {
+      const vector<int>& turns = kv.second;
+      std::cout << strprintf("  %d from %s:", turns.size(), dataset->games[kv.first].sgfPath.c_str());
+      for(int turn : turns)
+        std::cout << ' ' << turn;
+      std::cout << "\n";
+    }
+  }
+}
+
+void ExtractFeatures::buildRecentMoves(
+  RecentMoves* workBegin,       // workload for this thread as begin/end pair,
+  RecentMoves* workEnd,         // specifies which moves are recent to which games
+  std::atomic<size_t>& counter, // shared counter to report common progress
+  size_t total,                 // overall number of items, 100% progress
+  time_point startTime          // common start time of all workers
+) const {
+  auto reportProgress = [&] (const RecentMoves* moves, const char* message = "") {
+    size_t p = ++counter;
+    auto elapsedTime = clock::now() - startTime;
+    auto remainingTime = elapsedTime * (total - p) / p;
+    string remainingString = Global::longDurationToString(remainingTime);
+    logger->write(strprintf("%d/%d (%s remaining): %s (%s) %s",
+      p, total, remainingString.c_str(),
+      dataset->games[moves->game].sgfPath.c_str(),
+      PlayerIO::playerToString(moves->pla).c_str(),
+      message));
+  };
+  for(RecentMoves* moves = workBegin; moves != workEnd; ++moves) try {
+    const Dataset::Game& game = dataset->games.at(moves->game);
+    assert(P_BLACK == moves->pla || P_WHITE == moves->pla);
+    PlayerId playerId = P_BLACK == moves->pla ? game.black.player : game.white.player;
+
+    // get relevant precomputations from disk
+    vector<BoardFeatures> features; // of all recent moves
+
+    for(auto& kv : moves->sel.bygame) {
+      Player pla = dataset->playerColor(playerId, kv.first);
+      vector<BoardFeatures> gameFeatures = dataset->loadFeatures(kv.first, pla, "Features");
+      vector<BoardFeatures> filtered = Precompute::filter(gameFeatures, kv.second); // only keep the actual recent moves
+      features.insert(features.end(), filtered.begin(), filtered.end());
+    }
+
+    dataset->storeFeatures(features, moves->game, moves->pla, "Recent");
+    reportProgress(moves);
+  }
+  catch(const std::exception& e) {
+    reportProgress(moves, e.what());
+  }
+}
+
+Parameters parseArgs(const vector<string>& args, ConfigParser& cfg) {
   KataGoCommandLine cmd("Precompute move features for all games in the dataset.");
   cmd.addConfigFileArg("","analysis_example.cfg");
   cmd.addModelFileArg();
@@ -203,6 +329,7 @@ Parameters parseArgs(const vector<string>& args) {
   cmd.addOverrideConfigArg();
   cmd.parseArgs(args);
 
+  Parameters params;
   params.modelFile = cmd.getModelFile();
   params.listFile = listArg.getValue();
   params.featureDir = featureDirArg.getValue();
@@ -214,7 +341,7 @@ Parameters parseArgs(const vector<string>& args) {
   params.batchThreads = batchThreadsArg.getValue();
   params.recompute = recomputeArg.getValue();
   params.printRecentMoves = printRecentMovesArg.getValue();
-  cmd.getConfig(*params.cfg);
+  cmd.getConfig(cfg);
 
   if(!params.selection.trunk && !params.selection.pick && !params.selection.head) {
     throw StringError("No features selected for extraction.");
@@ -222,10 +349,6 @@ Parameters parseArgs(const vector<string>& args) {
 
   return params;
 }
-
-// unique_ptr<LoadedModel, void(*)(LoadedModel*)> loadModel(string file) {
-//   return unique_ptr<LoadedModel, void(*)(LoadedModel*)>(NeuralNet::loadModelFile(file, ""), &NeuralNet::freeLoadedModel);
-// }
 
 unique_ptr<NNEvaluator> createEvaluator(const string& modelFile, int evaluatorThreads, int batchSize) {
   assert(evaluatorThreads > 0);
@@ -263,154 +386,113 @@ unique_ptr<NNEvaluator> createEvaluator(const string& modelFile, int evaluatorTh
   return evaluator;
 }
 
-string movesetToString(const SelectedMoves::Moveset& moveset) {
-  std::ostringstream oss;
-  const size_t N = moveset.moves.size();
-  for(size_t i = 0; i < N; i++) {
-    if(i > 0)
-      oss << ", ";
-    oss << moveset.moves[i].index;
-  }
-  return oss.str();
-}
-
-vector<RecentMoves> getRecentMovesOfEveryGame(const Dataset& dataset, int windowSize, const string& featureDir, Selection selection, bool recompute, Logger& logger) {
-  vector<RecentMoves> recentByGame;
-  for(size_t i = 0; i < dataset.games.size(); i++) {
-    if(Dataset::Game::none != dataset.games[i].set) {
-      if(!recompute) {
-        string blackZipPath = zipPath(dataset.games[i].sgfPath, featureDir, P_BLACK, "Recent");
-        string whiteZipPath = zipPath(dataset.games[i].sgfPath, featureDir, P_WHITE, "Recent");
-        if(FileUtils::exists(blackZipPath) && FileUtils::exists(whiteZipPath))
-          continue;
-      }
-      logger.write(strprintf("Find recent moves of %s", dataset.games[i].sgfPath.c_str()));
-      RecentMoves blackRecentMoves{i, P_BLACK, dataset.getRecentMoves(P_BLACK, i, windowSize, selection)};
-      RecentMoves whiteRecentMoves{i, P_WHITE, dataset.getRecentMoves(P_WHITE, i, windowSize, selection)};
-      recentByGame.push_back(std::move(blackRecentMoves));
-      recentByGame.push_back(std::move(whiteRecentMoves));
-    }
-  }
-  return recentByGame;
-}
-
-void printRecentMoves(const vector<RecentMoves>& recentMoves, const Dataset& dataset) {
-  for(const RecentMoves& rec : recentMoves) {
-    const string& sgfPath = dataset.games[rec.game].sgfPath;
-    std::cout << strprintf("%d recent moves to %s for %s:\n", rec.sel.size(), sgfPath.c_str(), PlayerIO::playerToString(rec.pla).c_str());
-    for(const auto& kv : rec.sel.bygame) {
-      const auto& moves = kv.second.moves;
-      std::cout << strprintf("  %d from %s:", moves.size(), kv.first.c_str());
-      for(const auto& move : moves)
-        std::cout << ' ' << move.index;
-      std::cout << "\n";
-    }
-  }
-}
-
-string zipPath(const string& sgfPath, const string& featureDir, Player player, const char* title) {
-  string sgfPathWithoutExt = Global::chopSuffix(sgfPath, ".sgf");
-  string playerString = PlayerIO::playerToString(player);
-  return strprintf("%s/%s_%s%s.zip", featureDir.c_str(), sgfPathWithoutExt.c_str(), playerString.c_str(), title);
-}
-
-void outputZip(const SelectedMoves& selectedMoves, const string& path) {
-  SelectedMoves::Moveset combined;
-  for(auto& kv : selectedMoves.bygame) {
-    combined.moves.insert(combined.moves.end(), kv.second.moves.begin(), kv.second.moves.end());
-  }
-  combined.writeToZip(path);
-}
-
 Logger* Worker::logger;
-string Worker::featureDir;
+Dataset* Worker::dataset;
 bool Worker::recompute;
+Selection Worker::selection;
 bool Worker::printResultsDebug;
-SelectedMoves* Worker::work;
-std::map<string, SelectedMoves::Moveset>::iterator Worker::workIterator;
+GamesTurns* Worker::work;
+map<GameId, vector<int>>::iterator Worker::workIterator;
 std::mutex Worker::workMutex;
 size_t Worker::progress;
-std::chrono::time_point<std::chrono::system_clock> Worker::startTime;
+time_point Worker::startTime;
 std::mutex Worker::reportMutex;
 
-Worker::Worker(PrecomputeFeatures&& precompute_)
+Worker::Worker(Precompute&& precompute_)
 : precompute(std::move(precompute_))
 {}
 
-void Worker::setWork(SelectedMoves& work_) {
+void Worker::setWork(GamesTurns& work_) {
   work = &work_;
   workIterator = work->bygame.begin();
   progress = 0;
-  startTime = std::chrono::system_clock::now();
+  startTime = clock::now();
 }
 
-void printResultToStdout(const PrecomputeFeatures::Result& result, const SelectedMoves::Moveset& moveset) {
-  if(result.rows.size() < 2) { // needs at least one board with move + final board
-    std::cout << strprintf("Result %s: empty result\n", result.sgfPath.c_str());
-  }
-  else {
-    int firstMove = moveset.moves.at(result.startIndex).index;
-    int endIndex = result.startIndex + result.rows.size();
-    int lastMove = moveset.moves.at(endIndex-2).index; // discard final board
-    std::cout << strprintf("Result %s: move %d-%d\n", result.sgfPath.c_str(), firstMove, lastMove);
-    // moveset.printSummary(std::cout);
-  }
+void printResultToStdout(const string& sgfPath, const vector<BoardFeatures>& features) {
+  if(features.empty())
+    std::cout << strprintf("Result %s: empty result\n", sgfPath.c_str());
+  else
+    std::cout << strprintf("Result %s: move %d-%d\n", sgfPath.c_str(), features.front().turn, features.back().turn);
 }
 
 void Worker::operator()() try {
-  const string* sgfPath;
-  SelectedMoves::Moveset* moveset;
-  while(fetchWork(sgfPath, moveset)) try {
-    // try to get already computed data, if we are resuming and it is available
-    string blackPath = zipPath(*sgfPath, featureDir, P_BLACK, "Features");
-    if(!recompute && FileUtils::exists(blackPath))
-      moveset->merge(SelectedMoves::Moveset::readFromZip(blackPath, P_BLACK));
-    string whitePath = zipPath(*sgfPath, featureDir, P_WHITE, "Features");
-    if(!recompute && FileUtils::exists(whitePath))
-      moveset->merge(SelectedMoves::Moveset::readFromZip(whitePath, P_WHITE));
-
-    // features loaded from existing ZIPs are automatically excluded from processing
-    if(moveset->hasAllResults()) {
-      moveset->releaseStorage(); // throw away and re-read the ZIP later to save memory
+  GameId gameId;
+  vector<int>* turns;
+  while(fetchWork(gameId, turns)) try {
+    if(!recompute && featuresPreexist(gameId, *turns))
       continue;
-    }
 
-    PrecomputeFeatures::Result result = precompute.processGame(*sgfPath, *moveset);
+    vector<BoardQuery> query = Precompute::makeQuery(*turns, selection);
+    const string& sgfPath = dataset->games.at(gameId).sgfPath;
+    auto sgf = unique_ptr<CompactSgf>(CompactSgf::loadFile(sgfPath));
+    assert(sgf);
+    vector<BoardResult> results = precompute.evaluate(*sgf, query);
+    vector<BoardFeatures> features = Precompute::combine(results);
     if(printResultsDebug)
-      printResultToStdout(result, *moveset);
-    PrecomputeFeatures::writeResultToMoveset(result, *moveset);
-    auto splitSet = moveset->splitBlackWhite();
-    if(recompute || !FileUtils::exists(blackPath))
-      splitSet.first.writeToZip(blackPath);
-    if(recompute || !FileUtils::exists(whitePath))
-      splitSet.second.writeToZip(whitePath);
-    moveset->releaseStorage(); // keeping this in memory for every file would be too much
-    reportProgress(*sgfPath);
+      printResultToStdout(sgfPath, features);
+
+    vector<BoardFeatures> blackFeatures, whiteFeatures;
+    std::copy_if(features.begin(), features.end(), std::back_inserter(blackFeatures),
+      [](const BoardFeatures& f) { return P_BLACK == f.pla; });
+    std::copy_if(features.begin(), features.end(), std::back_inserter(whiteFeatures),
+      [](const BoardFeatures& f) { return P_WHITE == f.pla; });
+    dataset->storeFeatures(blackFeatures, gameId, P_BLACK, "Features");
+    dataset->storeFeatures(whiteFeatures, gameId, P_WHITE, "Features");
+
+    reportProgress(sgfPath);
   }
   catch(const std::exception& e) {
-    reportError(*sgfPath, e.what());
+    reportError(dataset->games.at(gameId).sgfPath, e.what());
   }
 }
 catch(const std::exception& e) {
   logger->write("Unexpected error in worker thread: "s + e.what());
 }
 
-bool Worker::fetchWork(const string*& sgfPath, SelectedMoves::Moveset*& moveset) {
+bool Worker::fetchWork(GameId& gameId, vector<int>*& turns) {
   if(work->bygame.end() == workIterator)
     return false;
 
   std::lock_guard<std::mutex> lock(workMutex);
-  sgfPath = &workIterator->first;
-  moveset = &workIterator->second;
+  gameId = workIterator->first;
+  turns = &workIterator->second;
   ++workIterator;
   return true;
+}
+
+bool Worker::featuresPreexist(GameId gameId, const vector<int>& turns)
+try {
+  // load existing features to see what we already have
+  vector<BoardFeatures> blackFeatures = dataset->loadFeatures(gameId, P_BLACK, "Features");
+  vector<BoardFeatures> whiteFeatures = dataset->loadFeatures(gameId, P_WHITE, "Features");
+
+  // we only accept features if they match our selection criteria
+  auto hasSelection = [selection=selection](const BoardFeatures& f) {
+    return (!selection.trunk || f.trunk)
+        && (!selection.pick || f.pick)
+        && (!selection.head || f.head);
+  };
+  auto blackEnd = std::partition(blackFeatures.begin(), blackFeatures.end(), hasSelection);
+  auto whiteEnd = std::partition(whiteFeatures.begin(), whiteFeatures.end(), hasSelection);
+
+  // find the turn numbers where we have features and check if they are complete
+  set<int> existing;
+  auto inserter = std::inserter(existing, existing.end());
+  auto getTurn = [](const BoardFeatures& f) { return f.turn; };
+  std::transform(blackFeatures.begin(), blackEnd, inserter, getTurn);
+  std::transform(whiteFeatures.begin(), whiteEnd, inserter, getTurn);
+  return std::includes(existing.begin(), existing.end(), turns.begin(), turns.end());
+} catch(const IOError& ) {
+  // zip not found or not read; nothing to worry about, just recompute
+  return false;
 }
 
 void Worker::reportProgress(const string& message) {
   std::lock_guard<std::mutex> lock(reportMutex);
   size_t p = ++progress;
   size_t total = work->bygame.size();
-  auto elapsedTime = std::chrono::system_clock::now() - startTime;
+  auto elapsedTime = clock::now() - startTime;
   auto remainingTime = elapsedTime * (total - p) / p;
   string remainingString = Global::longDurationToString(remainingTime);
   logger->write(strprintf("%d/%d (%s remaining): %s", p, total, remainingString.c_str(), message.c_str()));
@@ -418,46 +500,6 @@ void Worker::reportProgress(const string& message) {
 
 void Worker::reportError(const string& sgfPath, const char* what) {
   reportProgress(strprintf("Error processing %s: %s", sgfPath.c_str(), what));
-}
-
-// thread worker function for a subset of recent moves
-void combineAndDumpRecentMoves(
-  RecentMoves* workBegin,       // workload for this thread as begin/end pair,
-  RecentMoves* workEnd,         // specifies which moves are recent to which games
-  const Dataset& dataset,       // games SGF path lookup
-  const string& featureDir,     // where to put the zip files
-  Logger& logger,               // progress report sink
-  std::atomic<size_t>& counter, // shared counter to report common progress
-  size_t total,                 // overall number of items, 100% progress
-  std::chrono::time_point<std::chrono::system_clock> startTime // common start time of all workers
-) {
-  auto reportProgress = [&] (const RecentMoves* moves, const char* message = "") {
-    size_t p = ++counter;
-    auto elapsedTime = std::chrono::system_clock::now() - startTime;
-    auto remainingTime = elapsedTime * (total - p) / p;
-    string remainingString = Global::longDurationToString(remainingTime);
-    logger.write(strprintf("%d/%d (%s remaining): %s (%s) %s",
-      p, total, remainingString.c_str(),
-      dataset.games[moves->game].sgfPath.c_str(),
-      PlayerIO::playerToString(moves->pla).c_str(),
-      message));
-  };
-  for(RecentMoves* moves = workBegin; moves != workEnd; ++moves) try {
-    // get relevant precomputations from disk
-    SelectedMoves precomputed;
-    for(auto& kv : moves->sel.bygame) {
-      string path = zipPath(kv.first, featureDir, kv.second.pla, "Features");
-      precomputed.bygame[kv.first] = SelectedMoves::Moveset::readFromZip(path, moves->pla);
-    }
-    // adopt precomputated sets into recent move set
-    moves->sel.copyFeaturesFrom(precomputed);
-    string path = zipPath(dataset.games[moves->game].sgfPath, featureDir, moves->pla, "Recent");
-    outputZip(moves->sel, path);
-    reportProgress(moves);
-  }
-  catch(const std::exception& e) {
-    reportProgress(moves, e.what());
-  }
 }
 
 }

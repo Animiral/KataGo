@@ -2,10 +2,13 @@
 
 #include <string>
 #include "core/fileutils.h"
-#include "core/using.h"
+#include "core/global.h"
 #include "neuralnet/nninterface.h"
 #include "strmodel/dataset.h"
 #include "strmodel/precompute.h"
+
+using namespace StrModel;
+using std::cout;
 
 namespace {
   // we should evaluate a batch that covers every move position;
@@ -16,7 +19,6 @@ namespace {
   std::unique_ptr<NNEvaluator> createEvaluator(const string& modelFile);
   void runAliceRecent3(const Dataset& dataset);
   void runBobRecent3(const Dataset& dataset);
-  void runMergeSelectedMoves();
   // void runTrunksPicks(NNEvaluator& evaluator);
   void runSaveLoadMoveset();
   std::shared_ptr<vector<float>> fakeData(size_t elements, int variant);
@@ -26,7 +28,7 @@ namespace {
 namespace Tests {
 
 void runPrecomputeTests(const string& modelFile) {
-  cout << "Running precompute tests" << endl;
+  cout << "Running precompute tests\n";
   Board::initHash();
   NeuralNet::globalInitialize();
 
@@ -35,18 +37,17 @@ void runPrecomputeTests(const string& modelFile) {
   const bool logTime = false;
   Logger logger(nullptr, logToStdout, logToStderr, logTime);
 
-  Dataset dataset;
-  dataset.load("precomputetest/games_labels.csv");
+  DatasetFiles files;
+  Dataset dataset("precomputetest/games_labels.csv", files);
   auto evaluator = createEvaluator(modelFile);
 
   runAliceRecent3(dataset);
   runBobRecent3(dataset);
-  runMergeSelectedMoves();
   // runTrunksPicks(*evaluator);
   runSaveLoadMoveset();
 
   NeuralNet::globalCleanup();
-  cout << "Done" << endl;
+  cout << "Done\n";
 }
 
 }
@@ -94,56 +95,26 @@ std::unique_ptr<NNEvaluator> createEvaluator(const string& modelFile) {
 void runAliceRecent3(const Dataset& dataset) {
   cout << "- Recent moves of " << dataset.games[2].sgfPath << " for white\n";
   // alices 3 recent moves are parts from game 1 and all from 2
-  SelectedMoves selectedMoves = dataset.getRecentMoves(P_WHITE, 2, 3, {false, true, false}); // alice moves = game 0 black + game 1 black
-  const char* sgf1 = "sgfs/precomputetests/1-alice-bob.sgf";
-  const char* sgf2 = "sgfs/precomputetests/2-alice-claire.sgf";
-  testAssert(contains(selectedMoves.bygame, sgf1));
-  testAssert(contains(selectedMoves.bygame, sgf2));
-  SelectedMoves::Moveset moves1 = selectedMoves.bygame[sgf1];
-  testAssert(1 == moves1.moves.size());
-  testAssert(2 == moves1.moves[0].index); // prefer moves from the back of the game
-  SelectedMoves::Moveset moves2 = selectedMoves.bygame[sgf2];
-  testAssert(2 == moves2.moves.size());
-  testAssert(0 == moves2.moves[0].index);
-  testAssert(2 == moves2.moves[1].index);
+  GamesTurns gamesTurns = dataset.getRecentMoves(P_WHITE, 2, 3); // alice moves = game 0 black + game 1 black
+  testAssert(contains(gamesTurns.bygame, 0));
+  testAssert(contains(gamesTurns.bygame, 1));
+  vector<int> moves1 = gamesTurns.bygame[0];
+  testAssert(1 == moves1.size());
+  testAssert(2 == moves1[0]); // prefer moves from the back of the game
+  vector<int> moves2 = gamesTurns.bygame[1];
+  testAssert(2 == moves2.size());
+  testAssert(0 == moves2[0]);
+  testAssert(2 == moves2[1]);
 }
 
 void runBobRecent3(const Dataset& dataset) {
   cout << "- Recent moves of " << dataset.games[2].sgfPath << " for black\n";
   // alices 3 recent moves are parts from game 1 and all from 2
-  SelectedMoves selectedMoves = dataset.getRecentMoves(P_BLACK, 2, 3, {false, true, false}); // bob moves = game 0 white
-  const char* sgf1 = "sgfs/precomputetests/1-alice-bob.sgf";
-  testAssert(contains(selectedMoves.bygame, sgf1));
-  SelectedMoves::Moveset moveset = selectedMoves.bygame[sgf1];
-  testAssert(1 == moveset.moves.size());
-  testAssert(1 == moveset.moves[0].index);
-}
-
-void runMergeSelectedMoves() {
-  cout << "- Merge selected move sets\n";
-  const char* sgf1 = "game1.sgf";
-  const char* sgf2 = "game2.sgf";
-  Selection selection{false, true, false};
-  SelectedMoves sel;
-  sel.bygame[sgf1].insert(3, selection);
-  sel.bygame[sgf1].insert(5, selection);
-  sel.bygame[sgf2].insert(2, selection);
-  SelectedMoves sel2;
-  sel2.bygame[sgf1].insert(3, selection);
-  sel2.bygame[sgf1].insert(4, selection);
-  sel2.bygame[sgf2].insert(2, selection);
-  sel.merge(sel2);
-
-  testAssert(contains(sel.bygame, sgf1));
-  testAssert(contains(sel.bygame, sgf2));
-  SelectedMoves::Moveset moves1 = sel.bygame[sgf1];
-  testAssert(3 == moves1.moves.size());
-  testAssert(3 == moves1.moves[0].index);  // moves need to be in order
-  testAssert(4 == moves1.moves[1].index);
-  testAssert(5 == moves1.moves[2].index);
-  SelectedMoves::Moveset moves2 = sel.bygame[sgf2];
-  testAssert(1 == moves2.moves.size());
-  testAssert(2 == moves2.moves[0].index);
+  GamesTurns gamesTurns = dataset.getRecentMoves(P_BLACK, 2, 3); // bob moves = game 0 white
+  testAssert(contains(gamesTurns.bygame, 0));
+  vector<int> moveset = gamesTurns.bygame[0];
+  testAssert(1 == moveset.size());
+  testAssert(1 == moveset[0]);
 }
 
 namespace {
@@ -219,36 +190,30 @@ float vecChecksum(const vector<float>& vec) {
 void runSaveLoadMoveset() {
   cout << "- Moveset data should correctly save/load to ZIP file\n";
 
-  using Move = SelectedMoves::Move;
-  using Moveset = SelectedMoves::Moveset;
-
   // generate test data
-  Moveset moveset{
-    {
-      Move{0, {true, true, false}, C_EMPTY, fakeData(trunkSize, 0), fakeData(numTrunkFeatures, 0), fakeData(numHeadFeatures, 0), 10},
-      Move{1, {true, true, false}, C_EMPTY, fakeData(trunkSize, 1), fakeData(numTrunkFeatures, 1), fakeData(numHeadFeatures, 1), 20},
-      Move{2, {true, true, false}, C_EMPTY, fakeData(trunkSize, 2), fakeData(numTrunkFeatures, 2), fakeData(numHeadFeatures, 2), 30}
-    },
-    C_EMPTY
+  vector<BoardFeatures> moveset{
+    BoardFeatures{0, C_EMPTY, 10, fakeData(trunkSize, 0), fakeData(numTrunkFeatures, 0), fakeData(numHeadFeatures, 0)},
+    BoardFeatures{1, C_EMPTY, 20, fakeData(trunkSize, 1), fakeData(numTrunkFeatures, 1), fakeData(numHeadFeatures, 1)},
+    BoardFeatures{2, C_EMPTY, 30, fakeData(trunkSize, 2), fakeData(numTrunkFeatures, 2), fakeData(numHeadFeatures, 2)}
   };
 
+  DatasetFiles files(".");
   string filePath = "test-moveset.zip";
-  moveset.writeToZip(filePath);
-  Moveset actual = Moveset::readFromZip(filePath);
+  files.storeFeatures(moveset, filePath);
+  vector<BoardFeatures> actual = files.loadFeatures(filePath);
 
-  testAssert(3 == actual.moves.size());
+  testAssert(3 == actual.size());
   for(int i = 0; i < 3; i++) {
-    testAssert(moveset.moves[i].index == actual.moves[i].index);
-    testAssert(moveset.moves[i].pla == actual.moves[i].pla);
-    testAssert(moveset.moves[i].pos == actual.moves[i].pos);
-    testAssert(approxEqual(*moveset.moves[i].trunk, *actual.moves[i].trunk));
-    testAssert(approxEqual(*moveset.moves[i].pick, *actual.moves[i].pick));
-    testAssert(approxEqual(*moveset.moves[i].head, *actual.moves[i].head));
+    testAssert(moveset[i].turn == actual[i].turn);
+    testAssert(moveset[i].pos == actual[i].pos);
+    testAssert(approxEqual(*moveset[i].trunk, *actual[i].trunk));
+    testAssert(approxEqual(*moveset[i].pick, *actual[i].pick));
+    testAssert(approxEqual(*moveset[i].head, *actual[i].head));
   }
 }
 
-std::shared_ptr<vector<float>> fakeData(size_t elements, int variant) {
-  auto data = std::make_shared<vector<float>>(elements);
+shared_ptr<FeatureVector> fakeData(size_t elements, int variant) {
+  auto data = make_shared<FeatureVector>(elements);
   for(size_t i = 0; i < elements; i++) {
     (*data)[i] = float(i+1) + variant * 10.f;
   }

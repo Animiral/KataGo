@@ -226,6 +226,12 @@ Logger* NNEvaluator::getLogger() {
 bool NNEvaluator::isNeuralNetLess() const {
   return debugSkipNeuralNet;
 }
+int NNEvaluator::getTrunkNumChannels() const noexcept {
+  if(loadedModel == NULL)
+    return 0;
+  else
+    return NeuralNet::trunkNumChannels(*loadedModel);
+}
 int NNEvaluator::getMaxBatchSize() const {
   return maxNumRows;
 }

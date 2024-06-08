@@ -18,23 +18,20 @@
 #include <memory>
 #include <zip.h>
 
-using namespace std;
-
-void getTensorsForPosition(const Board& board, const BoardHistory& history, Player pla, NNEvaluator* nnEval);
-
 namespace
 {
 
-  constexpr int maxMoves = 1000; // capacity for moves
+using namespace std;
+using namespace StrModel;
 
-  // unique_ptr<LoadedModel, void(*)(LoadedModel*)> loadModel(string file);
-  unique_ptr<NNEvaluator> createEvaluator(const string& modelFile, Logger& logger);
-  SelectedMoves::Moveset readFromSgf(const string& sgfPath, const string& modelFile, int moveNumber, Selection selection);
-  SelectedMoves::Moveset readFromZip(const string& zipPath);
-  void dumpTensor(string path, float* data, size_t N);
+unique_ptr<NNEvaluator> createEvaluator(const string& modelFile, Logger& logger);
+vector<BoardFeatures> readFromSgf(const string& sgfPath, const string& modelFile, int moveNumber, Selection selection);
+vector<BoardFeatures> readFromZip(const string& zipPath);
+void dumpTensor(string path, const FeatureVector& data);
+void printSummary(const vector<BoardFeatures>& features, std::ostream& stream);
 
-  ConfigParser cfg;
-  Logger* theLogger = nullptr;
+ConfigParser cfg;
+Logger* theLogger = nullptr;
 
 }
 
@@ -96,29 +93,44 @@ int MainCmds::position_tensor(const vector<string>& args) {
     cerr << Version::getKataGoVersionForHelp() << endl;
 
   if(!sgfPath.empty()) {
-    auto moveset = readFromSgf(sgfPath, modelFile, moveNumber, selection);
+    vector<BoardFeatures> moveset = readFromSgf(sgfPath, modelFile, moveNumber, selection);
     if(summary) {
-      moveset.printSummary(std::cout);
+      printSummary(moveset, std::cout);
     }
     else {
-      string sgfPathWithoutExt = Global::chopSuffix(sgfPath, ".sgf");
-      // precompute.writeInputsToNpz(sgfPathWithoutExt + "_Inputs.npz");
-      // precompute.writeOutputsToNpz(sgfPathWithoutExt + "_Trunk.npz");
-      // precompute.writePicksToNpz(sgfPathWithoutExt + "_Pick.npz");
-      dumpTensor(sgfPathWithoutExt + "_Trunk.txt", moveset.moves.at(moveNumber).trunk->data(), PrecomputeFeatures::trunkSize);
-      // dumpTensor(sgfPathWithoutExt + "_Pick.txt", pickNC->data, pickNC->dataLen);
+      if(selection.trunk) {
+        string trunkPath = strprintf("%s_Trunk%d.txt", Global::chopSuffix(sgfPath, ".sgf").c_str(), moveNumber);
+        dumpTensor(trunkPath, *moveset.at(moveNumber).trunk);
+      }
+      if(selection.pick) {
+        string pickPath = strprintf("%s_Pick%d.txt", Global::chopSuffix(sgfPath, ".sgf").c_str(), moveNumber);
+        dumpTensor(pickPath, *moveset.at(moveNumber).pick);
+      }
+      if(selection.head) {
+        string headPath = strprintf("%s_Head%d.txt", Global::chopSuffix(sgfPath, ".sgf").c_str(), moveNumber);
+        dumpTensor(headPath, *moveset.at(moveNumber).head);
+      }
     }
   }
 
   if(!zipPath.empty()) {
-    auto moveset = readFromZip(zipPath);
+    vector<BoardFeatures> moveset = readFromZip(zipPath);
     if(summary) {
-      moveset.printSummary(std::cout);
+      printSummary(moveset, std::cout);
     }
     else {
-      string zipPathWithoutExt = Global::chopSuffix(zipPath, ".zip");
-      dumpTensor(zipPathWithoutExt + "_TrunkUnzip.txt", moveset.moves.at(moveNumber).trunk->data(), PrecomputeFeatures::trunkSize);
-      // dumpTensor(zipPathWithoutExt + "_PickUnzip.txt", pickNC->data, pickNC->dataLen);
+      if(selection.trunk) {
+        string trunkPath = strprintf("%s_Trunk%d.txt", Global::chopSuffix(zipPath, ".zip").c_str(), moveNumber);
+        dumpTensor(trunkPath, *moveset.at(moveNumber).trunk);
+      }
+      if(selection.pick) {
+        string pickPath = strprintf("%s_Pick%d.txt", Global::chopSuffix(zipPath, ".zip").c_str(), moveNumber);
+        dumpTensor(pickPath, *moveset.at(moveNumber).pick);
+      }
+      if(selection.head) {
+        string headPath = strprintf("%s_Head%d.txt", Global::chopSuffix(zipPath, ".zip").c_str(), moveNumber);
+        dumpTensor(headPath, *moveset.at(moveNumber).head);
+      }
     }
   }
 
@@ -128,10 +140,6 @@ int MainCmds::position_tensor(const vector<string>& args) {
 }
 
 namespace {
-
-// unique_ptr<LoadedModel, void(*)(LoadedModel*)> loadModel(string file) {
-//   return unique_ptr<LoadedModel, void(*)(LoadedModel*)>(NeuralNet::loadModelFile(file, ""), &NeuralNet::freeLoadedModel);
-// }
 
 unique_ptr<NNEvaluator> createEvaluator(const string& modelFile, Logger& logger) {
   constexpr int evaluatorThreads = 2;
@@ -169,45 +177,64 @@ unique_ptr<NNEvaluator> createEvaluator(const string& modelFile, Logger& logger)
   return evaluator;
 }
 
-SelectedMoves::Moveset readFromSgf(const string& sgfPath, const string& modelFile, int moveNumber, Selection selection) {
+vector<BoardFeatures> readFromSgf(const string& sgfPath, const string& modelFile, int moveNumber, Selection selection) {
   auto evaluator = createEvaluator(modelFile, *theLogger);
   theLogger->write("Loaded model "+ modelFile);
-  PrecomputeFeatures precompute(*evaluator, maxMoves);
-  precompute.selection = selection;
-  theLogger->write("Starting to extract tensors from " + sgfPath + "...");
+  Precompute precompute(*evaluator);
+
+  theLogger->write("Starting to extract features from " + sgfPath + "...");
 
   auto sgf = std::unique_ptr<CompactSgf>(CompactSgf::loadFile(sgfPath));
   const auto& moves = sgf->moves;
-  Rules rules = sgf->getRulesOrFailAllowUnspecified(Rules::getTrompTaylorish());
-  Board board;
-  BoardHistory history;
-  Player initialPla;
-  SelectedMoves::Moveset moveset;
-  sgf->setupInitialBoardAndHist(rules, board, initialPla, history);
+  vector<int> turns(moves.size() - moveNumber);
+  std::iota(turns.begin(), turns.end(), moveNumber); // query all moves from SGF
 
-  for(int turnIdx = 0; turnIdx < moves.size(); turnIdx++) {
-    Move move = moves[turnIdx];
-    if(turnIdx >= moveNumber)
-      moveset.insert(turnIdx, precompute.selection);
-    history.makeBoardMoveAssumeLegal(board, move.loc, move.pla, NULL, true);
-  }
+  vector<BoardQuery> query = Precompute::makeQuery(turns, selection);
+  vector<BoardResult> results = precompute.evaluate(*sgf, query);
+  vector<BoardFeatures> combined = Precompute::combine(results);
 
-  PrecomputeFeatures::Result result = precompute.processGame(sgfPath, moveset);
-  PrecomputeFeatures::writeResultToMoveset(result, moveset);
-  return moveset;
+  return combined;
 }
 
-SelectedMoves::Moveset readFromZip(const string& zipPath) {
+vector<BoardFeatures> readFromZip(const string& zipPath) {
+  DatasetFiles files(".");
   theLogger->write("Starting to extract tensors from " + zipPath + "...");
-  return SelectedMoves::Moveset::readFromZip(zipPath);
+  return files.loadFeatures(zipPath);
 }
 
-void dumpTensor(string path, float* data, size_t N) {
+void dumpTensor(string path, const FeatureVector& data) {
   std::ofstream file(path);
-  for(int i = 0; i < N; i++) {
-    file << data[i] << "\n";
+  for(float f : data) {
+    file << f << "\n";
   }
   file.close();
+}
+
+// condense vec to a single printable number, likely different from vecs (trunks) of other positions,
+// but also close in value to very similar vecs (tolerant of float inaccuracies)
+float vecChecksum(const vector<float>& vec) {
+  float sum = 0.0f;
+  float sos = 0.0f;
+  float weight = 1.0f;
+  float decay = 0.9999667797285222f; // = pow(0.01, (1/(vec.size()-1))) -> smallest weight is 0.01
+
+  for (size_t i = 0; i < vec.size(); ++i) {
+      sum += vec[i] * weight;
+      sos += vec[i] * vec[i];
+      weight *= decay;
+  }
+
+  return sum + std::sqrt(sos);
+}
+
+void printSummary(const vector<BoardFeatures>& features, std::ostream& stream) {
+  for(const BoardFeatures& feat : features) {
+    string trunkStr = feat.trunk ? strprintf("trunk %f", vecChecksum(*feat.trunk)) : "no trunk"s;
+    string pickStr = feat.pick ? strprintf("pick %f", vecChecksum(*feat.pick)) : "no pick"s;
+    string headStr = feat.head ? strprintf("head(wr %f, pt %f, p %f, maxp %f, wr- %f, pt- %f)",
+      feat.head->at(0), feat.head->at(1), feat.head->at(2), feat.head->at(3), feat.head->at(4), feat.head->at(5)) : "no head"s;
+    stream << strprintf("%d: pos %d, %s, %s, %s\n", feat.turn, feat.pos, trunkStr.c_str(), pickStr.c_str(), headStr.c_str());
+  }
 }
 
 }

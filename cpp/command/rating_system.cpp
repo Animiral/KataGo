@@ -7,6 +7,7 @@
 #include <iomanip>
 
 using namespace std;
+using namespace StrModel;
 
 namespace {
 
@@ -77,8 +78,8 @@ int MainCmds::rating_system(const vector<string>& args) {
     cerr << Version::getKataGoVersionForHelp() << endl;
   }
 
-  Dataset dataset;
-  dataset.load(listFile, featureDir);
+  DatasetFiles files(featureDir);
+  Dataset dataset(listFile, files);
   int set = parseSetMarker(setMarker);
   StrengthModel strengthModel(strengthModelFile, &dataset);
 

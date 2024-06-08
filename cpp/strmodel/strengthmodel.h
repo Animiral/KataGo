@@ -7,6 +7,8 @@
 #include "dataio/sgf.h"
 #include "strmodel/dataset.h"
 
+namespace StrModel {
+
 // The predictor, given a match between two opponents, estimates their ratings and the match score (win probability).
 // This is the abstract base class for our predictors:
 //   - The StochasticPredictor based on simple statistics
@@ -93,5 +95,7 @@ private:
   void writeFeaturesToFile(const std::string& featurePath, const std::vector<MoveFeatures>& features) const;
 
 };
+
+} // end namespace StrModel
 
 #endif  // PROGRAM_STRENGTHMODEL_H_

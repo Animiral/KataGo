@@ -99,6 +99,7 @@ namespace NeuralNet {
   float* getSpatialBuffer(InputBuffers* buffers);
   float* getGlobalBuffer(InputBuffers* buffers);
   int* getPosBuffer(InputBuffers* buffers);
+  int trunkNumChannels(LoadedModel& model) noexcept; // get the channel size of trunk output in the model
   void freeInputBuffers(InputBuffers* buffers);
 
   //The neural net takes in 2 tensors as input.

@@ -10,98 +10,162 @@
 #include "core/fileutils.h"
 #include "core/using.h"
 
-using std::unique_ptr;
-using std::map;
-using std::move;
-using namespace std::literals;
-using Global::strprintf;
+namespace StrModel {
 
-void SelectedMoves::Moveset::insert(int index, Selection selection) {
-  for(auto& m : moves)
-    if(m.index == index)
-      return;
-  Move m;
-  m.index = index;
-  m.selection = selection;
-  m.pla = C_EMPTY;
-  m.pos = -1;
-  moves.push_back(m);
-}
+DatasetFiles::DatasetFiles(const string& featureDir_)
+: featureDir(featureDir_) {}
 
-void SelectedMoves::Moveset::merge(const SelectedMoves::Moveset& rhs) {
-  auto before = moves.begin();
-  for(const Move& m : rhs.moves) {
-    while(before < moves.end() && before->index < m.index)
-      before++; // find next place to insert move in ascending order
+DatasetFiles::~DatasetFiles() noexcept = default;
 
-    if(moves.end() == before || before->index != m.index) { // no duplicate inserts
-      before = ++moves.insert(before, m);
-    }
-    if(moves.end() != before && before->index == m.index) { // in doubt, pick rhs data
-      if(m.selection.trunk) before->selection.trunk = true;
-      if(m.selection.pick) before->selection.pick = true;
-      if(m.selection.head) before->selection.head = true;
-      if(m.trunk) before->trunk = m.trunk;
-      if(m.pick) before->pick = m.pick;
-      if(m.head) before->head = m.head;
-      if(m.pos >= 0) before->pos = m.pos;
-    }
-  }
-}
+string DatasetFiles::featurePath(const string& sgfPath, Player pla, const char* title) const {
+  if(featureDir.empty())
+    throw StringError("Feature directory not avaiable");
 
-bool SelectedMoves::Moveset::hasAllResults() const {
-  auto needsResults = [](const Move& m) -> bool {
-    return (m.selection.trunk && nullptr == m.trunk)
-        || (m.selection.pick && nullptr == m.pick)
-        || (m.selection.head && nullptr == m.head);
-  };
-  return moves.end() == std::find_if(moves.begin(), moves.end(), needsResults);
-}
-
-void SelectedMoves::Moveset::releaseStorage() {
-  for(Move& move : moves){
-    move.trunk.reset();
-    move.pick.reset();
-  }
-}
-
-pair<SelectedMoves::Moveset, SelectedMoves::Moveset> SelectedMoves::Moveset::splitBlackWhite() const {
-  vector<Move> blackMoves, whiteMoves;
-  std::copy_if(moves.begin(), moves.end(), std::back_inserter(blackMoves), [](const Move& m){ return P_BLACK == m.pla; });
-  std::copy_if(moves.begin(), moves.end(), std::back_inserter(whiteMoves), [](const Move& m){ return P_WHITE == m.pla; });
-  return { { blackMoves, P_BLACK }, { whiteMoves, P_WHITE } };
+  string sgfPathWithoutExt = Global::chopSuffix(sgfPath, ".sgf");
+  string playerString = PlayerIO::playerToString(pla);
+  return strprintf("%s/%s_%s%s.zip", featureDir.c_str(), sgfPathWithoutExt.c_str(), playerString.c_str(), title);
 }
 
 namespace {
 
-vector<int> getBufferOfMoveMember(
-  const vector<SelectedMoves::Move>& moves,
-  int SelectedMoves::Move::* member,
+void readBoardMemberFromZip(
+  zip_file_t& file,
+  BoardFeatures& board,
+  int BoardFeatures::* member,
   size_t
 ) {
-  vector<int> buffer(moves.size());
-  for(size_t i = 0; i < moves.size(); i++) {
-    buffer[i] = moves[i].*member;
+  int64_t read = zip_fread(&file, &(board.*member), sizeof(int));
+  if(sizeof(int) != read)
+    throw StringError(strprintf("Error reading zipped file data: %s", zip_file_strerror(&file)));
+}
+
+void readBoardMemberFromZip(
+  zip_file_t& file,
+  BoardFeatures& board,
+  shared_ptr<FeatureVector> BoardFeatures::* member,
+  size_t elsPerBoard
+) {
+  shared_ptr<FeatureVector>& storage = board.*member;
+  storage.reset(new FeatureVector(elsPerBoard));
+  int64_t read = zip_fread(&file, storage->data(), elsPerBoard*sizeof(float));
+  if(elsPerBoard*sizeof(float) != read)
+    throw StringError(strprintf("Error reading zipped file data: %s", zip_file_strerror(&file)));
+}
+
+template<typename DataMemberType>
+uint64_t expectedSize(size_t boards, size_t elsPerBoard) = delete;
+template<>
+uint64_t expectedSize<int>(size_t boards, size_t elsPerBoard) {
+  assert(1 == elsPerBoard); // we can only fit one int per move
+  return boards * sizeof(int);
+}
+template<>
+uint64_t expectedSize<shared_ptr<FeatureVector>>(size_t boards, size_t elsPerBoard) {
+  return boards * elsPerBoard * sizeof(float);
+}
+
+// extract one file in the zip, run checks, and extract each stored element to its appropriate move with readMoveMemberFromZip
+template<typename T>
+void loadFeaturesPart(
+  zip_t& archive,
+  const char* name,
+  vector<BoardFeatures>& features,
+  T BoardFeatures::* member,
+  size_t elsPerBoard
+) {
+  int64_t index = zip_name_locate(&archive, name, ZIP_FL_ENC_RAW);
+  if(index < 0)
+      throw IOError(strprintf("File %s not found in archive.", name));
+
+  zip_stat_t stat;
+  if(0 != zip_stat_index(&archive, index, 0, &stat))
+    throw IOError(strprintf("Error getting %s file information: %s", name, zip_strerror(&archive)));
+  uint64_t expected = expectedSize<T>(features.size(), elsPerBoard);
+  if(stat.size != expected)
+    throw IOError(strprintf("%s data has %d bytes, but expected %d bytes", name, stat.size, expected));
+
+  unique_ptr<zip_file_t, decltype(&zip_fclose)> file{
+    zip_fopen_index(&archive, index, ZIP_RDONLY),
+    &zip_fclose
+  };
+  if(!file)
+    throw IOError(strprintf("Error opening %s in zip archive: %s", name, zip_strerror(&archive)));
+
+  for(BoardFeatures& board : features)
+    readBoardMemberFromZip(*file, board, member, elsPerBoard);
+}
+
+constexpr size_t trunkNumChannels = 384; // strength model is currently fixed to this size
+constexpr size_t trunkSize = trunkNumChannels * 19 * 19; // strength model is currently fixed to 19x19
+constexpr size_t headNumChannels = 6; // proof of concept model is currently fixed to this size
+
+}
+
+vector<BoardFeatures> DatasetFiles::loadFeatures(const string& path) const {
+  int err;
+  unique_ptr<zip_t, decltype(&zip_discard)> archive{
+    zip_open(path.c_str(), ZIP_RDONLY, &err),
+    &zip_discard
+  };
+  if(!archive) {
+    zip_error_t error;
+    zip_error_init_with_code(&error, err);
+    string errstr = zip_error_strerror(&error);
+    zip_error_fini(&error);
+    throw IOError("Error opening zip archive: "s + errstr);
+  }
+
+  // find out how many positions/trunks are present in the archive
+  zip_stat_t stat;
+  if(0 != zip_stat_index(archive.get(), 0, 0, &stat))
+    throw IOError("Error getting stat of first file in archive: "s + zip_strerror(archive.get()));
+  uint64_t expectedCount = stat.size / sizeof(int);
+  vector<BoardFeatures> features(expectedCount);
+
+  loadFeaturesPart(*archive, "turn.bin", features, &BoardFeatures::turn, 1);
+  if(zip_name_locate(archive.get(), "trunk.bin", ZIP_FL_ENC_RAW) >= 0)
+    loadFeaturesPart(*archive, "trunk.bin", features, &BoardFeatures::trunk, trunkSize);
+  if(zip_name_locate(archive.get(), "pick.bin", ZIP_FL_ENC_RAW) >= 0)
+    loadFeaturesPart(*archive, "pick.bin", features, &BoardFeatures::pick, trunkNumChannels);
+  if(zip_name_locate(archive.get(), "head.bin", ZIP_FL_ENC_RAW) >= 0)
+    loadFeaturesPart(*archive, "head.bin", features, &BoardFeatures::head, headNumChannels);
+  loadFeaturesPart(*archive, "movepos.bin", features, &BoardFeatures::pos, 1);
+
+  return features;
+}
+
+namespace {
+
+vector<int> getBufferOfBoardMember(
+  const vector<BoardFeatures>& boards,
+  int BoardFeatures::* member,
+  size_t
+) {
+  vector<int> buffer(boards.size());
+  for(size_t i = 0; i < boards.size(); i++) {
+    buffer[i] = boards[i].*member;
   }
   return buffer;
 }
 
-pair<vector<float>, bool> getBufferOfMoveMember(
-  const vector<SelectedMoves::Move>& moves,
-  std::shared_ptr<vector<float>> SelectedMoves::Move::* member,
-  size_t elsPerMove
+FeatureVector getBufferOfBoardMember(
+  const vector<BoardFeatures>& boards,
+  shared_ptr<FeatureVector> BoardFeatures::* member,
+  size_t elsPerBoard
 ) {
-  vector<float> buffer(moves.size() * elsPerMove);
+  FeatureVector buffer(boards.size() * elsPerBoard);
   bool haveData = false;
-  for(size_t i = 0; i < moves.size(); i++) {
-    const SelectedMoves::Move& move = moves[i];
-    if(move.*member) {
-      assert((move.*member)->size() == elsPerMove);
-      std::copy((move.*member)->begin(), (move.*member)->end(), &buffer[i*elsPerMove]);
+  for(size_t i = 0; i < boards.size(); i++) {
+    const BoardFeatures& board = boards[i];
+    if(board.*member) {
+      assert((board.*member)->size() == elsPerBoard);
+      std::copy((board.*member)->begin(), (board.*member)->end(), &buffer[i*elsPerBoard]);
       haveData = true;
     }
   }
-  return make_pair(move(buffer), haveData);
+  if(!haveData)
+    buffer.clear();
+  return buffer;
 }
 
 
@@ -112,23 +176,23 @@ void addFileToZip(zip_t& archive, const vector<T>& buffer, const char* name) {
     &zip_source_free
   };
   if(!source)
-    throw StringError("Error creating zip source: "s + zip_strerror(&archive));
+    throw IOError("Error creating zip source: "s + zip_strerror(&archive));
 
   if(zip_add(&archive, name, source.get()) < 0)
-    throw StringError(strprintf("Error adding %s to zip archive: %s", name, zip_strerror(&archive)));
+    throw IOError(strprintf("Error adding %s to zip archive: %s", name, zip_strerror(&archive)));
   source.release(); // after zip_add, source is managed by libzip
 }
 
 }
 
-void SelectedMoves::Moveset::writeToZip(const string& filePath) const {
-  string containingDir = FileUtils::dirname(filePath);
+void DatasetFiles::storeFeatures(const vector<BoardFeatures>& features, const string& path) const {
+  string containingDir = FileUtils::dirname(path);
   if(!containingDir.empty() && !FileUtils::create_directories(containingDir))
     throw IOError("Failed to create directory " + containingDir);
 
   int err;
   unique_ptr<zip_t, decltype(&zip_discard)> archive{
-    zip_open(filePath.c_str(), ZIP_CREATE | ZIP_TRUNCATE, &err),
+    zip_open(path.c_str(), ZIP_CREATE | ZIP_TRUNCATE, &err),
     &zip_discard
   };
   if(!archive) {
@@ -136,211 +200,131 @@ void SelectedMoves::Moveset::writeToZip(const string& filePath) const {
     zip_error_init_with_code(&error, err);
     string errstr = zip_error_strerror(&error);
     zip_error_fini(&error);
-    throw StringError("Error opening zip archive: "s + errstr);
+    throw IOError("Error opening zip archive: "s + errstr);
   }
 
-  // merge individual moves data into contiguous buffers
-  vector<int> indexBuffer = getBufferOfMoveMember(moves, &Move::index, 1);
-  vector<int> posBuffer = getBufferOfMoveMember(moves, &Move::pos, 1);
-  vector<float> trunkBuffer, pickBuffer, headBuffer;
-  bool haveTrunks, havePicks, haveHeads;
-  tie(trunkBuffer, haveTrunks) = getBufferOfMoveMember(moves, &Move::trunk, trunkSize);
-  tie(pickBuffer, havePicks) = getBufferOfMoveMember(moves, &Move::pick, numTrunkFeatures);
-  tie(headBuffer, haveHeads) = getBufferOfMoveMember(moves, &Move::head, numHeadFeatures);
+  // merge individual boards data into contiguous buffers
+  vector<int> turnBuffer = getBufferOfBoardMember(features, &BoardFeatures::turn, 1);
+  vector<int> posBuffer = getBufferOfBoardMember(features, &BoardFeatures::pos, 1);
+  FeatureVector trunkBuffer = getBufferOfBoardMember(features, &BoardFeatures::trunk, trunkSize);
+  FeatureVector pickBuffer = getBufferOfBoardMember(features, &BoardFeatures::pick, trunkNumChannels);
+  FeatureVector headBuffer = getBufferOfBoardMember(features, &BoardFeatures::head, headNumChannels);
 
-  addFileToZip(*archive, indexBuffer, "index.bin");
-  if(haveTrunks) 
+  addFileToZip(*archive, turnBuffer, "turn.bin");
+  if(!trunkBuffer.empty()) 
     addFileToZip(*archive, trunkBuffer, "trunk.bin");
-  if(havePicks) 
+  if(!pickBuffer.empty()) 
     addFileToZip(*archive, pickBuffer, "pick.bin");
-  if(haveHeads) 
+  if(!headBuffer.empty()) 
     addFileToZip(*archive, headBuffer, "head.bin");
   addFileToZip(*archive, posBuffer, "movepos.bin");
 
   zip_t* archivep = archive.release();
   if(zip_close(archivep) != 0) {
-    StringError error("Error writing zip archive: "s + zip_strerror(archivep));
+    IOError error("Error writing zip archive: "s + zip_strerror(archivep));
     zip_discard(archivep);
     throw error;
   }
 }
 
-namespace {
 
-// condense vec to a single printable number, likely different from vecs (trunks) of other positions,
-// but also close in value to very similar vecs (tolerant of float inaccuracies)
-float vecChecksum(const vector<float>& vec) {
-  float sum = 0.0f;
-  float sos = 0.0f;
-  float weight = 1.0f;
-  float decay = 0.9999667797285222f; // = pow(0.01, (1/(vec.size()-1))) -> smallest weight is 0.01
+// void SelectedMoves::Moveset::merge(const SelectedMoves::Moveset& rhs) {
+//   auto before = moves.begin();
+//   for(const Move& m : rhs.moves) {
+//     while(before < moves.end() && before->index < m.index)
+//       before++; // find next place to insert move in ascending order
 
-  for (size_t i = 0; i < vec.size(); ++i) {
-      sum += vec[i] * weight;
-      sos += vec[i] * vec[i];
-      weight *= decay;
-  }
+//     if(moves.end() == before || before->index != m.index) { // no duplicate inserts
+//       before = ++moves.insert(before, m);
+//     }
+//     if(moves.end() != before && before->index == m.index) { // in doubt, pick rhs data
+//       if(m.selection.trunk) before->selection.trunk = true;
+//       if(m.selection.pick) before->selection.pick = true;
+//       if(m.selection.head) before->selection.head = true;
+//       if(m.trunk) before->trunk = m.trunk;
+//       if(m.pick) before->pick = m.pick;
+//       if(m.head) before->head = m.head;
+//       if(m.pos >= 0) before->pos = m.pos;
+//     }
+//   }
+// }
 
-  return sum + std::sqrt(sos);
+// bool SelectedMoves::Moveset::hasAllResults() const {
+//   auto needsResults = [](const Move& m) -> bool {
+//     return (m.selection.trunk && nullptr == m.trunk)
+//         || (m.selection.pick && nullptr == m.pick)
+//         || (m.selection.head && nullptr == m.head);
+//   };
+//   return moves.end() == std::find_if(moves.begin(), moves.end(), needsResults);
+// }
+
+// void SelectedMoves::Moveset::releaseStorage() {
+//   for(Move& move : moves){
+//     move.trunk.reset();
+//     move.pick.reset();
+//   }
+// }
+
+// pair<SelectedMoves::Moveset, SelectedMoves::Moveset> SelectedMoves::Moveset::splitBlackWhite() const {
+//   vector<Move> blackMoves, whiteMoves;
+//   std::copy_if(moves.begin(), moves.end(), std::back_inserter(blackMoves), [](const Move& m){ return P_BLACK == m.pla; });
+//   std::copy_if(moves.begin(), moves.end(), std::back_inserter(whiteMoves), [](const Move& m){ return P_WHITE == m.pla; });
+//   return { { blackMoves, P_BLACK }, { whiteMoves, P_WHITE } };
+// }
+
+// namespace {
+
+
+// size_t SelectedMoves::size() const {
+//   auto addSize = [](size_t a, const std::pair<string, Moveset>& kv) { return a + kv.second.moves.size(); };
+//   return std::accumulate(bygame.begin(), bygame.end(), size_t(0), addSize);
+// }
+
+// void SelectedMoves::merge(const SelectedMoves& rhs) {
+//   for(auto kv : rhs.bygame) {
+//     Moveset& mset = bygame[kv.first];
+//     mset.merge(kv.second);
+//   }
+// }
+
+// void SelectedMoves::copyFeaturesFrom(const SelectedMoves& rhs) {
+//   for(auto& kv : bygame) {
+//     vector<Move>& mymoves = kv.second.moves;
+//     const vector<Move>& rmoves = rhs.bygame.at(kv.first).moves;
+//     // both mymoves and rmoves are ordered by move index
+//     size_t rindex = 0;
+//     for(size_t i = 0; i < mymoves.size(); i++) {
+//       while(rindex < rmoves.size() && rmoves[rindex].index != mymoves[i].index)
+//         rindex++;
+//       if(rindex >= rmoves.size())
+//         throw StringError(strprintf("Game %s move %d missing from precomputed data.", kv.first.c_str(), mymoves[i].index));
+
+//       mymoves[i].trunk = rmoves[rindex].trunk;
+//       mymoves[i].pick = rmoves[rindex].pick;
+//       mymoves[i].pos = rmoves[rindex].pos;
+//     }
+//   }
+// }
+
+Dataset::Dataset(std::istream& stream, const DatasetFiles& files_)
+: files(&files_) {
+  load(stream);
 }
 
-}
-
-void SelectedMoves::Moveset::printSummary(std::ostream& stream) const {
-  for(const Move& m : moves) {
-    string trunkStr = m.trunk ? strprintf("trunk %f", vecChecksum(*m.trunk)) : "no trunk"s;
-    string pickStr = m.pick ? strprintf("pick %f", vecChecksum(*m.pick)) : "no pick"s;
-    string headStr = m.head ? strprintf("head(wr %f, pt %f, p %f, maxp %f, wr- %f, pt- %f)",
-      m.head->at(0), m.head->at(1), m.head->at(2), m.head->at(3), m.head->at(4), m.head->at(5)) : "no head"s;
-    stream << strprintf("%d: pos %d, %s, %s, %s\n", m.index, m.pos, trunkStr.c_str(), pickStr.c_str(), headStr.c_str());
-  }
-}
-
-namespace {
-
-void readMoveMemberFromZip(
-  zip_file_t& file,
-  SelectedMoves::Move& move,
-  int SelectedMoves::Move::* member,
-  size_t
-) {
-  int64_t read = zip_fread(&file, &(move.*member), sizeof(int));
-  if(sizeof(int) != read)
-    throw StringError(strprintf("Error reading zipped file data: %s", zip_file_strerror(&file)));
-}
-
-void readMoveMemberFromZip(
-  zip_file_t& file,
-  SelectedMoves::Move& move,
-  std::shared_ptr<vector<float>> SelectedMoves::Move::* member,
-  size_t elsPerMove
-) {
-  auto& storage = move.*member;
-  storage.reset(new vector<float>(elsPerMove));
-  int64_t read = zip_fread(&file, storage->data(), elsPerMove*sizeof(float));
-  if(elsPerMove*sizeof(float) != read)
-    throw StringError(strprintf("Error reading zipped file data: %s", zip_file_strerror(&file)));
-}
-
-template<typename DataMemberType>
-uint64_t expectedSize(size_t moves, size_t elsPerMove) = delete;
-template<>
-uint64_t expectedSize<int>(size_t moves, size_t elsPerMove) {
-  assert(1 == elsPerMove); // we can only fit one int per move
-  return moves * sizeof(int);
-}
-template<>
-uint64_t expectedSize<std::shared_ptr<vector<float>>>(size_t moves, size_t elsPerMove) {
-  return moves * elsPerMove * sizeof(float);
-}
-
-// extract one file in the zip, run checks, and extract each stored element to its appropriate move with readMoveMemberFromZip
-template<typename T>
-void readFromZipPart(
-  zip_t& archive,
-  const char* name,
-  SelectedMoves::Moveset& moveset,
-  T SelectedMoves::Move::* member,
-  size_t elsPerMove
-) {
-  int64_t index = zip_name_locate(&archive, name, ZIP_FL_ENC_RAW);
-  if(index < 0)
-      throw StringError(strprintf("File %s not found in archive.", name));
-
-  zip_stat_t stat;
-  if(0 != zip_stat_index(&archive, index, 0, &stat))
-    throw StringError(strprintf("Error getting %s file information: %s", name, zip_strerror(&archive)));
-  uint64_t expected = expectedSize<T>(moveset.moves.size(), elsPerMove);
-  if(stat.size != expected)
-    throw StringError(strprintf("%s data has %d bytes, but expected %d bytes", name, stat.size, expected));
-
-  unique_ptr<zip_file_t, decltype(&zip_fclose)> file{
-    zip_fopen_index(&archive, index, ZIP_RDONLY),
-    &zip_fclose
-  };
-  if(!file)
-    throw StringError(strprintf("Error opening %s in zip archive: %s", name, zip_strerror(&archive)));
-
-  for(SelectedMoves::Move& move : moveset.moves)
-    readMoveMemberFromZip(*file, move, member, elsPerMove);
-}
-
-}
-
-SelectedMoves::Moveset SelectedMoves::Moveset::readFromZip(const string& filePath, Player pla) {
-  int err;
-  unique_ptr<zip_t, decltype(&zip_close)> archive{
-    zip_open(filePath.c_str(), ZIP_RDONLY, &err),
-    &zip_close
-  };
-  if(!archive) {
-    zip_error_t error;
-    zip_error_init_with_code(&error, err);
-    string errstr = zip_error_strerror(&error);
-    zip_error_fini(&error);
-    throw StringError("Error opening zip archive: "s + errstr);
-  }
-
-  // find out how many positions/trunks are present in the archive
-  zip_stat_t stat;
-  if(0 != zip_stat_index(archive.get(), 0, 0, &stat))
-    throw StringError("Error getting stat of first file in archive: "s + zip_strerror(archive.get()));
-  uint64_t expectedCount = stat.size / sizeof(int);
-  Moveset moveset{vector<Move>(expectedCount), pla};
-
-  readFromZipPart(*archive, "index.bin", moveset, &Move::index, 1);
-  if(zip_name_locate(archive.get(), "trunk.bin", ZIP_FL_ENC_RAW) >= 0)
-    readFromZipPart(*archive, "trunk.bin", moveset, &Move::trunk, trunkSize);
-  if(zip_name_locate(archive.get(), "pick.bin", ZIP_FL_ENC_RAW) >= 0)
-    readFromZipPart(*archive, "pick.bin", moveset, &Move::pick, numTrunkFeatures);
-  if(zip_name_locate(archive.get(), "head.bin", ZIP_FL_ENC_RAW) >= 0)
-    readFromZipPart(*archive, "head.bin", moveset, &Move::head, numHeadFeatures);
-  readFromZipPart(*archive, "movepos.bin", moveset, &Move::pos, 1);
-
-  std::for_each(moveset.moves.begin(), moveset.moves.end(), [pla](Move& m) { m.pla = pla; });
-  return moveset;
-}
-
-size_t SelectedMoves::size() const {
-  auto addSize = [](size_t a, const std::pair<string, Moveset>& kv) { return a + kv.second.moves.size(); };
-  return std::accumulate(bygame.begin(), bygame.end(), size_t(0), addSize);
-}
-
-void SelectedMoves::merge(const SelectedMoves& rhs) {
-  for(auto kv : rhs.bygame) {
-    Moveset& mset = bygame[kv.first];
-    mset.merge(kv.second);
-  }
-}
-
-void SelectedMoves::copyFeaturesFrom(const SelectedMoves& rhs) {
-  for(auto& kv : bygame) {
-    vector<Move>& mymoves = kv.second.moves;
-    const vector<Move>& rmoves = rhs.bygame.at(kv.first).moves;
-    // both mymoves and rmoves are ordered by move index
-    size_t rindex = 0;
-    for(size_t i = 0; i < mymoves.size(); i++) {
-      while(rindex < rmoves.size() && rmoves[rindex].index != mymoves[i].index)
-        rindex++;
-      if(rindex >= rmoves.size())
-        throw StringError(strprintf("Game %s move %d missing from precomputed data.", kv.first.c_str(), mymoves[i].index));
-
-      mymoves[i].trunk = rmoves[rindex].trunk;
-      mymoves[i].pick = rmoves[rindex].pick;
-      mymoves[i].pos = rmoves[rindex].pos;
-    }
-  }
-}
-
-void Dataset::load(const string& path, const string& featureDir) {
-  std::ifstream istrm(path);
-  if (!istrm.is_open())
+Dataset::Dataset(const string& path, const DatasetFiles& files_)
+: files(&files_) {
+  std::ifstream stream(path);
+  if (!stream.is_open())
     throw IOError("Could not read dataset from " + path);
+  load(stream);
+  stream.close();
+}
 
-  std::string line;
-  std::getline(istrm, line);
-  if(!istrm)
-    throw IOError("Could not read header line from " + path);
+void Dataset::load(std::istream& stream) {
+  string line;
+  std::getline(stream, line);
+  if(!stream)
+    throw IOError("Could not read dataset header");
   line = Global::trim(line);
 
   // clean any previous data
@@ -351,7 +335,7 @@ void Dataset::load(const string& path, const string& featureDir) {
   // map known fieldnames to row indexes, wherever they may be
   enum class F { ignore, sgfPath, whiteName, blackName, whiteRating, blackRating, score, predictedScore, set };
   vector<F> fields;
-  std::string field;
+  string field;
   std::istringstream iss(line);
   while(std::getline(iss, field, ',')) {
     if("File" == field) fields.push_back(F::sgfPath);
@@ -365,7 +349,7 @@ void Dataset::load(const string& path, const string& featureDir) {
     else fields.push_back(F::ignore);
   }
 
-  while (std::getline(istrm, line)) {
+  while (std::getline(stream, line)) {
     size_t gameIndex = games.size();
     games.emplace_back();
     Game& game = games[gameIndex];
@@ -413,19 +397,14 @@ void Dataset::load(const string& path, const string& featureDir) {
         break;
       }
     }
-    if(!istrm)
-      throw IOError("Error while reading from " + path);
+    if(!stream)
+      throw IOError("Error while reading dataset: bad stream");
     game.white.prevGame = players[game.white.player].lastOccurrence;
     game.black.prevGame = players[game.black.player].lastOccurrence;
 
     players[game.white.player].lastOccurrence = gameIndex;
     players[game.black.player].lastOccurrence = gameIndex;
   }
-
-  istrm.close();
-
-  if(!featureDir.empty())
-    loadPocFeatures(featureDir);
 }
 
 namespace {
@@ -451,7 +430,7 @@ void Dataset::store(const string& path) const {
 
     // file output
     size_t bufsize = game.sgfPath.size() + whiteName.size() + blackName.size() + 100;
-    std::unique_ptr<char[]> buffer( new char[ bufsize ] );
+    unique_ptr<char[]> buffer( new char[ bufsize ] );
     int printed = std::snprintf(buffer.get(), bufsize, "%s,%s,%s,%s,%.2f,%.2f,%.9f,%f,%f,%c\n",
       game.sgfPath.c_str(), whiteName.c_str(), blackName.c_str(),
       scoreToString(game.score), game.black.rating, game.white.rating,
@@ -464,56 +443,36 @@ void Dataset::store(const string& path) const {
   ostrm.close();
 }
 
-namespace {
-
-int countMovesOfColor(const string& sgfPath, Player pla) {
-  auto sgf = std::unique_ptr<CompactSgf>(CompactSgf::loadFile(sgfPath));
-  const auto& moves = sgf->moves;
-  Rules rules = sgf->getRulesOrFailAllowUnspecified(Rules::getTrompTaylorish());
-  Board board;
-  BoardHistory history;
-  Player initialPla;
-  sgf->setupInitialBoardAndHist(rules, board, initialPla, history);
-
-  return std::count_if(moves.begin(), moves.end(), [pla](Move m) { return pla == m.pla; });
+Player Dataset::playerColor(PlayerId playerId, GameId gameId) const {
+  const Game& game = games.at(gameId);
+  if(playerId == game.black.player)
+    return P_BLACK;
+  else if(playerId == game.white.player)
+    return P_WHITE;
+  else
+    throw ValueError(strprintf("Game %s does not contain player %d (name=%s)",
+      game.sgfPath.c_str(), playerId, players[playerId].name.c_str()));
 }
 
-pair<SelectedMoves::Moveset, size_t> findMovesOfColor(const string& sgfPath, Player pla, size_t capacity, Selection selection) {
-  SelectedMoves::Moveset movesOfColor;
-  movesOfColor.pla = pla;
-  auto sgf = std::unique_ptr<CompactSgf>(CompactSgf::loadFile(sgfPath));
-  const auto& moves = sgf->moves;
-  Rules rules = sgf->getRulesOrFailAllowUnspecified(Rules::getTrompTaylorish());
+namespace {
+
+vector<int> findMovesOfColor(CompactSgf& sgf, Player pla, size_t capacity) {
+  const auto& moves = sgf.moves;
+  Rules rules = sgf.getRulesOrFailAllowUnspecified(Rules::getTrompTaylorish());
   Board board;
   BoardHistory history;
   Player initialPla;
-  sgf->setupInitialBoardAndHist(rules, board, initialPla, history);
-  size_t found = std::count_if(moves.begin(), moves.end(), [pla](Move m) { return pla == m.pla ; });
-  size_t excess = found > capacity ? found - capacity : 0;
-  found -= excess;
+  sgf.setupInitialBoardAndHist(rules, board, initialPla, history);
 
+  vector<int> found;
   for(int i = 0; i < moves.size(); i++) {
-    if(pla == moves[i].pla) {
-      if(excess > 0) {
-        excess--;
-        continue;
-      }
-      if(movesOfColor.moves.empty() || movesOfColor.moves.back().index != i)
-        movesOfColor.insert(i, selection);
-      if(selection.head) // for head features, we also need the board after the move to calculate winrate loss etc
-        movesOfColor.insert(i+1, {false, false, selection.head});
-    }
+    if(pla == moves[i].pla && Board::PASS_LOC != moves[i].loc)
+      found.push_back(i);
   }
 
-  return std::make_pair(std::move(movesOfColor), found);
-
-  // // size_t start = capacity > foundMoves.size() ? 0 : foundMoves.size() - capacity;
-
-  // for(size_t i = start; i < foundMoves.size(); i++) {
-  //   gameMoves.insert(foundMoves[i].index, foundMoves[i].selection);
-  // }
-
-  // return foundMoves.size() - start;
+  size_t excess = found.size() > capacity ? found.size() - capacity : 0;
+  found.erase(found.begin(), found.begin() + excess);
+  return found;
 }
 
 }
@@ -559,16 +518,17 @@ pair<SelectedMoves::Moveset, size_t> findMovesOfColor(const string& sgfPath, Pla
 //   return count;
 // }
 
-SelectedMoves Dataset::getRecentMoves(::Player player, size_t game, size_t capacity, Selection selection) const {
-  SelectedMoves selectedMoves;
+GamesTurns Dataset::getRecentMoves(::Player player, GameId game, size_t capacity) const {
+  GamesTurns gamesTurns;
   const Game& gameData = games[game];
   auto& info = P_BLACK == player ? gameData.black : gameData.white;
   // Traverse game history
-  size_t playerId = info.player;
-  int historic = info.prevGame; // index of prev game
+  PlayerId playerId = info.player;
+  GameId historic = info.prevGame; // index of prev game
 
   while(0 < capacity && historic >= 0) {
-    const Dataset::Game& historicGame = games[historic];
+    GameId h = historic;
+    const Dataset::Game& historicGame = games[h];
 
     ::Player pla;
     if(playerId == historicGame.black.player) {
@@ -581,12 +541,14 @@ SelectedMoves Dataset::getRecentMoves(::Player player, size_t game, size_t capac
       throw StringError(strprintf("Game %s does not contain player %d (name=%s)",
         historicGame.sgfPath.c_str(), playerId, players[playerId].name.c_str()));
     }
-    pair<SelectedMoves::Moveset, size_t> moves_count = findMovesOfColor(historicGame.sgfPath, pla, capacity, selection);
-    selectedMoves.bygame[historicGame.sgfPath] = std::move(moves_count.first);
-    capacity -= moves_count.second;
+
+    auto sgf = unique_ptr<CompactSgf>(CompactSgf::loadFile(historicGame.sgfPath));
+    vector<int> found = findMovesOfColor(*sgf, pla, capacity);
+    capacity -= found.size();
+    gamesTurns.bygame[h] = move(found);
   }
 
-  return selectedMoves;
+  return gamesTurns;
 }
 
 void Dataset::randomSplit(Rand& rand, float trainingPart, float validationPart) {
@@ -611,7 +573,7 @@ void Dataset::randomBatch(Rand& rand, size_t batchSize) {
   for(size_t i = 0; i < games.size(); i++)
     if(~games[i].set & 1)
       trainingIdxs.push_back(i);
-  batchSize = std::min(batchSize, trainingIdxs.size());
+  batchSize = min(batchSize, trainingIdxs.size());
   vector<uint32_t> batchIdxs(trainingIdxs.size());
   rand.fillShuffledUIntRange(trainingIdxs.size(), batchIdxs.data());
   for(size_t i = 0; i < batchSize; i++)
@@ -620,85 +582,25 @@ void Dataset::randomBatch(Rand& rand, size_t batchSize) {
     games[trainingIdxs[batchIdxs[i]]].set = Game::training;
 }
 
-void Dataset::markRecentGames(int windowSize, Logger* logger) {
-	vector<int> recentGames; // indexes into this->games
-
-  for(Game& game : games) {
-    if(Game::none == game.set)
-      continue;
-
-    if(logger)
-      logger->write("Mark recent moves of " + game.sgfPath + " ...");
-    for(auto& info : {game.black, game.white}) {
-      // Traverse game history
-      int idx = 0;
-      size_t playerId = info.player;
-      int historic = info.prevGame; // index of prev game
-
-      while(idx < windowSize && historic >= 0) {
-        recentGames.push_back(historic);
-        const Dataset::Game& historicGame = games[historic];
-
-        ::Player pla;
-        if(playerId == historicGame.black.player) {
-          pla = P_BLACK;
-          historic = historicGame.black.prevGame;
-        } else if(playerId == historicGame.white.player) {
-          pla = P_WHITE;
-          historic = historicGame.white.prevGame;
-        } else {
-          throw StringError(strprintf("Game %s does not contain player %d (name=%s)",
-            historicGame.sgfPath.c_str(), playerId, players[playerId].name.c_str()));
-        }
-        idx += countMovesOfColor(historicGame.sgfPath, pla);
-      }
-    }
-  }
-
-  for(int index : recentGames) {
-    games[index].set = Game::batch;
-  }
+vector<BoardFeatures> Dataset::loadFeatures(GameId gameId, ::Player pla, const char* title) const {
+  string path = files->featurePath(games.at(gameId).sgfPath, pla, title);
+  return files->loadFeatures(path);
 }
 
-const uint32_t Dataset::FEATURE_HEADER = 0xfea70236;
-const uint32_t Dataset::FEATURE_HEADER_POC = 0xfea70235;
+void Dataset::storeFeatures(const vector<BoardFeatures>& features, GameId gameId, ::Player pla, const char* title) const {
+  string path = files->featurePath(games.at(gameId).sgfPath, pla, title);
+  files->storeFeatures(features, path);
+}
 
-size_t Dataset::getOrInsertNameIndex(const std::string& name) {
+size_t Dataset::getOrInsertNameIndex(const string& name) {
   auto it = nameIndex.find(name);
   if(nameIndex.end() == it) {
     size_t index = players.size();
     players.push_back({name, -1});
     bool success;
-    std::tie(it, success) = nameIndex.insert({name, index});
+    tie(it, success) = nameIndex.insert({name, index});
   }
   return it->second;
 }
 
-void Dataset::loadPocFeatures(const std::string& featureDir) {
-  for(Game& game : games) {
-    string sgfPathWithoutExt = Global::chopSuffix(game.sgfPath, ".sgf");
-    string blackFeaturesPath = strprintf("%s/%s_BlackFeatures.bin", featureDir.c_str(), sgfPathWithoutExt.c_str());
-    string whiteFeaturesPath = strprintf("%s/%s_WhiteFeatures.bin", featureDir.c_str(), sgfPathWithoutExt.c_str());
-    game.black.features = readPocFeaturesFromFile(blackFeaturesPath);
-    game.white.features = readPocFeaturesFromFile(whiteFeaturesPath);
-  }
-}
-
-vector<MoveFeatures> Dataset::readPocFeaturesFromFile(const string& featurePath) {
-  vector<MoveFeatures> features;
-  auto featureFile = std::unique_ptr<std::FILE, decltype(&std::fclose)>(std::fopen(featurePath.c_str(), "rb"), &std::fclose);
-  if(nullptr == featureFile)
-    throw IOError("Failed to read access feature file " + featurePath);
-  uint32_t header; // must match
-  size_t readcount = std::fread(&header, 4, 1, featureFile.get());
-  if(1 != readcount || FEATURE_HEADER_POC != header)
-    throw IOError("Failed to read from feature file " + featurePath);
-  while(!std::feof(featureFile.get())) {
-    MoveFeatures mf;
-    readcount = std::fread(&mf, sizeof(MoveFeatures), 1, featureFile.get());
-    if(1 == readcount)
-      features.push_back(mf);
-  }
-  return features;
-}
-
+} // end namespace StrModel

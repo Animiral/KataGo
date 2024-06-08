@@ -12,6 +12,7 @@
 #include <iomanip>
 
 using namespace std;
+using namespace StrModel;
 
 namespace {
 
@@ -114,8 +115,8 @@ int MainCmds::strength_training(const vector<string>& args) {
   }
 
   { // main training
-    Dataset dataset;
-    dataset.load(listFile, featureDir);
+    DatasetFiles files(featureDir);
+    Dataset dataset(listFile, files);
     // dataset.resize(10);
     logger.write("Loaded dataset with " + Global::intToString(dataset.games.size()) + " games from " + listFile);
     // dataset.randomSplit(seedRand, trainingFraction, validationFraction); // disabled: this info is loaded from the input data file
