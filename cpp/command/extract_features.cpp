@@ -36,8 +36,9 @@ struct Parameters {
   string featureDir; // Directory for move feature cache
   Selection selection; // features to extract
   int windowSize; // Extract up to this many recent moves
-  int batchSize; // Send this many moves to the GPU at once in a worker thread
-  int batchThreads; // Number of concurrent workers feeding positions to GPU
+  int batchSize; // Send this many moves to the GPU at once (per evaluator thread)
+  int batchThreads; // Number of concurrent evaluator threads feeding positions to GPU
+  int workerThreads; // Number of concurrent CPU workers
   bool recompute; // Overwrite existing ZIPs, do not reuse them
   bool printRecentMoves; // Output information on which moves are recent moves for which game
 };
@@ -123,7 +124,6 @@ class Worker {
 int MainCmds::extract_features(const vector<string>& args) {
   ConfigParser cfg;
   Parameters params = parseArgs(args, cfg);
-  int workerThreads = 2; // 64; // number of CPU threads filling requests to GPU
   Logger logger(&cfg, false, true);
   logger.write(Version::getKataGoVersionForHelp());
 
@@ -161,9 +161,9 @@ int MainCmds::extract_features(const vector<string>& args) {
   
     vector<Worker> workers;
     vector<std::thread> threads;
-    for(int i = 0; i < workerThreads; i++)
+    for(int i = 0; i < params.workerThreads; i++)
       workers.emplace_back(Precompute(*evaluator));
-    for(int i = 0; i < workerThreads; i++)
+    for(int i = 0; i < params.workerThreads; i++)
       threads.emplace_back(ref(workers[i]));
     for(auto& thread : threads)
       thread.join();
@@ -172,15 +172,14 @@ int MainCmds::extract_features(const vector<string>& args) {
   // all picks are now available as precomputed pick ZIPs;
   // piece them back together into recent move sets and output recent ZIPs
   {
-    constexpr int accumulateThreadCount = 16;
-    logger.write(strprintf("Accumulating recent moves using %d threads...", accumulateThreadCount));
+    logger.write(strprintf("Accumulating recent moves using %d threads...", params.workerThreads));
     auto startTime = clock::now();
     total = recentByGame.size();
     std::atomic<size_t> progress(0);
     vector<std::thread> threads;
-    for(int i = 0; i < accumulateThreadCount; i++) {
-      RecentMoves* workBegin = &recentByGame[total*i/accumulateThreadCount];
-      RecentMoves* workEnd = &recentByGame[total*(i+1)/accumulateThreadCount];
+    for(int i = 0; i < params.workerThreads; i++) {
+      RecentMoves* workBegin = &recentByGame[total*i/params.workerThreads];
+      RecentMoves* workEnd = &recentByGame[total*(i+1)/params.workerThreads];
       threads.emplace_back(&ExtractFeatures::buildRecentMoves, extract, workBegin, workEnd, ref(progress), total, startTime);
     }
     for(auto& thread : threads)
@@ -219,37 +218,15 @@ vector<RecentMoves> ExtractFeatures::getAllQueries() const {
   return recentByGame;
 }
 
-namespace {
-
-vector<int> mergeOrderedVectors(const vector<int>& a, const vector<int>& b) {
-  vector<int> merged;
-  size_t i = 0, j = 0;
-  size_t N = a.size(), M = b.size();
-  while(i < N && j < M) {
-    if(a[i] == b[j]) {
-      merged.push_back(a[i]);
-      i++; j++;
-    }
-    else if(a[i] < b[j])
-      merged.push_back(a[i++]);
-    else if(a[i] > b[j])
-      merged.push_back(b[j++]);
-  }
-  if(i < N)
-    merged.insert(merged.end(), &a[i], &a[N]);
-  if(j < M)
-    merged.insert(merged.end(), &b[j], &b[M]);
-  return merged;
-}
-
-}
-
 GamesTurns ExtractFeatures::mergeQueries(const vector<RecentMoves>& recentByGame) {
   GamesTurns merged;
   for(const RecentMoves& recent : recentByGame) {
     for(const auto& game_turns : recent.sel.bygame) {
-      vector<int>& target = merged.bygame[game_turns.first];
-      target = mergeOrderedVectors(target, game_turns.second);
+      vector<int> unioned;
+      vector<int>& a = merged.bygame[game_turns.first];
+      const vector<int>& b = game_turns.second;
+      std::set_union(a.begin(), a.end(), b.begin(), b.end(), std::back_inserter(unioned));
+      a = move(unioned); // save to merged
     }
   }
   return merged;
@@ -319,8 +296,9 @@ Parameters parseArgs(const vector<string>& args, ConfigParser& cfg) {
   TCLAP::ValueArg<string> listArg("l","list","CSV file listing all SGFs to be fed into the rating system.",true,"","FILE",cmd);
   TCLAP::ValueArg<string> featureDirArg("d","featuredir","Directory for move feature cache.",true,"","DIR",cmd);
   TCLAP::ValueArg<int> windowSizeArg("s","window-size","Extract up to this many recent moves.",false,1000,"SIZE",cmd);
-  TCLAP::ValueArg<int> batchSizeArg("b","batch-size","Send this many moves to the GPU at once in a worker thread.",false,400,"SIZE",cmd);
-  TCLAP::ValueArg<int> batchThreadsArg("t","batch-threads","Number of concurrent workers feeding positions to GPU.",false,4,"COUNT",cmd);
+  TCLAP::ValueArg<int> batchSizeArg("b","batch-size","Send this many moves to the GPU at once (per evaluator thread).",false,10,"SIZE",cmd);
+  TCLAP::ValueArg<int> batchThreadsArg("t","batch-threads","Number of concurrent evaluator threads feeding positions to GPU.",false,4,"COUNT",cmd);
+  TCLAP::ValueArg<int> workerThreadsArg("w","worker-threads","Number of concurrent CPU workers.",false,4,"COUNT",cmd);
   TCLAP::SwitchArg withTrunkArg("T","with-trunk","Extract trunk features.",cmd,false);
   TCLAP::SwitchArg withPickArg("P","with-pick","Extract pick features.",cmd,false);
   TCLAP::SwitchArg withHeadArg("H","with-head","Extract head features.",cmd,false);
@@ -339,6 +317,7 @@ Parameters parseArgs(const vector<string>& args, ConfigParser& cfg) {
   params.windowSize = windowSizeArg.getValue();
   params.batchSize = batchSizeArg.getValue();
   params.batchThreads = batchThreadsArg.getValue();
+  params.workerThreads = workerThreadsArg.getValue();
   params.recompute = recomputeArg.getValue();
   params.printRecentMoves = printRecentMovesArg.getValue();
   cmd.getConfig(cfg);
