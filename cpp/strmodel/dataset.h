@@ -6,6 +6,7 @@
 #include "core/logger.h"
 #include "core/rand.h"
 #include "game/board.h"
+#include "dataio/sgf.h"
 #include "neuralnet/strengthnet.h"
 #include "strmodel/using.h"
 
@@ -132,15 +133,23 @@ public:
     int lastOccurrence; // max index of game where this player participated or -1
   };
 
+  // directly use the given SGFs as the dataset
+  Dataset(const vector<Sgf*>& sgfs, const DatasetFiles& files);
   // load the games listed in the CSV stream
   Dataset(std::istream& stream, const DatasetFiles& files);
   Dataset(const string& path, const DatasetFiles& files); // convenience c'tor
+  void load(const vector<Sgf*>& sgfs);
   void load(std::istream& stream);
   void store(const std::string& path) const;
   ::Player playerColor(PlayerId playerId, GameId gameId) const;
+  vector<int> findMovesOfColor(GameId gameId, ::Player pla, size_t capacity) const;
+  // identify recent moves up to the player's last occurrence
+  GamesTurns getRecentMoves(PlayerId playerId, size_t capacity) const;
   // identify up to capacity moves played by the player in games before the game index (without attached data)
   // with head features, also returns follow-up (opponent) moves and final board state
-  GamesTurns getRecentMoves(::Player player, GameId game, size_t capacity) const;
+  GamesTurns getRecentMoves(::Player pla, GameId gameId, size_t capacity) const;
+  // return ID of the player who occurs in every game, or -1 if there isn't clearly one such player
+  PlayerId findOmnipresentPlayer() const;
   // randomly assign the `set` member of every game; *Part in [0.0, 1.0], testPart = 1-trainingPart-validationPart
   void randomSplit(Rand& rand, float trainingPart, float validationPart);
   // randomly assign set=batch to the given nr of training games (and reset previous batch to set=training)
@@ -158,6 +167,8 @@ private:
   map<string, size_t> nameIndex;  // player names to unique index into players
 
   size_t getOrInsertNameIndex(const string& name);  // insert with lastOccurrence
+  // get recent moves, where gameId points to the latest recent game involving playerId
+  GamesTurns getRecentMovesStartingAt(PlayerId playerId, GameId gameId, size_t capacity) const;
 
 };
 

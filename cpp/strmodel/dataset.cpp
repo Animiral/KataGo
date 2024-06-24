@@ -306,6 +306,11 @@ void DatasetFiles::storeFeatures(const vector<BoardFeatures>& features, const st
 //   }
 // }
 
+Dataset::Dataset(const vector<Sgf*>& sgfs, const DatasetFiles& files_)
+: files(&files_) {
+  load(sgfs);
+}
+
 Dataset::Dataset(std::istream& stream, const DatasetFiles& files_)
 : files(&files_) {
   load(stream);
@@ -318,6 +323,35 @@ Dataset::Dataset(const string& path, const DatasetFiles& files_)
     throw IOError("Could not read dataset from " + path);
   load(stream);
   stream.close();
+}
+
+void Dataset::load(const vector<Sgf*>& sgfs) {
+  // clean any previous data
+  games.clear();
+  players.clear();
+  nameIndex.clear();
+
+  for(Sgf* sgf : sgfs) {
+    size_t gameIndex = games.size();
+    games.emplace_back();
+    Game& game = games[gameIndex];
+    game.sgfPath = sgf->fileName;
+    string blackName = sgf->getPlayerName(P_BLACK);
+    game.black.player = getOrInsertNameIndex(blackName);
+    string whiteName = sgf->getPlayerName(P_WHITE);
+    game.white.player = getOrInsertNameIndex(whiteName);
+    ::Player winner = sgf->getSgfWinner();
+    if(P_BLACK == winner)
+      game.score = 1;
+    else if(P_WHITE == winner)
+      game.score = 0;
+    else
+      game.score = 0.5;
+    game.white.prevGame = players[game.white.player].lastOccurrence;
+    game.black.prevGame = players[game.black.player].lastOccurrence;
+    players[game.white.player].lastOccurrence = gameIndex;
+    players[game.black.player].lastOccurrence = gameIndex;
+  }
 }
 
 void Dataset::load(std::istream& stream) {
@@ -454,15 +488,14 @@ Player Dataset::playerColor(PlayerId playerId, GameId gameId) const {
       game.sgfPath.c_str(), playerId, players[playerId].name.c_str()));
 }
 
-namespace {
-
-vector<int> findMovesOfColor(CompactSgf& sgf, Player pla, size_t capacity) {
-  const auto& moves = sgf.moves;
-  Rules rules = sgf.getRulesOrFailAllowUnspecified(Rules::getTrompTaylorish());
+vector<int> Dataset::findMovesOfColor(GameId gameId, ::Player pla, size_t capacity) const {
+  auto sgf = unique_ptr<CompactSgf>(CompactSgf::loadFile(games[gameId].sgfPath));
+  const auto& moves = sgf->moves;
+  Rules rules = sgf->getRulesOrFailAllowUnspecified(Rules::getTrompTaylorish());
   Board board;
   BoardHistory history;
-  Player initialPla;
-  sgf.setupInitialBoardAndHist(rules, board, initialPla, history);
+  ::Player initialPla;
+  sgf->setupInitialBoardAndHist(rules, board, initialPla, history);
 
   vector<int> found;
   for(int i = 0; i < moves.size(); i++) {
@@ -473,8 +506,6 @@ vector<int> findMovesOfColor(CompactSgf& sgf, Player pla, size_t capacity) {
   size_t excess = found.size() > capacity ? found.size() - capacity : 0;
   found.erase(found.begin(), found.begin() + excess);
   return found;
-}
-
 }
 
 // size_t Dataset::getRecentMoves(size_t player, size_t game, MoveFeatures* buffer, size_t bufsize) const {
@@ -518,37 +549,46 @@ vector<int> findMovesOfColor(CompactSgf& sgf, Player pla, size_t capacity) {
 //   return count;
 // }
 
-GamesTurns Dataset::getRecentMoves(::Player player, GameId game, size_t capacity) const {
-  GamesTurns gamesTurns;
-  const Game& gameData = games[game];
-  auto& info = P_BLACK == player ? gameData.black : gameData.white;
-  // Traverse game history
-  PlayerId playerId = info.player;
-  GameId historic = info.prevGame; // index of prev game
+GamesTurns Dataset::getRecentMoves(PlayerId playerId, size_t capacity) const {
+  return getRecentMovesStartingAt(playerId, players[playerId].lastOccurrence, capacity);
+}
 
-  while(0 < capacity && historic >= 0) {
-    GameId h = historic;
-    const Dataset::Game& historicGame = games[h];
+GamesTurns Dataset::getRecentMoves(::Player pla, GameId gameId, size_t capacity) const {
+  const Game& gameData = games[gameId];
+  auto& info = P_BLACK == pla ? gameData.black : gameData.white;
+  return getRecentMovesStartingAt(info.player, info.prevGame, capacity);
+}
 
-    ::Player pla;
-    if(playerId == historicGame.black.player) {
-      pla = P_BLACK;
-      historic = historicGame.black.prevGame;
-    } else if(playerId == historicGame.white.player) {
-      pla = P_WHITE;
-      historic = historicGame.white.prevGame;
-    } else {
-      throw StringError(strprintf("Game %s does not contain player %d (name=%s)",
-        historicGame.sgfPath.c_str(), playerId, players[playerId].name.c_str()));
+PlayerId Dataset::findOmnipresentPlayer() const {
+  if(games.empty())
+    return -1;
+
+  PlayerId candidate = games[0].black.player;
+  PlayerId alt = games[0].white.player;
+
+  for(size_t i = 1; i < games.size(); i++) {
+    PlayerId black = games[i].black.player;
+    PlayerId white = games[i].white.player;
+
+    if(black != alt && white != alt)
+      alt = -1;
+
+    if(black == candidate || white == candidate) {
+      continue;
     }
-
-    auto sgf = unique_ptr<CompactSgf>(CompactSgf::loadFile(historicGame.sgfPath));
-    vector<int> found = findMovesOfColor(*sgf, pla, capacity);
-    capacity -= found.size();
-    gamesTurns.bygame[h] = move(found);
+    else if(black == alt || white == alt) {
+      candidate = alt;
+      alt = -1;
+    }
+    else {
+      return -1;
+    }
   }
 
-  return gamesTurns;
+  if(alt < 0)
+    return candidate;
+  else
+    return -1;
 }
 
 void Dataset::randomSplit(Rand& rand, float trainingPart, float validationPart) {
@@ -601,6 +641,24 @@ size_t Dataset::getOrInsertNameIndex(const string& name) {
     tie(it, success) = nameIndex.insert({name, index});
   }
   return it->second;
+}
+
+GamesTurns Dataset::getRecentMovesStartingAt(PlayerId playerId, GameId gameId, size_t capacity) const {
+  GamesTurns gamesTurns;
+
+  while(0 < capacity && gameId >= 0) {
+    GameId h = gameId;
+    const Dataset::Game& historicGame = games[h];
+
+    ::Player pla = playerColor(playerId, h);
+    gameId = P_BLACK == pla ? historicGame.black.prevGame : historicGame.white.prevGame;
+
+    vector<int> found = findMovesOfColor(h, pla, capacity);
+    capacity -= found.size();
+    gamesTurns.bygame[h] = move(found);
+  }
+
+  return gamesTurns;
 }
 
 } // end namespace StrModel

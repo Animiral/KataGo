@@ -571,6 +571,7 @@ int Sgf::getRating(Player pla) const {
 
 
 string Sgf::getPlayerName(Player pla) const {
+  checkNonEmpty(nodes);
   if(pla == P_BLACK) {
     if(!nodes[0]->hasProperty("PB"))
       return "";

@@ -47,6 +47,7 @@ gatekeeper : Poll directory for new nets and match them against the latest net s
 
 position_tensor : Precomputes tensors for one move (inputs, trunk output)
 extract_features : Precomputes recent move features for all games in the dataset.
+extract_sgfs : Precomputes move features for all positions for one side in the given SGF files.
 extract_pocfeatures : Precomputes proof-of-concept model move features for all games in the dataset.
 strength_analysis : Runs an engine to analyze the strength of a player.
 rating_system : Calculates all match outcome predictions and player ranks in a dataset using the strength model.
@@ -84,6 +85,8 @@ static int handleSubcommand(const string& subcommand, const vector<string>& args
     return MainCmds::position_tensor(subArgs);
   if(subcommand == "extract_features")
     return MainCmds::extract_features(subArgs);
+  if(subcommand == "extract_sgfs")
+    return MainCmds::extract_sgfs(subArgs);
   if(subcommand == "extract_pocfeatures")
     return MainCmds::extract_pocfeatures(subArgs);
   if(subcommand == "strength_analysis")
