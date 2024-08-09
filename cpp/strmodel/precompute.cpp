@@ -42,16 +42,20 @@ vector<BoardResult> Precompute::evaluate(const CompactSgf& sgf, const vector<Boa
     Move move = moves[turnIdx];
 
     if(turnIdx == queryIt->turn) {
-      results.push_back(evaluateBoard(board, history, move.loc, move.pla, queryIt->selection));
+      BoardResult result = evaluateBoard(board, history, move.loc, move.pla, queryIt->selection);
+      result.turn = queryIt->turn; // must match for later filter
+      results.push_back(result);
       queryIt++;
     }
 
     history.makeBoardMoveAssumeLegal(board, move.loc, move.pla, NULL, true);
   }
   if(queryIt != queryEnd) { // add final board?
-    if(history.getCurrentTurnNumber() != queryIt->turn)
+    if(moves.size() != queryIt->turn)
       throw ValueError(strprintf("Query for turn %d in %d-move game", queryIt->turn, moves.size()));
-    results.push_back(evaluateBoard(board, history, Board::NULL_LOC, C_EMPTY, queryIt->selection));
+    BoardResult result = evaluateBoard(board, history, Board::NULL_LOC, C_EMPTY, queryIt->selection);
+    result.turn = queryIt->turn; // must match for later filter
+    results.push_back(result);
     if(++queryIt != queryEnd)
       throw ValueError(strprintf("Query for turn %d in %d-move game", queryIt->turn, moves.size()));
   }
@@ -78,7 +82,6 @@ BoardResult Precompute::evaluateBoard(Board& board, const BoardHistory& history,
 
   // interpret NN result
   BoardResult result;
-  result.turn = history.getCurrentTurnNumber();
   result.pla = pla;
   result.pos = rowPos;
   int trunkNumChannels = evaluator->getTrunkNumChannels();
@@ -113,20 +116,20 @@ vector<BoardFeatures> Precompute::combine(const vector<BoardResult>& results) {
 
     if(i+1 < count) { // head features only work for boards showing the move outcome
       const BoardResult& nextresult = results[i+1];
-      if(nextresult.turn != result.turn+1) // we cannot determine head features when missing next move
-        continue;
-      FeatureVector head(6);
-      head[0] = P_WHITE == result.pla ? nextresult.whiteWinProb : nextresult.whiteLossProb; // post-move winProb
-      head[1] = P_WHITE == result.pla ? nextresult.whiteLead : -nextresult.whiteLead; // lead
-      head[2] = result.movePolicy; // movePolicy
-      head[3] = result.maxPolicy; // maxPolicy
-      head[4] = P_WHITE == result.pla // winrateLoss
-                       ? result.whiteWinProb - nextresult.whiteWinProb
-                       : result.whiteLossProb - nextresult.whiteLossProb;
-      head[5] = P_WHITE == result.pla // pointsLoss
-                       ? result.whiteLead - nextresult.whiteLead
-                       : -(result.whiteLead - nextresult.whiteLead);
-      feats.head = make_shared<FeatureVector>(move(head));
+      if(nextresult.turn == result.turn+1) { // we can only determine head features when we have the next move
+        FeatureVector head(6);
+        head[0] = P_WHITE == result.pla ? nextresult.whiteWinProb : nextresult.whiteLossProb; // post-move winProb
+        head[1] = P_WHITE == result.pla ? nextresult.whiteLead : -nextresult.whiteLead; // lead
+        head[2] = result.movePolicy; // movePolicy
+        head[3] = result.maxPolicy; // maxPolicy
+        head[4] = P_WHITE == result.pla // winrateLoss
+                         ? result.whiteWinProb - nextresult.whiteWinProb
+                         : result.whiteLossProb - nextresult.whiteLossProb;
+        head[5] = P_WHITE == result.pla // pointsLoss
+                         ? result.whiteLead - nextresult.whiteLead
+                         : -(result.whiteLead - nextresult.whiteLead);
+        feats.head = make_shared<FeatureVector>(move(head));
+      }
     }
     features.push_back(move(feats));
   }

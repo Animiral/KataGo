@@ -425,6 +425,7 @@ void Dataset::load(std::istream& stream) {
         if("v" == field || "V" == field) game.set = Game::validation;
         if("b" == field || "B" == field) game.set = Game::batch;
         if("e" == field || "E" == field) game.set = Game::test;
+        if("x" == field || "X" == field) game.set = Game::exhibition;
         break;
       default:
       case F::ignore:
@@ -499,8 +500,10 @@ vector<int> Dataset::findMovesOfColor(GameId gameId, ::Player pla, size_t capaci
 
   vector<int> found;
   for(int i = 0; i < moves.size(); i++) {
-    if(pla == moves[i].pla && Board::PASS_LOC != moves[i].loc)
-      found.push_back(i);
+    if(Board::PASS_LOC != moves[i].loc) {
+      if(0 == pla || moves[i].pla == pla) // 0 == pla: all moves, no filter
+        found.push_back(i);
+    }
   }
 
   size_t excess = found.size() > capacity ? found.size() - capacity : 0;
@@ -549,14 +552,19 @@ vector<int> Dataset::findMovesOfColor(GameId gameId, ::Player pla, size_t capaci
 //   return count;
 // }
 
-GamesTurns Dataset::getRecentMoves(PlayerId playerId, size_t capacity) const {
-  return getRecentMovesStartingAt(playerId, players[playerId].lastOccurrence, capacity);
+GamesTurns Dataset::getRecentMoves(PlayerId playerId, ::Player color, size_t capacity) const {
+  if(games.empty())
+    return {};
+  GameId lastGame = games.size() - 1;
+  if(playerId >= 0)
+    lastGame = players[playerId].lastOccurrence;
+  return getRecentMovesStartingAt(playerId, color, lastGame, capacity);
 }
 
 GamesTurns Dataset::getRecentMoves(::Player pla, GameId gameId, size_t capacity) const {
   const Game& gameData = games[gameId];
   auto& info = P_BLACK == pla ? gameData.black : gameData.white;
-  return getRecentMovesStartingAt(info.player, info.prevGame, capacity);
+  return getRecentMovesStartingAt(info.player, 0, info.prevGame, capacity);
 }
 
 PlayerId Dataset::findOmnipresentPlayer() const {
@@ -643,17 +651,24 @@ size_t Dataset::getOrInsertNameIndex(const string& name) {
   return it->second;
 }
 
-GamesTurns Dataset::getRecentMovesStartingAt(PlayerId playerId, GameId gameId, size_t capacity) const {
+GamesTurns Dataset::getRecentMovesStartingAt(PlayerId playerId, ::Player color, GameId gameId, size_t capacity) const {
   GamesTurns gamesTurns;
 
   while(0 < capacity && gameId >= 0) {
     GameId h = gameId;
     const Dataset::Game& historicGame = games[h];
 
-    ::Player pla = playerColor(playerId, h);
-    gameId = P_BLACK == pla ? historicGame.black.prevGame : historicGame.white.prevGame;
+    if(playerId >= 0) {
+      // follow player's individual history
+      color = playerColor(playerId, h);
+      gameId = P_BLACK == color ? historicGame.black.prevGame : historicGame.white.prevGame;
+    }
+    else {
+      // follow every game in the dataset
+      gameId--;
+    }
 
-    vector<int> found = findMovesOfColor(h, pla, capacity);
+    vector<int> found = findMovesOfColor(h, color, capacity);
     capacity -= found.size();
     gamesTurns.bygame[h] = move(found);
   }

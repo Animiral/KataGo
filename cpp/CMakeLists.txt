@@ -273,6 +273,7 @@ add_executable(katago
   command/analysis.cpp
   command/position_tensor.cpp
   command/extract_features.cpp
+  command/extract_sgfs.cpp
   command/extract_pocfeatures.cpp
   command/strength_analysis.cpp
   command/strength_training.cpp

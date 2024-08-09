@@ -14,7 +14,9 @@ struct Parameters {
   string modelFile;
   vector<string> sgfs; // SGF file(s) to evaluate
   string outFile; // Output file for extracted features
-  string playerName; // SGF player name to evaluate
+  string playerName; // SGF player name to evaluate ("" == unfiltered)
+  bool autodetect; // Derive player name from input SGFs
+  Player playerColor; // SGF player color to evaluate (0 == unfiltered)
   Selection selection; // features to extract
   int windowSize; // Extract up to this many recent moves
   int batchSize; // Send this many moves to the GPU at once (per evaluator thread)
@@ -69,25 +71,30 @@ int MainCmds::extract_sgfs(const vector<string>& args) {
 
   PlayerId playerId = -1;
 
-  if(params.playerName.empty()) {
+  if(params.autodetect) {
     playerId = dataset.findOmnipresentPlayer();
     params.playerName = dataset.players[playerId].name;
   }
   else {
-    for(PlayerId i = 0; i < dataset.players.size(); i++)
-      if(params.playerName == dataset.players[i].name)
-        playerId = i;
+    if(!params.playerName.empty()) {
+      for(PlayerId i = 0; i < dataset.players.size(); i++)
+        if(params.playerName == dataset.players[i].name)
+          playerId = i;
+      if(playerId < 0)
+        throw StringError("Player name not found in SGFs: " + params.playerName);
+    }
   }
-  if(playerId < 0)
-    throw StringError("Player name not found in SGFs: " + params.playerName);
 
-  logger.write(strprintf("Player: %s", params.playerName.c_str()));
+  if(playerId >= 0)
+    logger.write(strprintf("Filter Player: %s", params.playerName.c_str()));
+  if(params.playerColor > 0)
+    logger.write(strprintf("Filter Color: %s", PlayerIO::playerToString(params.playerColor).c_str()));
 
   auto evaluator = createEvaluator(params.modelFile, params.batchThreads, params.batchSize);
   Precompute precompute(*evaluator);
 
   vector<BoardFeatures> allFeatures;
-  GamesTurns gamesTurns = dataset.getRecentMoves(playerId, params.windowSize);
+  GamesTurns gamesTurns = dataset.getRecentMoves(playerId, params.playerColor, params.windowSize);
   for(auto it = gamesTurns.bygame.begin(); it != gamesTurns.bygame.end(); ++it) {
     GameId gameId = it->first;
     const vector<int>& turns = it->second;
@@ -99,6 +106,7 @@ int MainCmds::extract_sgfs(const vector<string>& args) {
   }
 
   // using our overriding OneDatasetFile, this stores allFeatures to params.outFile
+  logger.write(Global::strprintf("Extracted %d features.", allFeatures.size()));
   dataset.storeFeatures(allFeatures, 0, C_EMPTY, "");
 
   ScoreValue::freeTables();
@@ -124,6 +132,8 @@ Parameters parseArgs(const vector<string>& args, ConfigParser& cfg) {
   TCLAP::UnlabeledMultiArg<string> sgfsArg("sgfs", "SGF file(s) to evaluate", true, "FILE", cmd);
   TCLAP::ValueArg<string> outFileArg("o","outfile","Output file for extracted features",false,"features.zip","OUTFILE",cmd);
   TCLAP::ValueArg<string> playerNameArg("p","playername","SGF player name to evaluate",false,"","PLAYERNAME",cmd);
+  TCLAP::SwitchArg autodetectArg("a","autodetect","Derive player name from input SGFs",cmd,false);
+  TCLAP::ValueArg<string> playerColorArg("c","color","stone color to evaluate",false,"","COLOR",cmd);
   TCLAP::ValueArg<int> windowSizeArg("s","window-size","Extract up to this many recent moves.",false,1000,"SIZE",cmd);
   TCLAP::ValueArg<int> batchSizeArg("b","batch-size","Send this many moves to the GPU at once (per evaluator thread).",false,10,"SIZE",cmd);
   TCLAP::ValueArg<int> batchThreadsArg("t","batch-threads","Number of concurrent evaluator threads feeding positions to GPU.",false,4,"COUNT",cmd);
@@ -138,6 +148,9 @@ Parameters parseArgs(const vector<string>& args, ConfigParser& cfg) {
   params.sgfs = sgfsArg.getValue();
   params.outFile = outFileArg.getValue();
   params.playerName = playerNameArg.getValue();
+  string playerColorString = playerColorArg.getValue();
+  params.autodetect = autodetectArg.getValue();
+  params.playerColor = playerColorString.empty() ? 0 : PlayerIO::parsePlayer(playerColorString);
   params.selection.trunk = withTrunkArg.getValue();
   params.selection.pick = withPickArg.getValue();
   params.selection.head = withHeadArg.getValue();

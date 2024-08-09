@@ -46,7 +46,7 @@ int MainCmds::position_tensor(const vector<string>& args) {
   Selection selection;
   bool summary;
 
-  KataGoCommandLine cmd("Precompute move features for all games in the dataset.");
+  KataGoCommandLine cmd("Precompute move features for specific positions from an SGF or ZIP.");
   try {
     cmd.addConfigFileArg("","analysis_example.cfg");
     cmd.addModelFileArg();

@@ -123,7 +123,8 @@ public:
       training = 1,   // is in the training set if game.set & 1 is true
       validation = 2, // is in validation set
       batch = 3,      // is in active minibatch
-      test = 4        // is in test set
+      test = 4,       // is in test set
+      exhibition = 5  // is in exhibition set
     } set;
   };
 
@@ -143,8 +144,8 @@ public:
   void store(const std::string& path) const;
   ::Player playerColor(PlayerId playerId, GameId gameId) const;
   vector<int> findMovesOfColor(GameId gameId, ::Player pla, size_t capacity) const;
-  // identify recent moves up to the player's last occurrence
-  GamesTurns getRecentMoves(PlayerId playerId, size_t capacity) const;
+  // identify recent moves up to the end of the dataset, filter by player and/or color
+  GamesTurns getRecentMoves(PlayerId playerId, ::Player color, size_t capacity) const;
   // identify up to capacity moves played by the player in games before the game index (without attached data)
   // with head features, also returns follow-up (opponent) moves and final board state
   GamesTurns getRecentMoves(::Player pla, GameId gameId, size_t capacity) const;
@@ -167,8 +168,8 @@ private:
   map<string, size_t> nameIndex;  // player names to unique index into players
 
   size_t getOrInsertNameIndex(const string& name);  // insert with lastOccurrence
-  // get recent moves, where gameId points to the latest recent game involving playerId
-  GamesTurns getRecentMovesStartingAt(PlayerId playerId, GameId gameId, size_t capacity) const;
+  // get recent moves filtered by player or color, where gameId points to the latest recent game
+  GamesTurns getRecentMovesStartingAt(PlayerId playerId, ::Player color, GameId gameId, size_t capacity) const;
 
 };
 
