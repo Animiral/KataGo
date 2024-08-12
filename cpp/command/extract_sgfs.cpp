@@ -73,6 +73,8 @@ int MainCmds::extract_sgfs(const vector<string>& args) {
 
   if(params.autodetect) {
     playerId = dataset.findOmnipresentPlayer();
+    if(playerId < 0)
+      throw StringError("Could not auto-detect one common player name in SGFs.");
     params.playerName = dataset.players[playerId].name;
   }
   else {
