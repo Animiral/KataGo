@@ -227,85 +227,6 @@ void DatasetFiles::storeFeatures(const vector<BoardFeatures>& features, const st
   }
 }
 
-
-// void SelectedMoves::Moveset::merge(const SelectedMoves::Moveset& rhs) {
-//   auto before = moves.begin();
-//   for(const Move& m : rhs.moves) {
-//     while(before < moves.end() && before->index < m.index)
-//       before++; // find next place to insert move in ascending order
-
-//     if(moves.end() == before || before->index != m.index) { // no duplicate inserts
-//       before = ++moves.insert(before, m);
-//     }
-//     if(moves.end() != before && before->index == m.index) { // in doubt, pick rhs data
-//       if(m.selection.trunk) before->selection.trunk = true;
-//       if(m.selection.pick) before->selection.pick = true;
-//       if(m.selection.head) before->selection.head = true;
-//       if(m.trunk) before->trunk = m.trunk;
-//       if(m.pick) before->pick = m.pick;
-//       if(m.head) before->head = m.head;
-//       if(m.pos >= 0) before->pos = m.pos;
-//     }
-//   }
-// }
-
-// bool SelectedMoves::Moveset::hasAllResults() const {
-//   auto needsResults = [](const Move& m) -> bool {
-//     return (m.selection.trunk && nullptr == m.trunk)
-//         || (m.selection.pick && nullptr == m.pick)
-//         || (m.selection.head && nullptr == m.head);
-//   };
-//   return moves.end() == std::find_if(moves.begin(), moves.end(), needsResults);
-// }
-
-// void SelectedMoves::Moveset::releaseStorage() {
-//   for(Move& move : moves){
-//     move.trunk.reset();
-//     move.pick.reset();
-//   }
-// }
-
-// pair<SelectedMoves::Moveset, SelectedMoves::Moveset> SelectedMoves::Moveset::splitBlackWhite() const {
-//   vector<Move> blackMoves, whiteMoves;
-//   std::copy_if(moves.begin(), moves.end(), std::back_inserter(blackMoves), [](const Move& m){ return P_BLACK == m.pla; });
-//   std::copy_if(moves.begin(), moves.end(), std::back_inserter(whiteMoves), [](const Move& m){ return P_WHITE == m.pla; });
-//   return { { blackMoves, P_BLACK }, { whiteMoves, P_WHITE } };
-// }
-
-// namespace {
-
-
-// size_t SelectedMoves::size() const {
-//   auto addSize = [](size_t a, const std::pair<string, Moveset>& kv) { return a + kv.second.moves.size(); };
-//   return std::accumulate(bygame.begin(), bygame.end(), size_t(0), addSize);
-// }
-
-// void SelectedMoves::merge(const SelectedMoves& rhs) {
-//   for(auto kv : rhs.bygame) {
-//     Moveset& mset = bygame[kv.first];
-//     mset.merge(kv.second);
-//   }
-// }
-
-// void SelectedMoves::copyFeaturesFrom(const SelectedMoves& rhs) {
-//   for(auto& kv : bygame) {
-//     vector<Move>& mymoves = kv.second.moves;
-//     const vector<Move>& rmoves = rhs.bygame.at(kv.first).moves;
-//     // both mymoves and rmoves are ordered by move index
-//     size_t rindex = 0;
-//     for(size_t i = 0; i < mymoves.size(); i++) {
-//       while(rindex < rmoves.size() && rmoves[rindex].index != mymoves[i].index)
-//         rindex++;
-//       if(rindex >= rmoves.size())
-//         throw StringError(strprintf("Game %s move %d missing from precomputed data.", kv.first.c_str(), mymoves[i].index));
-
-//       mymoves[i].trunk = rmoves[rindex].trunk;
-//       mymoves[i].pick = rmoves[rindex].pick;
-//       mymoves[i].pos = rmoves[rindex].pos;
-//     }
-//   }
-// }
-
 Dataset::Dataset(const vector<Sgf*>& sgfs, const DatasetFiles& files_)
 : files(&files_) {
   load(sgfs);
@@ -510,47 +431,6 @@ vector<int> Dataset::findMovesOfColor(GameId gameId, ::Player pla, size_t capaci
   found.erase(found.begin(), found.begin() + excess);
   return found;
 }
-
-// size_t Dataset::getRecentMoves(size_t player, size_t game, MoveFeatures* buffer, size_t bufsize) const {
-//   assert(player < players.size());
-//   assert(game <= games.size());
-
-//   // start from the game preceding the specified index
-//   int gameIndex;
-//   if(games.size() == game) {
-//       gameIndex = players[player].lastOccurrence;
-//   }
-//   else {
-//     const Game* gm = &games[game];
-//     if(player == gm->black.player)
-//       gameIndex = gm->black.prevGame;
-//     else if(player == gm->white.player)
-//       gameIndex = gm->white.prevGame;
-//     else
-//       gameIndex = static_cast<int>(game) - 1;
-//   }
-
-//   // go backwards in player's history and fill the buffer in backwards order
-//   MoveFeatures* outptr = buffer + bufsize;
-//   while(gameIndex >= 0 && outptr > buffer) {
-//     while(gameIndex >= 0 && player != games[gameIndex].black.player && player != games[gameIndex].white.player)
-//       gameIndex--; // this is just defense to ensure that we find a game which the player occurs in
-//     if(gameIndex < 0)
-//       break;
-//     const Game* gm = &games[gameIndex];
-//     bool isBlack = player == gm->black.player;
-//     const auto& features = isBlack ? gm->black.features : gm->white.features;
-//     for(int i = features.size(); i > 0 && outptr > buffer;)
-//       *--outptr = features[--i];
-//     gameIndex = isBlack ? gm->black.prevGame : gm->white.prevGame;
-//   }
-
-//   // if there are not enough features in history to fill the buffer, adjust
-//   size_t count = bufsize - (outptr - buffer);
-//   if(outptr > buffer)
-//     std::memmove(buffer, outptr, count * sizeof(MoveFeatures));
-//   return count;
-// }
 
 GamesTurns Dataset::getRecentMoves(PlayerId playerId, ::Player color, size_t capacity) const {
   if(games.empty())

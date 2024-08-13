@@ -7,7 +7,6 @@
 #include "core/rand.h"
 #include "game/board.h"
 #include "dataio/sgf.h"
-#include "neuralnet/strengthnet.h"
 #include "strmodel/using.h"
 
 namespace StrModel {
@@ -21,6 +20,17 @@ struct GamesTurns {
   map<GameId, vector<int>> bygame;
 };
 
+// this is what we give as input to the basic "proof of concept" model for a single move
+struct MoveFeatures {
+  float winProb;
+  float lead;
+  float movePolicy;
+  float maxPolicy;
+  float winrateLoss;  // compared to previous move
+  float pointsLoss;  // compared to previous move
+};
+
+// this is the relevant definition for the full strength model
 using FeatureVector = vector<float>;
 
 // Holds strength model features on the board position at move index and maybe the players' move in that position.
@@ -32,46 +42,6 @@ struct BoardFeatures {
   shared_ptr<FeatureVector> pick; // pick output data or nullptr
   shared_ptr<FeatureVector> head; // head features or nullptr
 };
-
-// represents a set of moves, possibly spread over several games
-// // TODO: separate into Query (which recent move data to acquire from NN) and Results
-// struct SelectedMoves {
-//   struct Move {
-//     int index; // 0-based move number in the game
-//     Selection selection; // which features to query for this move
-//     // output values: filled later
-//     Player pla;
-//     shared_ptr<FeatureVector> trunk; // trunk output data
-//     shared_ptr<FeatureVector> pick; // pick output data
-//     shared_ptr<FeatureVector> head; // head features
-//     int pos; // index into trunk data of move chosen by player
-//   };
-//   struct Moveset {
-//     std::vector<Move> moves; // in ascending order
-//     Player pla; // player associated with the moveset (even if it contains different-color moves)
-//     void insert(int index, Selection selection); // prevents duplicates
-//     void merge(const Moveset& rhs); // merge rhs entries into this
-//     bool hasAllResults() const; // true if all player moves have data
-//     void releaseStorage(); // free memory by letting go of TrunkOutputs/PickOutputs (can be re-read from zip later)
-//     std::pair<Moveset, Moveset> splitBlackWhite() const;
-//     void writeToZip(const std::string& filePath) const;
-//     void printSummary(std::ostream& stream) const; // list contained moves in readable format for debugging
-//     static Moveset readFromZip(const std::string& filePath, Player pla = 0);
-
-//    private:
-//     constexpr static int nnXLen = 19;
-//     constexpr static int nnYLen = 19;
-//     constexpr static int numTrunkFeatures = 384;  // strength model is limited to this size
-//     constexpr static int trunkSize = nnXLen*nnYLen*numTrunkFeatures;
-//     constexpr static int numHeadFeatures = 6;      // filling struct MoveFeatures
-//   };
-
-//   std::map<std::string, Moveset> bygame;
-
-//   size_t size() const; // count selected moves
-//   void merge(const SelectedMoves& rhs); // merge rhs entries into this
-//   void copyFeaturesFrom(const SelectedMoves& rhs); // get trunk/pos data into this
-// };
 
 // Load and store dataset files: SGFs and feature ZIPs.
 // This class is virtual and can be abstracted away, e.g. mocked for testing purposes.

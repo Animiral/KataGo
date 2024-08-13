@@ -204,8 +204,6 @@ add_executable(katago
   neuralnet/modelversion.cpp
   neuralnet/nneval.cpp
   neuralnet/desc.cpp
-  neuralnet/strengthnet.cpp
-  neuralnet/strengthnet.cu
   ${NEURALNET_BACKEND_SOURCES}
   book/book.cpp
   book/bookcssjs.cpp
@@ -261,7 +259,6 @@ add_executable(katago
   tests/testsearchv9.cpp
   tests/testsearchmisc.cpp
   tests/teststrengthmodel.cpp
-  tests/teststrengthnet.cu
   tests/testprecompute.cpp
   tests/testtime.cpp
   tests/testtrainingwrite.cpp
@@ -274,10 +271,6 @@ add_executable(katago
   command/position_tensor.cpp
   command/extract_features.cpp
   command/extract_sgfs.cpp
-  command/extract_pocfeatures.cpp
-  command/strength_analysis.cpp
-  command/strength_training.cpp
-  command/rating_system.cpp
   command/benchmark.cpp
   command/contribute.cpp
   command/evalsgf.cpp
