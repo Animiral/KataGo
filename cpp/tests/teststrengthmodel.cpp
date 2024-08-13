@@ -12,7 +12,6 @@ namespace {
 
 using std::cout;
 
-void printFeatures(const MoveFeatures* features, size_t count); // to cout
 void createFeatureCache(const string& listFile, const string& featureDir);
 
 }

@@ -17,7 +17,7 @@ using std::sqrt;
 
 float Predictor::glickoScore(float blackRating, float whiteRating) {
   float GLICKO2_SCALE = 173.7178f;
-  return 1 / (1 + exp((whiteRating - blackRating) / GLICKO2_SCALE));
+  return 1.0f / (1.0f + exp((whiteRating - blackRating) / GLICKO2_SCALE));
   // Elo Score (for reference):
   // float Qblack = static_cast<float>(std::pow(10, blackRating / 400));
   // float Qwhite = static_cast<float>(std::pow(10, whiteRating / 400));

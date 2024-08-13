@@ -57,6 +57,7 @@ uint64_t expectedSize(size_t boards, size_t elsPerBoard) = delete;
 template<>
 uint64_t expectedSize<int>(size_t boards, size_t elsPerBoard) {
   assert(1 == elsPerBoard); // we can only fit one int per move
+  (void)elsPerBoard; // unused in Release build
   return boards * sizeof(int);
 }
 template<>
